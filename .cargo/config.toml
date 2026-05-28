@@ -1,0 +1,4 @@
+[env]
+LIBCLANG_PATH = "/workspace/cquery/cquery/clang+llvm-7.0.0-x86_64-linux-gnu-ubuntu-14.04/lib"
+BINDGEN_EXTRA_CLANG_ARGS = "-isystem/usr/include -isystem/usr/include/x86_64-linux-gnu -isystem/workspace/cquery/cquery/clang+llvm-7.0.0-x86_64-linux-gnu-ubuntu-14.04/lib/clang/7.0.0/include"
+CXX = "/workspace/rust_space/laoflchDB-rust/gcc13/bin/g++"
