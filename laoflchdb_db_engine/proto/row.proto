@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package laoflchdb.row;
+
+enum RowType {
+    ROW_TYPE_NORMAL = 0;
+    ROW_TYPE_RAW = 1;
+}
+
+message Row {
+    RowType row_type = 1;
+    uint32 version = 2;
+    repeated bytes data = 3;
+}

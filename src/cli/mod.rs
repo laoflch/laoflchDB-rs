@@ -1,24 +1,29 @@
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
-#[derive(Parser)]
-#[command(name = "laoflchDB")]
-#[command(about = "基于 RocksDB 的 OLTP 数据库 standalone 服务", long_about = None)]
+#[derive(Parser, Debug)]
+#[command(name = "laoflchdb")]
+#[command(about = "LaoflchDB 数据库命令行工具")]
 pub struct Cli {
+    #[arg(short, long, help = "配置文件路径")]
+    pub config: Option<String>,
+    
     #[command(subcommand)]
     pub command: Commands,
 }
 
-#[derive(Subcommand)]
+#[derive(Parser, Debug)]
 pub enum Commands {
-    #[command(about = "以 standalone 方式启动 gRPC 服务")]
+    #[command(about = "启动数据库服务")]
     Start {
-        #[arg(short, long, default_value = "[::1]:50051")]
-        addr: String,
-        #[arg(short, long, default_value = "./laoflch_db_data")]
-        db_path: String,
+        #[arg(long, help = "监听地址")]
+        addr: Option<String>,
+        
+        #[arg(long, help = "数据库路径")]
+        db_path: Option<String>,
     },
+    #[command(about = "初始化数据库")]
     Init {
-        #[arg(short, long, default_value = "./laoflch_db_data")]
-        db_path: String,
+        #[arg(long, help = "数据库路径")]
+        db_path: Option<String>,
     },
 }

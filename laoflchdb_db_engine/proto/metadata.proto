@@ -1,0 +1,31 @@
+syntax = "proto3";
+
+package laoflchdb.metadata;
+
+message SchemaMeta {
+    string schema_name = 1;
+    uint64 next_auto_inc_table_id = 2;
+}
+
+message TableMeta {
+    uint64 table_id = 1;
+    string table_name = 2;
+    uint32 column_count = 3;
+    uint64 next_auto_inc_column_id = 4;
+}
+
+message ColumnMeta {
+    uint64 table_id = 1;
+    uint64 column_id = 2;
+    string column_name = 3;
+    ColumnType column_type = 4;
+}
+
+enum ColumnType {
+    COLUMN_TYPE_STRING = 0;
+    COLUMN_TYPE_INT64 = 1;
+    COLUMN_TYPE_BYTES = 2;
+    COLUMN_TYPE_FLOAT = 3;
+    COLUMN_TYPE_LIST = 4;
+    COLUMN_TYPE_IMAGE = 5;
+}

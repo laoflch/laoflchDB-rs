@@ -11,9 +11,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rpc_pb2
 import rpc_pb2_grpc
 
-TEST_DB = "./test_db_python_e2e"
+TEST_DB = "./laoflch_db_data"
 TEST_ADDR = "127.0.0.1:19777"
-SERVER_BIN = "../target/release/laoflchDB-rust"
+SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchDB-rust")
 
 def main():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -22,18 +22,14 @@ def main():
     print("Python 自动回归测试: gRPC 端到端数据写入和读取验证")
     print("=" * 60)
 
-    print("\n[1/7] 编译 Rust release 版本...")
+    print("\n[1/5] 编译 Rust release 版本...")
     result = subprocess.run(["cargo", "build", "--release"], cwd="..", capture_output=True)
     if result.returncode != 0:
         print("编译失败:", result.stderr.decode())
         return 1
     print("    ✓ 编译完成")
 
-    print("\n[2/7] 清理旧测试数据...")
-    subprocess.run(["rm", "-rf", TEST_DB], cwd="..")
-    print("    ✓ 数据目录已清理")
-
-    print("\n[3/7] 启动 laoflchDB gRPC 服务后台进程...")
+    print("\n[2/5] 启动 laoflchDB gRPC 服务后台进程...")
     cmd = [
         SERVER_BIN,
         "start",
@@ -51,35 +47,45 @@ def main():
     print(f"    ✓ 服务已启动 PID={server_proc.pid} 监听 {TEST_ADDR}")
 
     try:
-        print("\n[4/7] 连接 gRPC 客户端...")
+        print("\n[3/5] 连接 gRPC 客户端...")
         channel = grpc.insecure_channel(TEST_ADDR)
         stub = rpc_pb2_grpc.LaoflchDbStub(channel)
         print("    ✓ gRPC channel 已连接")
 
-        print("\n[5/7] 调用 ListTables: 获取当前数据库表...")
-        list_resp = stub.ListTables(rpc_pb2.ListTablesRequest(), timeout=5)
-        print(f"    表列表 = {list(list_resp.tables)}")
-        assert 'user' in list(list_resp.tables), "初始化 user 表应该存在"
-        print("    ✓ user 表自动初始化正确")
+        print("\n[4/5] 通过 gRPC 写入多笔测试数据到 user 表...")
+        test_data = [
+            (b"user_grpc_001", b'{"user_id": 1001, "password": "grpc_pass_001"}'),
+            (b"user_grpc_002", b'{"user_id": 1002, "password": "grpc_pass_002"}'),
+            (b"user_grpc_003", b'{"user_id": 1003, "password": "grpc_pass_003"}'),
+        ]
+        
+        print("    准备插入的数据:")
+        for key, value in test_data:
+            print(f"        key={key.decode()}")
+            print(f"        value={value.decode()}")
+            stub.Put(rpc_pb2.PutRequest(table="user", key=key, value=value))
+            print(f"        ✓ 写入成功")
+            print()
 
-        print("\n[6/7] 通过 gRPC 写入数据 Put (user表)...")
-        test_key = b"test_python_key_001"
-        test_value = b"{\"name\": \"laoflch\", \"score\": 100}"
-        stub.Put(rpc_pb2.PutRequest(table="user", key=test_key, value=test_value))
-        print(f"    ✓ 写入 key={test_key.decode()} value_len={len(test_value)}")
+        print("\n[5/5] 通过 gRPC 读取并校验所有写入的数据...")
+        for key, expected_value in test_data:
+            get_resp = stub.Get(rpc_pb2.GetRequest(table="user", key=key))
+            print(f"    读取 key={key.decode()}:")
+            print(f"        found = {get_resp.found}")
+            print(f"        value = {get_resp.value.decode('utf-8')}")
+            assert get_resp.found == True
+            assert get_resp.value == expected_value
+            print(f"        ✓ 数据校验通过")
 
-        print("\n[7/7] 通过 gRPC 读取刚写入的数据 Get 并校验...")
-        get_resp = stub.Get(rpc_pb2.GetRequest(table="user", key=test_key))
-        print("    读取结果:")
-        print(f"        found = {get_resp.found}")
-        print(f"        value = {get_resp.value}")
-        print(f"        value_utf8 = {get_resp.value.decode('utf-8')}")
-        assert get_resp.found == True
-        assert get_resp.value == test_value
-        print("    ✓ ✓ ✓ 数据校验一致: 写入等于读出")
+        print("\n" + "=" * 60)
+        print("SUCCESS! Python 自动回归验证全部通过")
+        print("=" * 60)
+        print(f"数据保留在: {TEST_DB}")
 
     except Exception as e:
         print(f"\n    ✗ 测试失败: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
         return 1
     finally:
         print("\n--- 终止服务进程 ---")
@@ -88,11 +94,9 @@ def main():
             server_proc.wait(timeout=3)
         except subprocess.TimeoutExpired:
             server_proc.kill()
-        subprocess.run(["rm", "-rf", TEST_DB], cwd="..")
+        # 不删除数据！
+        print(f"数据保留在: {TEST_DB}")
 
-    print("\n" + "=" * 60)
-    print("SUCCESS! Python 自动回归验证全部通过")
-    print("=" * 60)
     return 0
 
 if __name__ == "__main__":

@@ -1,17 +1,23 @@
-pub mod db;
-pub mod rpc;
+pub mod db_engine;
+pub mod service;
+pub mod access;
+pub mod server;
 pub mod cli;
+pub mod config;
 
 pub mod pb {
-    tonic::include_proto!("laoflchdb.rpc");
-    tonic::include_proto!("laoflchdb.metadata");
+    pub mod rpc {
+        tonic::include_proto!("laoflchdb.rpc");
+    }
 }
 
-pub use db::OltpDB;
-pub use cli::{Cli, Commands};
-pub use rpc::LaoflchDbServiceImpl;
-
-pub use db::{
-    generate_table_uuid, generate_column_uuid,
-    META_TABLE_PREFIX, META_COL_PREFIX, LAOFLCHDB_NAMESPACE,
+pub use db_engine::{
+    DBEngine, EngineOptions, MultiTableRocksDBEngine, MAX_TABLE_ID_LENGTH,
+    SchemaMeta, TableMeta, ColumnMeta, ColumnType,
+    META_SCHEMA_PREFIX, META_TABLE_PREFIX, META_COLUMN_PREFIX
 };
+pub use service::{DatabaseService, DatabaseServiceImpl, SchemaManager};
+pub use access::{AccessService, GrpcService, RestService};
+pub use server::LaoflchDBServer;
+pub use cli::{Cli, Commands};
+pub use config::DatabaseConfig;

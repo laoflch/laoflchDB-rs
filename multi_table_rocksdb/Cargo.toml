@@ -1,0 +1,13 @@
+[package]
+name = "multi_table_rocksdb"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+laoflchdb_db_engine = { path = "../laoflchdb_db_engine" }
+rocksdb = { version = "0.50", package = "rust-rocksdb" }
+prost = "0.12"
+bytes = "1.6"
+
+[build-dependencies]
+prost-build = "0.12"
