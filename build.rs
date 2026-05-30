@@ -57,9 +57,9 @@ fn build_ldb() {
         let status = std::process::Command::new("make")
             .args(&["ldb", "-j8", "DEBUG_LEVEL=0"])
             .current_dir("rocksdb")
-            .env("CC", "/workspace/rust_space/laoflchDB-rust/gcc13/bin/gcc")
-            .env("CXX", "/workspace/rust_space/laoflchDB-rust/gcc13/bin/g++")
-            .env("PATH", format!("/workspace/rust_space/laoflchDB-rust/gcc13/bin:{}", std::env::var("PATH").unwrap_or_default()))
+            .env("CC", "/usr/local/gcc-13/bin/gcc")
+            .env("CXX", "/usr/local/gcc-13/bin/g++")
+            .env("PATH", format!("/usr/local/gcc-13/bin:{}", std::env::var("PATH").unwrap_or_default()))
             .status();
         
         match status {

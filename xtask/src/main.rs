@@ -1,7 +1,7 @@
 use std::process::Command;
 use std::path::Path;
 
-const GCC13_BIN: &str = "/workspace/rust_space/laoflchDB-rust/gcc13/bin";
+const GCC13_BIN: &str = "/usr/local/gcc-13/bin";
 const ROCKSDB_REGISTRY_PATH: &str = "/home/laoflch/.cargo/registry/src/mirrors.ustc.edu.cn-38d0e5eb5da2abae/rust-librocksdb-sys-0.46.0+11.1.1/rocksdb";
 
 fn main() {
