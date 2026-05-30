@@ -3,6 +3,12 @@ name = "laoflchDB-rust"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = [
+    ".",
+    "xtask",
+]
+
 [dependencies]
 laoflchdb_db_engine = { path = "./laoflchdb_db_engine" }
 multi_table_rocksdb = { path = "./multi_table_rocksdb" }
