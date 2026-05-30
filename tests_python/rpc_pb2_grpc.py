@@ -70,7 +70,8 @@ class LaoflchDbServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def Get(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+        """KV 操作
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -88,7 +89,8 @@ class LaoflchDbServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def CreateTable(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+        """表管理
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')

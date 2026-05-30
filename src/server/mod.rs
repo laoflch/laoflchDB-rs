@@ -13,7 +13,7 @@ pub struct LaoflchDBServer {
 }
 
 impl LaoflchDBServer {
-    pub fn new(
+    pub async fn new(
         schema_manager: Arc<SchemaManager>,
         service: Arc<dyn DatabaseService>,
         access_service: Arc<AccessService>,
@@ -25,24 +25,25 @@ impl LaoflchDBServer {
         }
     }
 
-    pub fn init(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.service.init_database()?;
+    pub async fn init(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.service.init_database().await?;
         info!("LaoflchDBServer 初始化完成");
         Ok(())
     }
 
-    pub fn start(&self, config: &DatabaseConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.init()?;
+    pub async fn start(&self, config: &DatabaseConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.init().await?;
 
         if config.access_protocols.is_empty() {
             let addr = config.addr.clone();
             
             info!("启动 gRPC 服务: {}", addr);
-            let grpc_service = self.access_service.get_grpc_service();
+            let grpc_service: crate::GrpcService = self.access_service.get_grpc_service();
             
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Runtime::new().unwrap();
-                rt.block_on(start_grpc_server(grpc_service, &addr)).unwrap();
+            tokio::spawn(async move {
+                if let Err(e) = start_grpc_server(grpc_service, &addr).await {
+                    log::error!("gRPC 服务错误: {}", e);
+                }
             });
         } else {
             for protocol_config in &config.access_protocols {
@@ -59,9 +60,21 @@ impl LaoflchDBServer {
                         let grpc_service = self.access_service.get_grpc_service();
                         let addr_owned = addr.to_string();
                         
-                        std::thread::spawn(move || {
-                            let rt = tokio::runtime::Runtime::new().unwrap();
-                            rt.block_on(start_grpc_server(grpc_service, &addr_owned)).unwrap();
+                        tokio::spawn(async move {
+                            if let Err(e) = start_grpc_server(grpc_service, &addr_owned).await {
+                                log::error!("gRPC 服务错误: {}", e);
+                            }
+                        });
+                    }
+                    "rest" | "http" => {
+                        info!("启动 REST 服务: {}", addr);
+                        let rest_service = self.access_service.get_rest_service();
+                        let addr_owned = addr.to_string();
+                        
+                        tokio::spawn(async move {
+                            if let Err(e) = rest_service.start(&addr_owned).await {
+                                log::error!("REST 服务启动失败: {}", e);
+                            }
                         });
                     }
                     other => {

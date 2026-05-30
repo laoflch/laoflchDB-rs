@@ -1,29 +1,28 @@
 use laoflchDB_rust::access::RestService;
-use laoflchDB_rust::{DatabaseService, DatabaseServiceImpl, SchemaManager};
+use laoflchDB_rust::{DatabaseService, DatabaseServiceImpl};
 use laoflchDB_rust::db_engine::pb::ColumnType;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
-fn create_test_service() -> Arc<dyn DatabaseService> {
+async fn create_test_service() -> Arc<dyn DatabaseService> {
     let temp_dir = std::env::temp_dir();
     let db_path = temp_dir.join(format!("test_rest_{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&db_path).unwrap();
+    let db_path_str = db_path.to_str().unwrap();
     
-    let schema_manager = SchemaManager::new(db_path.to_str().unwrap());
-    let service = DatabaseServiceImpl::new(Arc::new(schema_manager));
-    service.init_database().unwrap();
+    let service = DatabaseServiceImpl::new(db_path_str).await;
+    service.init_database().await.unwrap();
     Arc::new(service)
 }
 
-fn setup_rest_service() -> (RestService, Arc<dyn DatabaseService>) {
-    let service = create_test_service();
+async fn setup_rest_service() -> (RestService, Arc<dyn DatabaseService>) {
+    let service = create_test_service().await;
     let rest_service = RestService::new(Arc::clone(&service));
     (rest_service, service)
 }
 
 #[tokio::test]
 async fn test_rest_health() {
-    let (rest_service, _service) = setup_rest_service();
+    let (rest_service, _service) = setup_rest_service().await;
     let app = rest_service.router();
     
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -46,7 +45,7 @@ async fn test_rest_health() {
 
 #[tokio::test]
 async fn test_rest_list_tables() {
-    let (rest_service, _service) = setup_rest_service();
+    let (rest_service, _service) = setup_rest_service().await;
     let app = rest_service.router();
     
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -69,7 +68,7 @@ async fn test_rest_list_tables() {
 
 #[tokio::test]
 async fn test_rest_get_table_meta() {
-    let (rest_service, _service) = setup_rest_service();
+    let (rest_service, _service) = setup_rest_service().await;
     let app = rest_service.router();
     
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -93,13 +92,13 @@ async fn test_rest_get_table_meta() {
 
 #[tokio::test]
 async fn test_rest_put_and_get() {
-    let (rest_service, service) = setup_rest_service();
+    let (rest_service, service) = setup_rest_service().await;
     let app = rest_service.router();
     
     service.create_table("sys", "test_data", &[
         (0, "id", ColumnType::Int64),
         (1, "name", ColumnType::String),
-    ]).unwrap();
+    ]).await.unwrap();
     
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -130,7 +129,7 @@ async fn test_rest_put_and_get() {
 
 #[tokio::test]
 async fn test_rest_create_table() {
-    let (rest_service, _service) = setup_rest_service();
+    let (rest_service, _service) = setup_rest_service().await;
     let app = rest_service.router();
     
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

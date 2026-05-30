@@ -3,8 +3,17 @@
 # 数据库数据存储路径
 db_path: ./laoflch_db_data
 
-# gRPC 服务监听地址
-addr: 127.0.0.1:50051
-
 # 日志级别: trace, debug, info, warn, error
 log_level: info
+
+# 访问协议配置
+access_protocols:
+  # gRPC 服务配置
+  - protocol: grpc
+    enabled: true
+    addr: 127.0.0.1:19777
+
+  # REST 服务配置
+  - protocol: rest
+    enabled: true
+    addr: 127.0.0.1:8080

@@ -34,7 +34,7 @@ async fn main() {
             info!("DB 路径: {}", final_db_path);
             info!("监听地址: {}", final_config.addr);
             
-            if let Err(e) = start_server(&final_config, &final_db_path) {
+            if let Err(e) = start_server(&final_config, &final_db_path).await {
                 log::error!("服务器启动失败: {}", e);
             }
         }
@@ -43,13 +43,10 @@ async fn main() {
             info!("=== 初始化 laoflchDB ===");
             let _ = std::fs::remove_dir_all(&final_db_path);
             
-            let schema_manager = Arc::new(
-                SchemaManager::new(&final_db_path)
-            );
             let svc: Arc<dyn DatabaseService> = Arc::new(
-                DatabaseServiceImpl::new(schema_manager)
+                DatabaseServiceImpl::new(&final_db_path).await
             );
-            if let Err(e) = svc.init_database() {
+            if let Err(e) = svc.init_database().await {
                 log::error!("初始化数据库失败: {}", e);
                 return;
             }
@@ -58,29 +55,25 @@ async fn main() {
     }
 }
 
-fn start_server(
+async fn start_server(
     config: &config::DatabaseConfig,
     db_path: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let schema_manager = Arc::new(
-        SchemaManager::new(db_path)
-    );
-    
     let service_layer: Arc<dyn DatabaseService> = Arc::new(
-        DatabaseServiceImpl::new(Arc::clone(&schema_manager))
+        DatabaseServiceImpl::new(db_path).await
     );
     
     let access_service = Arc::new(AccessService::new(Arc::clone(&service_layer)));
     
     let server = LaoflchDBServer::new(
-        schema_manager,
+        Arc::new(SchemaManager::new(db_path).await),
         service_layer,
         access_service,
-    );
+    ).await;
     
-    server.start(config)?;
+    server.start(config).await?;
     
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
 }

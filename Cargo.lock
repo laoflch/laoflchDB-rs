@@ -1019,6 +1019,7 @@ dependencies = [
 name = "laoflchdb_db_engine"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "prost",
  "prost-build",
@@ -1133,11 +1134,15 @@ dependencies = [
 name = "multi_table_rocksdb"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "bytes",
  "laoflchdb_db_engine",
  "prost",
  "prost-build",
  "rust-rocksdb",
+ "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

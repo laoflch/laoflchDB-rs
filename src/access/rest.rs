@@ -1,10 +1,10 @@
 use crate::service::DatabaseService;
-use crate::db_engine::pb::ColumnType;
+use laoflchdb_db_engine::pb::{ColumnType, ColumnMeta, Row};
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use axum::{
     Router,
-    routing::{get, post},
+    routing::{get, post, delete, put},
     extract::{Path, Query, State},
     response::Json,
 };
@@ -22,12 +22,24 @@ impl RestService {
     pub fn router(&self) -> Router {
         Router::new()
             .route("/health", get(health_handler))
+            // KV 操作
             .route("/api/v1/get", get(get_handler))
             .route("/api/v1/put", post(put_handler))
-            .route("/api/v1/delete", post(delete_handler))
+            .route("/api/v1/delete", post(delete_kv_handler))
+            // 表管理
             .route("/api/v1/tables", post(create_table_handler))
+            .route("/api/v1/tables/:table", delete(drop_table_handler))
             .route("/api/v1/schemas/:schema/tables", get(list_tables_handler))
+            .route("/api/v1/schemas/:schema/tables/:table/columns", get(list_table_cols_handler))
             .route("/api/v1/schemas/:schema/tables/:table", get(get_table_meta_handler))
+            // 行操作
+            .route("/api/v1/schemas/:schema/tables/:table/rows", post(add_row_handler))
+            .route("/api/v1/schemas/:schema/tables/:table/rows/:row_id", get(get_row_handler))
+            .route("/api/v1/schemas/:schema/tables/:table/rows/:row_id", delete(delete_row_handler))
+            .route("/api/v1/schemas/:schema/tables/:table/rows/:row_id", put(update_row_handler))
+            // 元数据查询
+            .route("/api/v1/schemas/:schema/meta", get(get_all_meta_handler))
+            .route("/api/v1/schemas/:schema/info", get(get_schema_info_handler))
             .with_state(self.service.clone())
     }
 
@@ -65,6 +77,7 @@ impl<T> ApiResponse<T> {
     }
 }
 
+// 请求和响应结构
 #[derive(Deserialize, Debug)]
 pub struct GetQuery {
     pub schema: Option<String>,
@@ -81,7 +94,7 @@ pub struct PutBody {
 }
 
 #[derive(Deserialize, Debug)]
-pub struct DeleteBody {
+pub struct DeleteKvBody {
     pub schema: Option<String>,
     pub table: String,
     pub key: String,
@@ -100,6 +113,30 @@ pub struct ColumnDefinition {
     pub column_type: String,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct DropTableBody {
+    pub schema: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct AddRowBody {
+    pub schema: Option<String>,
+    pub row: RestRow,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct UpdateRowBody {
+    pub schema: Option<String>,
+    pub row: RestRow,
+}
+
+#[derive(Deserialize, Debug, Serialize)]
+pub struct RestRow {
+    pub row_type: i32,
+    pub version: u32,
+    pub data: Vec<String>, // 每个字节数组编码为 hex 字符串
+}
+
 #[derive(Serialize)]
 pub struct CreateTableResponse {
     pub table_id: u64,
@@ -113,10 +150,29 @@ pub struct TableMetaResponse {
 }
 
 #[derive(Serialize)]
+pub struct ColumnMetaResponse {
+    pub table_id: u64,
+    pub column_id: u64,
+    pub column_name: String,
+    pub column_type: i32,
+}
+
+#[derive(Serialize)]
 pub struct GetResponse {
     pub value: Option<Vec<u8>>,
 }
 
+#[derive(Serialize)]
+pub struct AddRowResponse {
+    pub row_id: u64,
+}
+
+#[derive(Serialize)]
+pub struct MetaJsonResponse {
+    pub json: String,
+}
+
+// 辅助函数
 fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
     if s.len() % 2 == 0 && s.chars().all(|c| c.is_ascii_hexdigit()) {
         (0..s.len())
@@ -128,6 +184,42 @@ fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
     }
 }
 
+fn encode_hex(data: &[u8]) -> String {
+    data.iter()
+        .map(|b| format!("{:02x}", b))
+        .collect()
+}
+
+fn convert_rest_row_to_db_row(rest_row: &RestRow) -> Result<Row, String> {
+    Ok(Row {
+        row_type: rest_row.row_type,
+        version: rest_row.version,
+        data: rest_row.data.iter()
+            .map(|s| decode_hex(s))
+            .collect::<Result<Vec<_>, String>>()?,
+    })
+}
+
+fn convert_db_row_to_rest_row(db_row: &Row) -> RestRow {
+    RestRow {
+        row_type: db_row.row_type,
+        version: db_row.version,
+        data: db_row.data.iter()
+            .map(|d| encode_hex(d))
+            .collect(),
+    }
+}
+
+fn convert_column_meta_to_rest(meta: &ColumnMeta) -> ColumnMetaResponse {
+    ColumnMetaResponse {
+        table_id: meta.table_id,
+        column_id: meta.column_id,
+        column_name: meta.column_name.clone(),
+        column_type: meta.column_type,
+    }
+}
+
+// 处理函数
 async fn health_handler() -> Json<ApiResponse<&'static str>> {
     Json(ApiResponse::success("OK"))
 }
@@ -142,7 +234,7 @@ async fn get_handler(
         Err(e) => return Json(ApiResponse::error(e)),
     };
     
-    match service.get(&schema, &query.table, &key) {
+    match service.get(&schema, &query.table, &key).await {
         Ok(value) => Json(ApiResponse::success(GetResponse { value })),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
@@ -162,15 +254,15 @@ async fn put_handler(
         Err(e) => return Json(ApiResponse::error(e)),
     };
     
-    match service.put(&schema, &body.table, &key, &value) {
+    match service.put(&schema, &body.table, &key, &value).await {
         Ok(()) => Json(ApiResponse::success("OK")),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
 }
 
-async fn delete_handler(
+async fn delete_kv_handler(
     State(service): State<Arc<dyn DatabaseService>>,
-    Json(body): Json<DeleteBody>,
+    Json(body): Json<DeleteKvBody>,
 ) -> Json<ApiResponse<&'static str>> {
     let schema = body.schema.unwrap_or_else(|| "sys".to_string());
     let key = match decode_hex(&body.key) {
@@ -178,7 +270,7 @@ async fn delete_handler(
         Err(e) => return Json(ApiResponse::error(e)),
     };
     
-    match service.delete(&schema, &body.table, &key) {
+    match service.delete(&schema, &body.table, &key).await {
         Ok(()) => Json(ApiResponse::success("OK")),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
@@ -207,8 +299,18 @@ async fn create_table_handler(
         })
         .collect();
     
-    match service.create_table(&schema, &body.table_name, &columns) {
+    match service.create_table(&schema, &body.table_name, &columns).await {
         Ok(table_id) => Json(ApiResponse::success(CreateTableResponse { table_id })),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+async fn drop_table_handler(
+    State(service): State<Arc<dyn DatabaseService>>,
+    Path((schema, table)): Path<(String, String)>,
+) -> Json<ApiResponse<&'static str>> {
+    match service.drop_table(&schema, &table).await {
+        Ok(()) => Json(ApiResponse::success("OK")),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
 }
@@ -217,8 +319,23 @@ async fn list_tables_handler(
     State(service): State<Arc<dyn DatabaseService>>,
     Path(schema): Path<String>,
 ) -> Json<ApiResponse<Vec<String>>> {
-    match service.list_tables(&schema) {
+    match service.list_tables(&schema).await {
         Ok(tables) => Json(ApiResponse::success(tables)),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+async fn list_table_cols_handler(
+    State(service): State<Arc<dyn DatabaseService>>,
+    Path((schema, table)): Path<(String, String)>,
+) -> Json<ApiResponse<Vec<ColumnMetaResponse>>> {
+    match service.list_table_cols(&schema, &table).await {
+        Ok(columns) => {
+            let responses: Vec<_> = columns.iter()
+                .map(convert_column_meta_to_rest)
+                .collect();
+            Json(ApiResponse::success(responses))
+        }
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
 }
@@ -227,7 +344,7 @@ async fn get_table_meta_handler(
     State(service): State<Arc<dyn DatabaseService>>,
     Path((schema, table)): Path<(String, String)>,
 ) -> Json<ApiResponse<TableMetaResponse>> {
-    match service.get_table_meta(&schema, &table) {
+    match service.get_table_meta(&schema, &table).await {
         Ok(Some(meta)) => {
             let response = TableMetaResponse {
                 table_id: meta.table_id,
@@ -235,8 +352,81 @@ async fn get_table_meta_handler(
                 column_count: meta.column_count,
             };
             Json(ApiResponse::success(response))
-        },
+        }
         Ok(None) => Json(ApiResponse::error("Table not found".to_string())),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+async fn add_row_handler(
+    State(service): State<Arc<dyn DatabaseService>>,
+    Path((schema, table)): Path<(String, String)>,
+    Json(body): Json<AddRowBody>,
+) -> Json<ApiResponse<AddRowResponse>> {
+    let db_row = match convert_rest_row_to_db_row(&body.row) {
+        Ok(row) => row,
+        Err(e) => return Json(ApiResponse::error(e)),
+    };
+    
+    match service.add_row(&schema, &table, &db_row).await {
+        Ok(row_id) => Json(ApiResponse::success(AddRowResponse { row_id })),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+async fn get_row_handler(
+    State(service): State<Arc<dyn DatabaseService>>,
+    Path((schema, table, row_id)): Path<(String, String, u64)>,
+) -> Json<ApiResponse<RestRow>> {
+    match service.get_row(&schema, &table, row_id).await {
+        Ok(Some(row)) => Json(ApiResponse::success(convert_db_row_to_rest_row(&row))),
+        Ok(None) => Json(ApiResponse::error("Row not found".to_string())),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+async fn delete_row_handler(
+    State(service): State<Arc<dyn DatabaseService>>,
+    Path((schema, table, row_id)): Path<(String, String, u64)>,
+) -> Json<ApiResponse<&'static str>> {
+    match service.delete_row(&schema, &table, row_id).await {
+        Ok(()) => Json(ApiResponse::success("OK")),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+async fn update_row_handler(
+    State(service): State<Arc<dyn DatabaseService>>,
+    Path((schema, table, row_id)): Path<(String, String, u64)>,
+    Json(body): Json<UpdateRowBody>,
+) -> Json<ApiResponse<&'static str>> {
+    let db_row = match convert_rest_row_to_db_row(&body.row) {
+        Ok(row) => row,
+        Err(e) => return Json(ApiResponse::error(e)),
+    };
+    
+    match service.update_row(&schema, &table, row_id, &db_row).await {
+        Ok(()) => Json(ApiResponse::success("OK")),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+async fn get_all_meta_handler(
+    State(service): State<Arc<dyn DatabaseService>>,
+    Path(schema): Path<String>,
+) -> Json<ApiResponse<MetaJsonResponse>> {
+    match service.get_all_meta(&schema).await {
+        Ok(json) => Json(ApiResponse::success(MetaJsonResponse { json })),
+        Err(e) => Json(ApiResponse::error(e.to_string())),
+    }
+}
+
+async fn get_schema_info_handler(
+    State(service): State<Arc<dyn DatabaseService>>,
+    Path(schema): Path<String>,
+) -> Json<ApiResponse<MetaJsonResponse>> {
+    match service.get_schema_info(&schema).await {
+        Ok(json) => Json(ApiResponse::success(MetaJsonResponse { json })),
         Err(e) => Json(ApiResponse::error(e.to_string())),
     }
 }

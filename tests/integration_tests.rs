@@ -1,0 +1,233 @@
+use laoflchDB_rust::access::RestService;
+use laoflchDB_rust::{DatabaseService, DatabaseServiceImpl};
+use std::sync::Arc;
+use tokio::net::TcpListener;
+
+async fn create_test_service() -> Arc<dyn DatabaseService> {
+    let temp_dir = std::env::temp_dir();
+    let db_path = temp_dir.join(format!("test_integration_{}", uuid::Uuid::new_v4()));
+    let db_path_str = db_path.to_str().unwrap();
+    
+    let service = DatabaseServiceImpl::new(db_path_str).await;
+    service.init_database().await.unwrap();
+    Arc::new(service)
+}
+
+async fn setup_rest_service() -> (RestService, Arc<dyn DatabaseService>) {
+    let service = create_test_service().await;
+    let rest_service = RestService::new(Arc::clone(&service));
+    (rest_service, service)
+}
+
+#[tokio::test]
+async fn test_integration_full_workflow() {
+    let (rest_service, _service) = setup_rest_service().await;
+    let app = rest_service.router();
+    
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    
+    let client = reqwest::Client::new();
+    
+    // 1. 健康检查
+    let res = client.get(format!("http://{}/health", addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    
+    // 2. 创建表
+    let create_table_body = serde_json::json!({
+        "schema": "sys",
+        "table_name": "users",
+        "columns": [
+            {"name": "id", "column_type": "INT64"},
+            {"name": "name", "column_type": "STRING"},
+            {"name": "email", "column_type": "STRING"}
+        ]
+    });
+    
+    let res = client.post(format!("http://{}/api/v1/tables", addr))
+        .json(&create_table_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.text().await.unwrap();
+    assert!(body.contains("\"success\":true"));
+    
+    // 3. 列出表
+    let res = client.get(format!("http://{}/api/v1/schemas/sys/tables", addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.text().await.unwrap();
+    assert!(body.contains("users"));
+    
+    // 4. 获取表元数据
+    let res = client.get(format!("http://{}/api/v1/schemas/sys/tables/users", addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.text().await.unwrap();
+    assert!(body.contains("\"table_name\":\"users\""));
+    assert!(body.contains("\"column_count\":3"));
+    
+    // 5. 插入数据
+    let put_body = serde_json::json!({
+        "schema": "sys",
+        "table": "users",
+        "key": "user1",
+        "value": "{\"id\":1,\"name\":\"Alice\",\"email\":\"alice@example.com\"}"
+    });
+    
+    let res = client.post(format!("http://{}/api/v1/put", addr))
+        .json(&put_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    
+    // 6. 读取数据
+    let res = client.get(format!("http://{}/api/v1/get", addr))
+        .query(&[("schema", "sys"), ("table", "users"), ("key", "user1")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.text().await.unwrap();
+    assert!(body.contains("\"success\":true"));
+    assert!(body.contains("\"value\""));
+    
+    // 7. 更新数据
+    let update_body = serde_json::json!({
+        "schema": "sys",
+        "table": "users",
+        "key": "user1",
+        "value": "{\"id\":1,\"name\":\"Alice Updated\",\"email\":\"alice.updated@example.com\"}"
+    });
+    
+    let res = client.post(format!("http://{}/api/v1/put", addr))
+        .json(&update_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    
+    // 8. 再次读取验证更新
+    let res = client.get(format!("http://{}/api/v1/get", addr))
+        .query(&[("schema", "sys"), ("table", "users"), ("key", "user1")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    
+    // 9. 删除数据
+    let delete_body = serde_json::json!({
+        "schema": "sys",
+        "table": "users",
+        "key": "user1"
+    });
+    
+    let res = client.post(format!("http://{}/api/v1/delete", addr))
+        .json(&delete_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    
+    // 10. 验证删除
+    let res = client.get(format!("http://{}/api/v1/get", addr))
+        .query(&[("schema", "sys"), ("table", "users"), ("key", "user1")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.text().await.unwrap();
+    assert!(body.contains("\"value\":null"));
+}
+
+#[tokio::test]
+async fn test_integration_multiple_tables() {
+    let (rest_service, _service) = setup_rest_service().await;
+    let app = rest_service.router();
+    
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    
+    let client = reqwest::Client::new();
+    
+    // 创建多个表
+    for i in 1..=3 {
+        let table_name = format!("table_{}", i);
+        let create_table_body = serde_json::json!({
+            "schema": "sys",
+            "table_name": table_name,
+            "columns": [
+                {"name": "id", "column_type": "INT64"},
+                {"name": "data", "column_type": "STRING"}
+            ]
+        });
+        
+        let res = client.post(format!("http://{}/api/v1/tables", addr))
+            .json(&create_table_body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+    
+    // 验证所有表都创建了
+    let res = client.get(format!("http://{}/api/v1/schemas/sys/tables", addr))
+        .send()
+        .await
+        .unwrap();
+    let body = res.text().await.unwrap();
+    assert!(body.contains("table_1"));
+    assert!(body.contains("table_2"));
+    assert!(body.contains("table_3"));
+}
+
+#[tokio::test]
+async fn test_integration_error_handling() {
+    let (rest_service, _service) = setup_rest_service().await;
+    let app = rest_service.router();
+    
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    
+    let client = reqwest::Client::new();
+    
+    // 尝试从不存在的表读取数据
+    let res = client.get(format!("http://{}/api/v1/get", addr))
+        .query(&[("schema", "sys"), ("table", "nonexistent_table"), ("key", "test")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.text().await.unwrap();
+    assert!(body.contains("\"success\":false"));
+    
+    // 尝试获取不存在的表元数据
+    let res = client.get(format!("http://{}/api/v1/schemas/sys/tables/nonexistent_table", addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = res.text().await.unwrap();
+    assert!(body.contains("\"success\":false"));
+}

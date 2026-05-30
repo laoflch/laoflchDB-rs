@@ -3,11 +3,28 @@ syntax = "proto3";
 package laoflchdb.rpc;
 
 service LaoflchDb {
+  // KV 操作
   rpc Get(GetRequest) returns (GetResponse);
   rpc Put(PutRequest) returns (PutResponse);
   rpc Delete(DeleteRequest) returns (DeleteResponse);
+  
+  // 表管理
   rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
+  rpc DropTable(DropTableRequest) returns (DropTableResponse);
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc ListTableCols(ListTableColsRequest) returns (ListTableColsResponse);
+  
+  // 行操作
+  rpc AddRow(AddRowRequest) returns (AddRowResponse);
+  rpc GetRow(GetRowRequest) returns (GetRowResponse);
+  rpc DeleteRow(DeleteRowRequest) returns (DeleteRowResponse);
+  rpc UpdateRow(UpdateRowRequest) returns (UpdateRowResponse);
+  
+  // 元数据查询
+  rpc GetAllMeta(GetAllMetaRequest) returns (GetAllMetaResponse);
+  rpc GetSchemaInfo(GetSchemaInfoRequest) returns (GetSchemaInfoResponse);
+  
+  // 旧方法（保留兼容）
   rpc GetTableMeta(GetTableMetaRequest) returns (GetTableMetaResponse);
 }
 
@@ -84,4 +101,112 @@ message GetTableMetaResponse {
   string table_name = 3;
   uint32 column_count = 4;
   string message = 5;
+}
+
+// 新添加的消息
+message DropTableRequest {
+  string schema = 1;
+  string table_name = 2;
+}
+
+message DropTableResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListTableColsRequest {
+  string schema = 1;
+  string table_name = 2;
+}
+
+message ListTableColsResponse {
+  bool success = 1;
+  repeated ColumnMeta columns = 2;
+  string message = 3;
+}
+
+message AddRowRequest {
+  string schema = 1;
+  string table_name = 2;
+  Row row = 3;
+}
+
+message AddRowResponse {
+  bool success = 1;
+  uint64 row_id = 2;
+  string message = 3;
+}
+
+message GetRowRequest {
+  string schema = 1;
+  string table_name = 2;
+  uint64 row_id = 3;
+}
+
+message GetRowResponse {
+  bool success = 1;
+  Row row = 2;
+  string message = 3;
+}
+
+message DeleteRowRequest {
+  string schema = 1;
+  string table_name = 2;
+  uint64 row_id = 3;
+}
+
+message DeleteRowResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message UpdateRowRequest {
+  string schema = 1;
+  string table_name = 2;
+  uint64 row_id = 3;
+  Row row = 4;
+}
+
+message UpdateRowResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetAllMetaRequest {
+  string schema = 1;
+}
+
+message GetAllMetaResponse {
+  bool success = 1;
+  string meta_json = 2;
+  string message = 3;
+}
+
+message GetSchemaInfoRequest {
+  string schema = 1;
+}
+
+message GetSchemaInfoResponse {
+  bool success = 1;
+  string info_json = 2;
+  string message = 3;
+}
+
+// 引用的类型定义
+enum RowType {
+    ROW_TYPE_NORMAL = 0;
+    ROW_TYPE_RAW = 1;
+}
+
+message Row {
+    RowType row_type = 1;
+    uint32 version = 2;
+    repeated bytes data = 3;
+}
+
+message ColumnMeta {
+  uint64 table_id = 1;
+  uint64 column_id = 2;
+  string column_name = 3;
+  int32 column_type = 4;
 }

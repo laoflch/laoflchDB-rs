@@ -29,7 +29,12 @@ def main():
         return 1
     print("    ✓ 编译完成")
 
-    print("\n[2/5] 启动 laoflchDB gRPC 服务后台进程...")
+    print("\n[2/5] 初始化数据库...")
+    subprocess.run([SERVER_BIN, "init", "--db-path", TEST_DB],
+                   cwd="..", capture_output=True)
+    print("    ✓ 数据库初始化完成")
+
+    print("\n[3/5] 启动 laoflchDB gRPC 服务后台进程...")
     cmd = [
         SERVER_BIN,
         "start",
@@ -47,12 +52,12 @@ def main():
     print(f"    ✓ 服务已启动 PID={server_proc.pid} 监听 {TEST_ADDR}")
 
     try:
-        print("\n[3/5] 连接 gRPC 客户端...")
+        print("\n[4/5] 连接 gRPC 客户端...")
         channel = grpc.insecure_channel(TEST_ADDR)
         stub = rpc_pb2_grpc.LaoflchDbStub(channel)
         print("    ✓ gRPC channel 已连接")
 
-        print("\n[4/5] 通过 gRPC 写入多笔测试数据到 user 表...")
+        print("\n[5/5] 通过 gRPC 写入多笔测试数据到 user 表...")
         test_data = [
             (b"user_grpc_001", b'{"user_id": 1001, "password": "grpc_pass_001"}'),
             (b"user_grpc_002", b'{"user_id": 1002, "password": "grpc_pass_002"}'),
