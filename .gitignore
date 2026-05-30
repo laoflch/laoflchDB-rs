@@ -1,1 +1,21 @@
-/target
+# 编译产物
+target/
+*.o
+*.so
+*.a
+*.bin
+ldb
+
+# 本地 GCC 目录
+gcc13/
+
+# 二进制可执行文件
+*.exe
+lto-dump
+cc1
+cc1plus
+lto1
+
+# 临时文件、缓存
+*.log
+*.tmp
