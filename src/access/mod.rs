@@ -18,40 +18,122 @@ use crate::pb::rpc::{
     ColumnMeta as RpcColumnMeta,
     Row as RpcRow,
 };
+use crate::config::PermissionAction;
 use laoflchdb_db_engine::pb::{ColumnMeta, Row};
 use laoflchdb_db_engine::pb::ColumnType;
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
 pub mod rest;
+pub mod permission;
 pub use rest::RestService;
+pub use permission::{PermissionChecker, PermissionContext, PermissionCheckResult};
 
 #[derive(Clone)]
 pub struct GrpcService {
     service: Arc<dyn DatabaseService>,
+    permission_checker: Option<Arc<PermissionChecker>>,
+    service_id: String,
 }
 
 impl GrpcService {
     pub fn new(service: Arc<dyn DatabaseService>) -> Self {
-        Self { service }
+        Self {
+            service,
+            permission_checker: None,
+            service_id: "default".to_string(),
+        }
+    }
+
+    pub fn with_permissions(
+        service: Arc<dyn DatabaseService>,
+        permission_checker: Arc<PermissionChecker>,
+        service_id: String,
+    ) -> Self {
+        Self {
+            service,
+            permission_checker: Some(permission_checker),
+            service_id,
+        }
+    }
+
+    fn check_permission(&self, schema: &str, table: Option<&str>, action: PermissionAction) -> Result<(), Status> {
+        if let Some(ref checker) = self.permission_checker {
+            let context = PermissionContext {
+                schema: schema.to_string(),
+                table: table.map(String::from),
+                action,
+            };
+            let action_name = context.action.to_string();
+            let result = checker.check_permission(&self.service_id, &context);
+            if !result.allowed {
+                log::warn!(
+                    "Permission denied for service '{}' on action '{}': {}",
+                    self.service_id,
+                    action_name,
+                    result.reason
+                );
+                return Err(Status::permission_denied(result.reason));
+            }
+        }
+        Ok(())
     }
 }
 
 pub struct AccessService {
     service: Arc<dyn DatabaseService>,
+    permission_checker: Option<Arc<PermissionChecker>>,
 }
 
 impl AccessService {
     pub fn new(service: Arc<dyn DatabaseService>) -> Self {
-        Self { service }
+        Self {
+            service,
+            permission_checker: None,
+        }
     }
 
-    pub fn get_grpc_service(&self) -> GrpcService {
-        GrpcService::new(Arc::clone(&self.service))
+    pub fn with_permissions(service: Arc<dyn DatabaseService>, permission_checker: Arc<PermissionChecker>) -> Self {
+        Self {
+            service,
+            permission_checker: Some(permission_checker),
+        }
     }
 
-    pub fn get_rest_service(&self) -> RestService {
-        RestService::new(Arc::clone(&self.service))
+    pub fn get_grpc_service(&self, service_id: Option<String>) -> GrpcService {
+        let sid = service_id.unwrap_or_else(|| "default".to_string());
+        if let Some(ref checker) = self.permission_checker {
+            if let Some(perm) = checker.get_service_policy(&sid) {
+                return GrpcService::with_permissions(
+                    Arc::clone(&self.service),
+                    Arc::clone(checker),
+                    perm.service_id.clone(),
+                );
+            }
+        }
+        GrpcService::with_permissions(
+            Arc::clone(&self.service),
+            Arc::new(PermissionChecker::new(true)),
+            sid,
+        )
+    }
+
+    pub fn get_rest_service(&self, service_id: Option<String>) -> RestService {
+        let sid = service_id.unwrap_or_else(|| "default".to_string());
+        if let Some(ref checker) = self.permission_checker {
+            if let Some(perm) = checker.get_service_policy(&sid) {
+                return RestService::with_permissions(
+                    Arc::clone(&self.service),
+                    Arc::clone(checker),
+                    perm.service_id.clone(),
+                );
+            }
+        }
+        RestService::with_permissions(
+            Arc::clone(&self.service),
+            Arc::new(PermissionChecker::new(true)),
+            sid,
+        )
     }
 
     pub fn get_service(&self) -> Arc<dyn DatabaseService> {
@@ -91,6 +173,8 @@ impl LaoflchDb for GrpcService {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
         
+        self.check_permission(schema, Some(&req.table), PermissionAction::Get)?;
+        
         match self.service.get(schema, &req.table, &req.key).await {
             Ok(value) => Ok(Response::new(GetResponse {
                 success: true,
@@ -105,6 +189,8 @@ impl LaoflchDb for GrpcService {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
         
+        self.check_permission(schema, Some(&req.table), PermissionAction::Put)?;
+        
         match self.service.put(schema, &req.table, &req.key, &req.value).await {
             Ok(()) => Ok(Response::new(PutResponse { 
                 success: true,
@@ -117,6 +203,8 @@ impl LaoflchDb for GrpcService {
     async fn delete(&self, request: Request<DeleteRequest>) -> Result<Response<DeleteResponse>, Status> {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        
+        self.check_permission(schema, Some(&req.table), PermissionAction::Delete)?;
         
         match self.service.delete(schema, &req.table, &req.key).await {
             Ok(()) => Ok(Response::new(DeleteResponse { 
@@ -131,6 +219,8 @@ impl LaoflchDb for GrpcService {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
         let table_name = req.table_name.as_str();
+
+        self.check_permission(schema, Some(table_name), PermissionAction::CreateTable)?;
 
         let columns: Vec<(u32, String, ColumnType)> = req.columns
             .into_iter()
@@ -160,6 +250,8 @@ impl LaoflchDb for GrpcService {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
         
+        self.check_permission(schema, Some(&req.table_name), PermissionAction::DropTable)?;
+        
         match self.service.drop_table(schema, &req.table_name).await {
             Ok(()) => Ok(Response::new(DropTableResponse {
                 success: true,
@@ -172,6 +264,8 @@ impl LaoflchDb for GrpcService {
     async fn list_tables(&self, request: Request<ListTablesRequest>) -> Result<Response<ListTablesResponse>, Status> {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        
+        self.check_permission(schema, None, PermissionAction::ListTables)?;
         
         match self.service.list_tables(schema).await {
             Ok(tables) => Ok(Response::new(ListTablesResponse {
@@ -186,6 +280,8 @@ impl LaoflchDb for GrpcService {
     async fn list_table_cols(&self, request: Request<ListTableColsRequest>) -> Result<Response<ListTableColsResponse>, Status> {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        
+        self.check_permission(schema, Some(&req.table_name), PermissionAction::ListTableCols)?;
         
         match self.service.list_table_cols(schema, &req.table_name).await {
             Ok(columns) => Ok(Response::new(ListTableColsResponse {
@@ -203,6 +299,8 @@ impl LaoflchDb for GrpcService {
         let row = req.row.ok_or_else(|| Status::invalid_argument("Row is required"))?;
         let db_row = convert_row_from_rpc(row);
         
+        self.check_permission(schema, Some(&req.table_name), PermissionAction::AddRow)?;
+        
         match self.service.add_row(schema, &req.table_name, &db_row).await {
             Ok(row_id) => Ok(Response::new(AddRowResponse {
                 success: true,
@@ -216,6 +314,8 @@ impl LaoflchDb for GrpcService {
     async fn get_row(&self, request: Request<GetRowRequest>) -> Result<Response<GetRowResponse>, Status> {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        
+        self.check_permission(schema, Some(&req.table_name), PermissionAction::GetRow)?;
         
         match self.service.get_row(schema, &req.table_name, req.row_id).await {
             Ok(Some(row)) => Ok(Response::new(GetRowResponse {
@@ -236,6 +336,8 @@ impl LaoflchDb for GrpcService {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
         
+        self.check_permission(schema, Some(&req.table_name), PermissionAction::DeleteRow)?;
+        
         match self.service.delete_row(schema, &req.table_name, req.row_id).await {
             Ok(()) => Ok(Response::new(DeleteRowResponse {
                 success: true,
@@ -251,6 +353,8 @@ impl LaoflchDb for GrpcService {
         let row = req.row.ok_or_else(|| Status::invalid_argument("Row is required"))?;
         let db_row = convert_row_from_rpc(row);
         
+        self.check_permission(schema, Some(&req.table_name), PermissionAction::UpdateRow)?;
+        
         match self.service.update_row(schema, &req.table_name, req.row_id, &db_row).await {
             Ok(()) => Ok(Response::new(UpdateRowResponse {
                 success: true,
@@ -263,6 +367,8 @@ impl LaoflchDb for GrpcService {
     async fn get_all_meta(&self, request: Request<GetAllMetaRequest>) -> Result<Response<GetAllMetaResponse>, Status> {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        
+        self.check_permission(schema, None, PermissionAction::GetAllMeta)?;
         
         match self.service.get_all_meta(schema).await {
             Ok(meta_json) => Ok(Response::new(GetAllMetaResponse {
@@ -278,6 +384,8 @@ impl LaoflchDb for GrpcService {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
         
+        self.check_permission(schema, None, PermissionAction::GetSchemaInfo)?;
+        
         match self.service.get_schema_info(schema).await {
             Ok(info_json) => Ok(Response::new(GetSchemaInfoResponse {
                 success: true,
@@ -291,6 +399,8 @@ impl LaoflchDb for GrpcService {
     async fn get_table_meta(&self, request: Request<GetTableMetaRequest>) -> Result<Response<GetTableMetaResponse>, Status> {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        
+        self.check_permission(schema, Some(&req.table_name), PermissionAction::GetTableMeta)?;
         
         match self.service.get_table_meta(schema, &req.table_name).await {
             Ok(Some(meta)) => Ok(Response::new(GetTableMetaResponse {

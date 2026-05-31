@@ -1,6 +1,6 @@
 use crate::service::SchemaManager;
 use crate::service::DatabaseService;
-use crate::access::AccessService;
+use crate::access::{AccessService, PermissionChecker};
 use crate::config::DatabaseConfig;
 use std::sync::Arc;
 use log::info;
@@ -10,6 +10,7 @@ pub struct LaoflchDBServer {
     schema_manager: Arc<SchemaManager>,
     service: Arc<dyn DatabaseService>,
     access_service: Arc<AccessService>,
+    permission_checker: Arc<PermissionChecker>,
 }
 
 impl LaoflchDBServer {
@@ -17,11 +18,27 @@ impl LaoflchDBServer {
         schema_manager: Arc<SchemaManager>,
         service: Arc<dyn DatabaseService>,
         access_service: Arc<AccessService>,
+        config: &DatabaseConfig,
     ) -> Self {
+        let global_default = config.get_global_default_policy();
+        let mut permission_checker = PermissionChecker::new(global_default);
+        
+        if let Some(ref permissions) = config.permissions {
+            for perm in permissions {
+                permission_checker.add_service_permission(perm.clone());
+            }
+        }
+        
+        let access_service = AccessService::with_permissions(
+            service.clone(),
+            Arc::new(permission_checker.clone()),
+        );
+        
         Self {
             schema_manager,
             service,
-            access_service,
+            access_service: Arc::new(access_service),
+            permission_checker: Arc::new(permission_checker),
         }
     }
 
@@ -38,7 +55,7 @@ impl LaoflchDBServer {
             let addr = config.addr.clone();
             
             info!("启动 gRPC 服务: {}", addr);
-            let grpc_service: crate::GrpcService = self.access_service.get_grpc_service();
+            let grpc_service: crate::GrpcService = self.access_service.get_grpc_service(None);
             
             tokio::spawn(async move {
                 if let Err(e) = start_grpc_server(grpc_service, &addr).await {
@@ -53,11 +70,12 @@ impl LaoflchDBServer {
 
                 let addr = protocol_config.addr.as_ref().unwrap_or(&config.addr);
                 let protocol = &protocol_config.protocol;
+                let service_id = protocol_config.service_id.clone();
 
                 match protocol.as_str() {
                     "grpc" => {
-                        info!("启动 gRPC 服务: {}", addr);
-                        let grpc_service = self.access_service.get_grpc_service();
+                        info!("启动 gRPC 服务: {} (service_id: {:?})", addr, service_id);
+                        let grpc_service = self.access_service.get_grpc_service(service_id);
                         let addr_owned = addr.to_string();
                         
                         tokio::spawn(async move {
@@ -67,8 +85,8 @@ impl LaoflchDBServer {
                         });
                     }
                     "rest" | "http" => {
-                        info!("启动 REST 服务: {}", addr);
-                        let rest_service = self.access_service.get_rest_service();
+                        info!("启动 REST 服务: {} (service_id: {:?})", addr, service_id);
+                        let rest_service = self.access_service.get_rest_service(service_id);
                         let addr_owned = addr.to_string();
                         
                         tokio::spawn(async move {

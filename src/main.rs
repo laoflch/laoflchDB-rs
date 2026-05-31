@@ -63,12 +63,11 @@ async fn start_server(
         DatabaseServiceImpl::new(db_path).await
     );
     
-    let access_service = Arc::new(AccessService::new(Arc::clone(&service_layer)));
-    
     let server = LaoflchDBServer::new(
         Arc::new(SchemaManager::new(db_path).await),
         service_layer,
-        access_service,
+        Arc::new(AccessService::new(Arc::new(DatabaseServiceImpl::new(db_path).await))),
+        config,
     ).await;
     
     server.start(config).await?;

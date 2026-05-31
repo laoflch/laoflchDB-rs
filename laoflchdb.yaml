@@ -6,14 +6,60 @@ db_path: ./laoflch_db_data
 # 日志级别: trace, debug, info, warn, error
 log_level: info
 
+# 默认权限策略: allow (允许) 或 deny (拒绝)
+# 当服务没有特定权限配置时使用此策略
+default_policy: allow
+
 # 访问协议配置
 access_protocols:
-  # gRPC 服务配置
+  # gRPC 管理服务
   - protocol: grpc
     enabled: true
     addr: 127.0.0.1:19777
+    service_id: grpc_admin
 
-  # REST 服务配置
+  # REST 管理服务
   - protocol: rest
     enabled: true
     addr: 127.0.0.1:8080
+    service_id: rest_admin
+
+# 权限配置（每个 service_id 对应一个独立服务实例）
+permissions:
+  # gRPC 管理服务 - 允许所有操作
+  - service_id: grpc_admin
+    default_policy: allow
+    allowed_actions:
+      - get
+      - put
+      - delete
+      - create_table
+      - drop_table
+      - list_tables
+      - list_table_cols
+      - add_row
+      - get_row
+      - update_row
+      - delete_row
+      - get_all_meta
+      - get_schema_info
+      - get_table_meta
+
+  # REST 管理服务 - 允许所有操作
+  - service_id: rest_admin
+    default_policy: allow
+    allowed_actions:
+      - get
+      - put
+      - delete
+      - create_table
+      - drop_table
+      - list_tables
+      - list_table_cols
+      - add_row
+      - get_row
+      - update_row
+      - delete_row
+      - get_all_meta
+      - get_schema_info
+      - get_table_meta

@@ -684,17 +684,13 @@ python3 tests_python/test_e2e_rest.py
 - ✅ 所有 Rust 单元测试通过
 - ✅ 所有 Rust 集成测试通过
 - ✅ Python REST E2E 测试 10 项全部通过
-- ✅ Python gRPC E2E 测试全部通过
-
----
+- ✅ Python gRPC E2E 测试全部通过---
 
 ## 16. 测试
 
 ### 测试套件
 
-项目包含完整的测试套件，覆盖单元测试、集成测试和端到端测试：
-
-| 测试类型 | 位置 | 说明 |
+项目包含完整的测试套件，覆盖单元测试、集成测试和端到端测试：| 测试类型 | 位置 | 说明 |
 |---------|------|------|
 | Rust 单元测试 | [tests/](tests/) | 基础功能和 API 测试 |
 | Python E2E 测试 | [tests_python/](tests_python/) | gRPC 和 REST 端到端测试 |

@@ -1,0 +1,25 @@
+db_path: ./test_add_remove_db
+log_level: info
+default_policy: allow
+
+access_protocols:
+  - protocol: grpc
+    enabled: true
+    addr: 127.0.0.1:19870
+    service_id: admin_grpc
+
+  - protocol: rest
+    enabled: true
+    addr: 127.0.0.1:8080
+    service_id: admin_rest
+
+permissions:
+  - service_id: admin_grpc
+    default_policy: allow
+    allowed_actions:
+      - '*'
+
+  - service_id: admin_rest
+    default_policy: allow
+    allowed_actions:
+      - '*'

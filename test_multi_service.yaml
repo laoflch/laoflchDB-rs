@@ -1,0 +1,63 @@
+db_path: ./test_add_remove_db
+log_level: info
+default_policy: deny
+
+access_protocols:
+  - protocol: grpc
+    enabled: true
+    addr: 127.0.0.1:19870
+    service_id: admin_grpc
+
+  - protocol: grpc
+    enabled: true
+    addr: 127.0.0.1:19871
+    service_id: readonly_grpc
+
+  - protocol: rest
+    enabled: true
+    addr: 127.0.0.1:8080
+    service_id: admin_rest
+
+  - protocol: rest
+    enabled: true
+    addr: 127.0.0.1:8081
+    service_id: readonly_rest
+
+permissions:
+  - service_id: admin_grpc
+    default_policy: allow
+    allowed_actions:
+      - get
+      - put
+      - delete
+      - create_table
+      - list_tables
+
+  - service_id: readonly_grpc
+    default_policy: deny
+    allowed_actions:
+      - get
+      - list_tables
+    denied_actions:
+      - put
+      - delete
+      - create_table
+
+  - service_id: admin_rest
+    default_policy: allow
+    allowed_actions:
+      - get
+      - put
+      - delete
+      - create_table
+      - list_tables
+
+  - service_id: readonly_rest
+    default_policy: deny
+    allowed_actions:
+      - get
+      - list_tables
+    denied_actions:
+      - put
+      - delete
+      - create_table
