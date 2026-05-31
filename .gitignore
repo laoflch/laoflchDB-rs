@@ -10,6 +10,7 @@ ldb
 gcc13/
 # 本地数据库文件
 laoflch_db_data/
+test_*/
 # 二进制可执行文件
 *.exe
 lto-dump
@@ -20,3 +21,12 @@ lto1
 # 临时文件、缓存
 *.log
 *.tmp
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 生成的 Python protobuf 文件
+tests_python/rpc_pb2.py
+tests_python/rpc_pb2_grpc.py
+tests_python/rpc.proto

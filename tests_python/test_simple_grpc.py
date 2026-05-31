@@ -8,8 +8,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rpc_pb2
 import rpc_pb2_grpc
 
-print("连接 gRPC 服务 19870...")
-channel = grpc.insecure_channel('127.0.0.1:19870')
+print("连接 gRPC 服务 19777...")
+channel = grpc.insecure_channel('127.0.0.1:19777')
 stub = rpc_pb2_grpc.LaoflchDbStub(channel)
 
 print("创建表...")
@@ -17,7 +17,7 @@ req = rpc_pb2.CreateTableRequest(
     schema="sys",
     table_name="test_table",
     columns=[
-        rpc_pb2.ColumnMeta(name="id", column_type=2),
+        rpc_pb2.ColumnDef(name="id", column_type=2),
     ]
 )
 try:
@@ -46,7 +46,7 @@ try:
         table="test_table",
         key=b"key1"
     ), timeout=3)
-    print(f"✓ 读取数据成功: found={get_resp.found}, value={get_resp.value}")
+    print(f"✓ 读取数据成功: success={get_resp.success}, value={get_resp.value}")
 except Exception as e:
     print(f"✗ 读取数据失败: {e}")
 

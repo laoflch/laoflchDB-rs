@@ -53,3 +53,24 @@ impl Default for EngineOptions {
 
 pub use pb::{SchemaMeta, TableMeta, ColumnMeta, ColumnType, Row, RowType, Query, QueryResult, QueryRow,
                FilterOperator, ColumnFilter, ColumnFilterCondition, TableFilter};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::pb::*;
+
+    #[test]
+    fn test_engine_options_default() {
+        let options = EngineOptions::default();
+        assert_eq!(options.db_path, "./db_data");
+        assert_eq!(options.schema_name, "sys");
+    }
+
+    #[test]
+    fn test_constants() {
+        assert_eq!(META_SCHEMA_PREFIX, "META-SCHEMA");
+        assert_eq!(META_TABLE_PREFIX, "META-TABLE");
+        assert_eq!(META_COLUMN_PREFIX, "META-COL");
+        assert_eq!(MAX_TABLE_ID_LENGTH, 20);
+    }
+}

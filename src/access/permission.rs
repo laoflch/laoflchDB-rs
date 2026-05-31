@@ -200,4 +200,143 @@ mod tests {
         let result = checker.check_permission("test_service", &context);
         assert!(!result.allowed);
     }
+
+    #[test]
+    fn test_all_action_allow() {
+        let mut checker = PermissionChecker::new(false);
+        let permission = ServicePermission {
+            service_id: "all_service".to_string(),
+            default_policy: "deny".to_string(),
+            allowed_actions: vec![PermissionAction::All],
+            denied_actions: vec![],
+            table_permissions: None,
+        };
+        checker.add_service_permission(permission);
+
+        for action in &[
+            PermissionAction::Get, PermissionAction::Put, PermissionAction::CreateTable,
+            PermissionAction::Query
+        ] {
+            let context = PermissionContext {
+                schema: "sys".to_string(),
+                table: Some("test".to_string()),
+                action: action.clone(),
+            };
+            let result = checker.check_permission("all_service", &context);
+            assert!(result.allowed);
+        }
+    }
+
+    #[test]
+    fn test_all_action_deny() {
+        let mut checker = PermissionChecker::new(true);
+        let permission = ServicePermission {
+            service_id: "deny_all".to_string(),
+            default_policy: "allow".to_string(),
+            allowed_actions: vec![],
+            denied_actions: vec![PermissionAction::All],
+            table_permissions: None,
+        };
+        checker.add_service_permission(permission);
+
+        let context = PermissionContext {
+            schema: "sys".to_string(),
+            table: Some("test".to_string()),
+            action: PermissionAction::Get,
+        };
+        let result = checker.check_permission("deny_all", &context);
+        assert!(!result.allowed);
+    }
+
+    #[test]
+    fn test_table_permission_allowed_schemas() {
+        let mut checker = PermissionChecker::new(false);
+        let permission = ServicePermission {
+            service_id: "table_service".to_string(),
+            default_policy: "allow".to_string(),
+            allowed_actions: vec![PermissionAction::Get],
+            denied_actions: vec![],
+            table_permissions: Some(crate::config::TablePermissions {
+                allowed_schemas: vec!["sys".to_string()],
+                denied_schemas: vec![],
+                allowed_tables: vec![],
+                denied_tables: vec![],
+            }),
+        };
+        checker.add_service_permission(permission);
+
+        let allowed_context = PermissionContext {
+            schema: "sys".to_string(),
+            table: Some("test".to_string()),
+            action: PermissionAction::Get,
+        };
+        assert!(checker.check_permission("table_service", &allowed_context).allowed);
+
+        let denied_context = PermissionContext {
+            schema: "other".to_string(),
+            table: Some("test".to_string()),
+            action: PermissionAction::Get,
+        };
+        assert!(!checker.check_permission("table_service", &denied_context).allowed);
+    }
+
+    #[test]
+    fn test_table_permission_denied_schemas() {
+        let mut checker = PermissionChecker::new(true);
+        let permission = ServicePermission {
+            service_id: "table_service".to_string(),
+            default_policy: "allow".to_string(),
+            allowed_actions: vec![PermissionAction::Get],
+            denied_actions: vec![],
+            table_permissions: Some(crate::config::TablePermissions {
+                allowed_schemas: vec![],
+                denied_schemas: vec!["private".to_string()],
+                allowed_tables: vec![],
+                denied_tables: vec![],
+            }),
+        };
+        checker.add_service_permission(permission);
+
+        let denied_context = PermissionContext {
+            schema: "private".to_string(),
+            table: Some("test".to_string()),
+            action: PermissionAction::Get,
+        };
+        assert!(!checker.check_permission("table_service", &denied_context).allowed);
+    }
+
+    #[test]
+    fn test_list_services() {
+        let mut checker = PermissionChecker::new(true);
+        checker.add_service_permission(ServicePermission {
+            service_id: "service1".to_string(),
+            default_policy: "allow".to_string(),
+            allowed_actions: vec![],
+            denied_actions: vec![],
+            table_permissions: None,
+        });
+        checker.add_service_permission(ServicePermission {
+            service_id: "service2".to_string(),
+            default_policy: "allow".to_string(),
+            allowed_actions: vec![],
+            denied_actions: vec![],
+            table_permissions: None,
+        });
+        let services = checker.list_services();
+        assert_eq!(services.len(), 2);
+        assert!(services.contains(&"service1".to_string()));
+        assert!(services.contains(&"service2".to_string()));
+    }
+
+    #[test]
+    fn test_default_for_permission_checker() {
+        let checker = PermissionChecker::default();
+        let context = PermissionContext {
+            schema: "sys".to_string(),
+            table: Some("test".to_string()),
+            action: PermissionAction::Get,
+        };
+        let result = checker.check_permission("unknown", &context);
+        assert!(result.allowed);
+    }
 }

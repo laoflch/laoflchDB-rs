@@ -207,3 +207,105 @@ impl DatabaseConfig {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_default_config() {
+        let config = DatabaseConfig::default();
+        assert_eq!(config.db_path, "./laoflch_db_data");
+        assert_eq!(config.addr, "127.0.0.1:50051");
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.default_policy, "allow");
+    }
+
+    #[test]
+    fn test_load_config_from_file() {
+        let config_content = r#"
+db_path: "./test_db"
+addr: "127.0.0.1:12345"
+log_level: "debug"
+default_policy: "deny"
+"#;
+        
+        let mut temp_file = NamedTempFile::new().unwrap();
+        writeln!(temp_file, "{}", config_content).unwrap();
+        
+        let config = DatabaseConfig::load_from_file(temp_file.path()).unwrap();
+        assert_eq!(config.db_path, "./test_db");
+        assert_eq!(config.addr, "127.0.0.1:12345");
+        assert_eq!(config.log_level, "debug");
+        assert_eq!(config.default_policy, "deny");
+    }
+
+    #[test]
+    fn test_get_global_default_policy() {
+        let config_allow = DatabaseConfig {
+            default_policy: "allow".to_string(),
+            ..DatabaseConfig::default()
+        };
+        assert!(config_allow.get_global_default_policy());
+        
+        let config_deny = DatabaseConfig {
+            default_policy: "deny".to_string(),
+            ..DatabaseConfig::default()
+        };
+        assert!(!config_deny.get_global_default_policy());
+    }
+
+    #[test]
+    fn test_get_service_ids() {
+        let config = DatabaseConfig {
+            access_protocols: vec![
+                AccessProtocolConfig {
+                    protocol: "grpc".to_string(),
+                    enabled: true,
+                    addr: Some("127.0.0.1:1234".to_string()),
+                    service_id: Some("service1".to_string()),
+                    permissions: None,
+                },
+                AccessProtocolConfig {
+                    protocol: "rest".to_string(),
+                    enabled: true,
+                    addr: Some("127.0.0.1:5678".to_string()),
+                    service_id: Some("service2".to_string()),
+                    permissions: None,
+                }
+            ],
+            ..DatabaseConfig::default()
+        };
+        let ids = config.get_service_ids();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&"service1".to_string()));
+        assert!(ids.contains(&"service2".to_string()));
+    }
+
+    #[test]
+    fn test_get_service_permission_from_permissions() {
+        let config = DatabaseConfig {
+            permissions: Some(vec![
+                ServicePermission {
+                    service_id: "test_service".to_string(),
+                    default_policy: "allow".to_string(),
+                    allowed_actions: vec![PermissionAction::Get],
+                    denied_actions: vec![],
+                    table_permissions: None,
+                }
+            ]),
+            ..DatabaseConfig::default()
+        };
+        let perm = config.get_service_permission("test_service").unwrap();
+        assert_eq!(perm.service_id, "test_service");
+    }
+
+    #[test]
+    fn test_permission_action_display() {
+        assert_eq!(PermissionAction::Get.to_string(), "get");
+        assert_eq!(PermissionAction::Query.to_string(), "query");
+        assert_eq!(PermissionAction::All.to_string(), "*");
+    }
+}
