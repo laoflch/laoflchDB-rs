@@ -173,23 +173,26 @@ use laoflchDB_rust::server::LaoflchDBServer;
 use laoflchDB_rust::service::{DatabaseService, DatabaseServiceImpl, SchemaManager};
 use std::sync::Arc;
 
-async fn start_server(config: &DatabaseConfig, db_path: &str) {
-    // 1. 创建 SchemaManager 管理多个 Schema (在 service 层)
-    let schema_manager = Arc::new(
-        SchemaManager::new(db_path)
-    );
-
-    // 2. 创建 Service 层
+#[tokio::main]
+async fn main() {
+    let config = DatabaseConfig::load_or_default();
+    
+    // 1. 创建 Service 层 (异步)
     let service_layer: Arc<dyn DatabaseService> = Arc::new(
-        DatabaseServiceImpl::new(Arc::clone(&schema_manager))
+        DatabaseServiceImpl::new(&config.db_path).await
     );
 
-    // 3. 创建 Access 层
+    // 2. 创建 Access 层
     let access_service = Arc::new(AccessService::new(Arc::clone(&service_layer)));
 
-    // 4. 创建并启动 LaoflchDBServer
-    let server = LaoflchDBServer::new(schema_manager, service_layer, access_service);
-    server.start(config)?;
+    // 3. 创建并启动 LaoflchDBServer (异步)
+    let server = LaoflchDBServer::new(
+        Arc::new(SchemaManager::new(&config.db_path).await),
+        service_layer,
+        access_service,
+    ).await;
+    
+    server.start(&config).await;
 }
 ```
 
@@ -197,26 +200,28 @@ async fn start_server(config: &DatabaseConfig, db_path: &str) {
 
 ## 3. SchemaManager 设计 (Service 层)
 
-`SchemaManager` 在 **Service 层** 实现，负责管理多个 Schema (RocksDB 实例)：
+`SchemaManager` 在 **Service 层** 实现，负责管理多个 Schema (RocksDB 实例)。**所有方法均为异步，使用 `tokio::sync::Mutex` 确保异步上下文中的线程安全**：
 
 ```rust
+use tokio::sync::Mutex;
+
 pub struct SchemaManager {
-    engines: RwLock<HashMap<String, Arc<MultiTableRocksDBEngine>>>,
+    engines: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<MultiTableRocksDBEngine>>>>,
     base_path: String,
 }
 
 impl SchemaManager {
-    pub fn new(base_path: &str) -> Self;
+    pub async fn new(base_path: &str) -> Self;
     
-    pub fn get_schema_engine(&self, schema: &str) 
-        -> Result<Arc<MultiTableRocksDBEngine>, Box<dyn std::error::Error + Send + Sync>>;
+    pub async fn get_schema_engine(&self, schema: &str) 
+        -> Result<Arc<tokio::sync::Mutex<MultiTableRocksDBEngine>>, Box<dyn std::error::Error + Send + Sync>>;
     
-    pub fn list_schemas(&self) -> Vec<String>;
+    pub async fn list_schemas(&self) -> Vec<String>;
     
-    pub fn create_schema(&self, schema: &str) 
+    pub async fn create_schema(&self, schema: &str) 
         -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     
-    pub fn drop_schema(&self, schema: &str) 
+    pub async fn drop_schema(&self, schema: &str) 
         -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 ```
@@ -235,20 +240,20 @@ impl SchemaManager {
 
 **位置**: [laoflchdb_db_engine/src/lib.rs](laoflchdb_db_engine/src/lib.rs)
 
+**所有方法均为异步，使用 `#[async_trait]` 宏实现**：
+
 ```rust
+#[async_trait::async_trait]
 pub trait DBEngine: Send + Sync + 'static {
-    fn create_table(&mut self, table: &str) -> Result<(), ...>;
-    fn drop_table(&mut self, table: &str) -> Result<(), ...>;
-    fn list_tables(&self) -> Result<Vec<String>, ...>;
+    async fn create_table(&mut self, table: &str, columns: &[(u32, &str, ColumnType)]) -> Result<u64, ...>;
+    async fn drop_table(&mut self, table: &str) -> Result<(), ...>;
+    async fn list_tables(&self) -> Result<Vec<String>, ...>;
     
-    fn put(&self, table: &str, key: &[u8], value: &[u8]) -> Result<(), ...>;
-    fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ...>;
-    fn delete(&self, table: &str, key: &[u8]) -> Result<(), ...>;
+    async fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), ...>;
+    async fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ...>;
+    async fn delete(&mut self, table: &str, key: &[u8]) -> Result<(), ...>;
     
-    fn put_meta(&self, key: &[u8], value: &[u8]) -> Result<(), ...>;
-    fn get_meta(&self, key: &[u8]) -> Result<Option<Vec<u8>>, ...>;
-    fn scan_meta_prefix(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, ...>;
-    fn delete_meta(&self, key: &[u8]) -> Result<(), ...>;
+    async fn get_table_meta(&self, table: &str) -> Result<Option<TableMeta>, ...>;
     
     fn get_schema_name(&self) -> &str;
 }
@@ -261,16 +266,23 @@ pub trait DBEngine: Send + Sync + 'static {
 `DBEngine` trait 的 RocksDB 实现，**一个实例对应一个 Schema 和一个 RocksDB DB 实例**：
 
 ```rust
+#[async_trait::async_trait]
+impl DBEngine for MultiTableRocksDBEngine {
+    // 所有 DBEngine trait 方法的异步实现
+    async fn create_table(&mut self, table: &str, columns: &[(u32, &str, ColumnType)]) -> Result<u64, ...> {
+        // 创建表逻辑...
+    }
+    // ... 其他异步方法
+}
+
 pub struct MultiTableRocksDBEngine {
     db: DB,              // 一个 RocksDB DB 实例
     schema_name: String, // 对应一个 Schema
 }
 
 impl MultiTableRocksDBEngine {
-    pub fn new(options: &EngineOptions) -> Result<Self, ...>;
-    
-    fn get_table_cf(&self, table: &str) -> String {
-        table.to_string()  // 每个表对应一个 CF
+    pub fn new(options: &EngineOptions) -> Result<Self, ...> {
+        // 初始化 RocksDB，创建默认表等
     }
 }
 ```
@@ -299,19 +311,22 @@ impl Default for EngineOptions {
 
 ### DatabaseService Trait
 
+**所有方法均为异步，使用 `#[async_trait]` 宏实现**：
+
 ```rust
+#[async_trait::async_trait]
 pub trait DatabaseService: Send + Sync + 'static {
-    fn init_database(&self) -> Result<(), ...>;
-    fn create_schema(&self, schema: &str) -> Result<(), ...>;
-    fn list_schemas(&self) -> Result<Vec<String>, ...>;
-    fn drop_schema(&self, schema: &str) -> Result<(), ...>;
+    async fn init_database(&self) -> Result<(), ...>;
+    async fn create_schema(&self, schema: &str) -> Result<(), ...>;
+    async fn list_schemas(&self) -> Result<Vec<String>, ...>;
+    async fn drop_schema(&self, schema: &str) -> Result<(), ...>;
     
-    fn put(&self, schema: &str, table: &str, key: &[u8], value: &[u8]) -> Result<(), ...>;
-    fn get(&self, schema: &str, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ...>;
-    fn delete(&self, schema: &str, table: &str, key: &[u8]) -> Result<(), ...>;
-    fn create_table(&self, schema: &str, table: &str, columns: &[...]) -> Result<u64, ...>;
-    fn list_tables(&self, schema: &str) -> Result<Vec<String>, ...>;
-    fn get_table_meta(&self, schema: &str, table: &str) -> Result<Option<TableMeta>, ...>;
+    async fn put(&self, schema: &str, table: &str, key: &[u8], value: &[u8]) -> Result<(), ...>;
+    async fn get(&self, schema: &str, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, ...>;
+    async fn delete(&self, schema: &str, table: &str, key: &[u8]) -> Result<(), ...>;
+    async fn create_table(&self, schema: &str, table: &str, columns: &[...]) -> Result<u64, ...>;
+    async fn list_tables(&self, schema: &str) -> Result<Vec<String>, ...>;
+    async fn get_table_meta(&self, schema: &str, table: &str) -> Result<Option<TableMeta>, ...>;
 }
 ```
 
@@ -324,7 +339,13 @@ pub struct DatabaseServiceImpl {
 }
 
 impl DatabaseServiceImpl {
-    pub fn new(schema_manager: Arc<SchemaManager>) -> Self;
+    pub async fn new(base_path: &str) -> Self {
+        let schema_manager = SchemaManager::new(base_path).await;
+        Self { 
+            schema_manager: Arc::new(schema_manager),
+            default_schema: "sys".to_string(),
+        }
+    }
 }
 ```
 
@@ -532,6 +553,8 @@ cargo all          # 编译所有 (Rust + ldb)
 | prost | 0.12 | protobuf 编解码 |
 | clap | 4.5 | 命令行参数 |
 | tokio | 1.0 | async runtime |
+| tokio-sync | 1.0 | 异步锁机制 |
+| async-trait | 0.1 | 异步 trait 支持 |
 | serde | 1.0 | YAML 配置序列化 |
 | serde_yaml | 0.9 | YAML 解析 |
 
@@ -549,7 +572,7 @@ cargo build --release
 ### 2. 初始化数据库
 
 ```bash
-./target/release/laoflchDB-rust -c laoflchdb.yaml init
+./target/release/laoflchDB-rust init
 ```
 
 ### 3. 启动服务
@@ -562,7 +585,49 @@ cargo build --release
 - **gRPC 服务**: http://127.0.0.1:19777
 - **REST API**: http://127.0.0.1:8080
 
-### 4. 测试 API
+### 4. 作为库使用
+
+如果你想将 laoflchDB 作为 Rust 库使用：
+
+```rust
+use laoflchDB_rust::service::{DatabaseService, DatabaseServiceImpl};
+use laoflchDB_rust::db_engine::pb::ColumnType;
+use std::sync::Arc;
+
+#[tokio::main]
+async fn main() {
+    // 1. 创建 DatabaseService (异步初始化)
+    let service: Arc<dyn DatabaseService> = Arc::new(
+        DatabaseServiceImpl::new("./my_db_data").await
+    );
+
+    // 2. 初始化数据库
+    service.init_database().await.unwrap();
+
+    // 3. 创建表 (异步调用)
+    let columns = vec![
+        (0, "id", ColumnType::Int64),
+        (1, "name", ColumnType::String),
+    ];
+    
+    let table_id = service.create_table("sys", "my_table", &columns).await.unwrap();
+    println!("Created table with id: {}", table_id);
+
+    // 4. 插入数据 (异步调用)
+    let key = b"key_001";
+    let value = b"value_001";
+    service.put("sys", "my_table", key, value).await.unwrap();
+
+    // 5. 读取数据 (异步调用)
+    let result = service.get("sys", "my_table", key).await.unwrap();
+    println!("Read: {:?}", result);
+
+    // 6. 删除数据 (异步调用)
+    service.delete("sys", "my_table", key).await.unwrap();
+}
+```
+
+### 5. 测试 API
 
 #### 使用 gRPC 客户端
 
@@ -582,7 +647,48 @@ python3 tests_python/test_e2e_rest.py
 
 ---
 
-## 14. 测试
+## 14. 异步改造记录
+
+### 主要变更
+
+项目已从同步调用架构完全改造为异步调用架构：
+
+1. **DBEngine Trait** ([laoflchdb_db_engine/src/lib.rs](file:///workspace/rust_space/laoflchDB-rust/laoflchdb_db_engine/src/lib.rs))：
+   - 所有方法改为 `async fn`
+   - 添加 `#[async_trait::async_trait]` 宏
+
+2. **MultiTableRocksDBEngine** ([multi_table_rocksdb/src/multi_table_rocksdb.rs](file:///workspace/rust_space/laoflchDB-rust/multi_table_rocksdb/src/multi_table_rocksdb.rs))：
+   - 实现异步 DBEngine Trait
+   - 保持 `new()` 方法同步用于初始化
+   - 新增同步内部方法用于初始化
+
+3. **Service 层** ([src/service/mod.rs](file:///workspace/rust_space/laoflchDB-rust/src/service/mod.rs))：
+   - DatabaseService Trait 全部异步化
+   - SchemaManager 使用 `tokio::sync::Mutex` 替代 `std::sync::Mutex`
+   - DatabaseServiceImpl 支持异步构造
+
+4. **Server 层** ([src/server/mod.rs](file:///workspace/rust_space/laoflchDB-rust/src/server/mod.rs))：
+   - 启动和初始化方法改为异步
+   - 使用 `tokio::spawn` 并发启动服务
+
+### 解决的核心问题
+
+| 问题 | 解决方案 |
+|------|---------|
+| `std::sync::Mutex` 不能跨 await 点 | 使用 `tokio::sync::Mutex` |
+| 同步上下文中启动异步运行时冲突 | 将整个架构改为完全异步 |
+| `block_on` 性能和死锁风险 | 移除所有 `block_on`，直接使用 async/await |
+
+### 验证结果
+
+- ✅ 所有 Rust 单元测试通过
+- ✅ 所有 Rust 集成测试通过
+- ✅ Python REST E2E 测试 10 项全部通过
+- ✅ Python gRPC E2E 测试全部通过
+
+---
+
+## 16. 测试
 
 ### 测试套件
 
@@ -614,9 +720,9 @@ python3 tests_python/test_e2e_rest.py
 
 ---
 
-## 15. 异步调用设计
+## 17. 异步调用设计
 
-laoflchDB 分层架构之间通过 **async/await** 和 **tokio** 运行时实现异步调用。
+laoflchDB 分层架构之间通过 **async/await** 和 **tokio** 运行时实现完全异步调用。
 
 ### 核心技术
 
@@ -624,9 +730,36 @@ laoflchDB 分层架构之间通过 **async/await** 和 **tokio** 运行时实现
 |------|------|
 | `#[async_trait]` | 为 trait 提供 async fn 支持 |
 | `#[tonic::async_trait]` | 为 gRPC 服务提供 async fn 支持 |
+| `tokio::sync::Mutex` | 异步上下文中的线程安全锁 |
 | `Arc<dyn Trait>` | 线程安全的共享所有权 |
 | `Box<dyn Error + Send + Sync>` | 跨线程的错误传递 |
 | `tokio` | 异步运行时 |
+| `tokio::spawn` | 异步任务并发执行 |
+
+### 异步 Mutex 锁设计
+
+**关键设计**：使用 `tokio::sync::Mutex` 而非 `std::sync::Mutex`
+
+- **问题**：`std::sync::Mutex` 在持有锁期间不能跨 await 点
+- **解决方案**：使用 `tokio::sync::Mutex`，其 `.lock().await` 返回 `MutexGuard` 可以安全跨 await
+
+```rust
+use tokio::sync::Mutex;
+
+pub struct SchemaManager {
+    // 使用 tokio::sync::Mutex
+    engines: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<MultiTableRocksDBEngine>>>>,
+}
+
+impl SchemaManager {
+    pub async fn get_schema_engine(&self, schema: &str) -> Result<...> {
+        // 获取锁 - await 释放控制权
+        let engine = self.engines.lock().await;
+        // 持有锁期间可以 await 多次
+        engine.create_table(&table, &columns).await
+    }
+}
+```
 
 ### 异步调用链路
 
@@ -635,11 +768,29 @@ gRPC/REST 请求
     ↓
 Access 层 (GrpcService/RestService)
     ↓ .await (异步调用)
-Service 层 (DatabaseService)
-    ↓ (SchemaManager 获取引擎)
+Service 层 (DatabaseService + SchemaManager)
+    ↓ .lock().await (异步锁)
 DBEngine 层 (MultiTableRocksDBEngine)
-    ↓
+    ↓ .await (异步方法调用)
 RocksDB 存储
+```
+
+### 初始化同步与异步分离
+
+MultiTableRocksDBEngine 的 `new()` 方法是同步的，用于初始化。在初始化完成后，所有操作都是异步的：
+
+```rust
+impl MultiTableRocksDBEngine {
+    // 同步初始化 - 在 new() 中调用
+    fn init_default_user_table(&mut self) -> Result<(), ...> {
+        // 同步创建默认表
+    }
+    
+    // 异步操作 - 通过 trait 接口调用
+    async fn create_table(&mut self, table: &str, columns: &[...]) -> Result<u64, ...> {
+        // 异步创建表逻辑
+    }
+}
 ```
 
 ---
