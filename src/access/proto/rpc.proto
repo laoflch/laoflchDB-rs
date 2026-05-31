@@ -26,6 +26,9 @@ service LaoflchDb {
   
   // 旧方法（保留兼容）
   rpc GetTableMeta(GetTableMetaRequest) returns (GetTableMetaResponse);
+  
+  // 查询操作
+  rpc Query(QueryRequest) returns (QueryResponse);
 }
 
 message GetRequest {
@@ -209,4 +212,91 @@ message ColumnMeta {
   uint64 column_id = 2;
   string column_name = 3;
   int32 column_type = 4;
+}
+
+// Query 相关类型
+message QueryRequest {
+  string schema = 1;
+  repeated TableFilter table_filters = 2;
+  optional uint32 limit = 3;
+  optional uint32 offset = 4;
+}
+
+message QueryResponse {
+  bool success = 1;
+  repeated QueryRow rows = 2;
+  string message = 3;
+}
+
+message TableFilter {
+  string table_name = 1;
+  repeated ColumnFilter column_filters = 2;
+}
+
+message ColumnFilter {
+  string column_name = 1;
+  repeated ColumnFilterCondition conditions = 2;
+}
+
+message ColumnFilterCondition {
+  FilterOperator op = 1;
+  Field value = 2;
+  repeated Field values = 3;
+}
+
+enum FilterOperator {
+  FILTER_OPERATOR_UNSPECIFIED = 0;
+  FILTER_OPERATOR_EQ = 1;
+  FILTER_OPERATOR_NEQ = 2;
+  FILTER_OPERATOR_GT = 3;
+  FILTER_OPERATOR_GTE = 4;
+  FILTER_OPERATOR_LT = 5;
+  FILTER_OPERATOR_LTE = 6;
+  FILTER_OPERATOR_IN = 7;
+  FILTER_OPERATOR_NOT_IN = 8;
+  FILTER_OPERATOR_LIKE = 9;
+  FILTER_OPERATOR_IS_NULL = 10;
+  FILTER_OPERATOR_IS_NOT_NULL = 11;
+}
+
+message QueryRow {
+  string table_name = 1;
+  uint64 row_id = 2;
+  Row row = 3;
+}
+
+message Field {
+  oneof value {
+    StringValue string_value = 1;
+    IntegerValue integer_value = 2;
+    BytesValue bytes_value = 3;
+    FloatValue float_value = 4;
+    ListValue list_value = 5;
+    ImageValue image_value = 6;
+  }
+}
+
+message StringValue {
+  string value = 1;
+}
+
+message IntegerValue {
+  int64 value = 1;
+}
+
+message BytesValue {
+  bytes value = 1;
+}
+
+message FloatValue {
+  double value = 1;
+}
+
+message ListValue {
+  repeated bytes items = 1;
+}
+
+message ImageValue {
+  bytes data = 1;
+  string format = 2;
 }

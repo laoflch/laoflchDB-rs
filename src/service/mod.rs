@@ -98,6 +98,9 @@ pub trait DatabaseService: Send + Sync + 'static {
     async fn delete_row(&self, schema: &str, table: &str, row_id: u64) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn update_row(&self, schema: &str, table: &str, row_id: u64, row: &Row) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     
+    // 查询操作
+    async fn query(&self, schema: &str, query: &laoflchdb_db_engine::pb::Query) -> Result<laoflchdb_db_engine::pb::QueryResult, Box<dyn std::error::Error + Send + Sync>>;
+    
     // 元数据查询
     async fn get_all_meta(&self, schema: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_schema_info(&self, schema: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
@@ -254,5 +257,11 @@ impl DatabaseService for DatabaseServiceImpl {
         let key = key.to_vec();
         let mut engine = engine.lock().await;
         engine.delete(&table, &key).await
+    }
+
+    async fn query(&self, schema: &str, query: &laoflchdb_db_engine::pb::Query) -> Result<laoflchdb_db_engine::pb::QueryResult, Box<dyn std::error::Error + Send + Sync>> {
+        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let mut engine = engine.lock().await;
+        engine.query(query).await
     }
 }

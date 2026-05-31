@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package laoflchdb.row;
+package laoflchdb;
 
 enum RowType {
     ROW_TYPE_NORMAL = 0;

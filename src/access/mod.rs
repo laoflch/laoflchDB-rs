@@ -15,6 +15,7 @@ use crate::pb::rpc::{
     GetAllMetaRequest, GetAllMetaResponse,
     GetSchemaInfoRequest, GetSchemaInfoResponse,
     GetTableMetaRequest, GetTableMetaResponse,
+    QueryRequest, QueryResponse,
     ColumnMeta as RpcColumnMeta,
     Row as RpcRow,
 };
@@ -164,6 +165,115 @@ fn convert_row_to_rpc(row: &Row) -> RpcRow {
         row_type: row.row_type,
         version: row.version,
         data: row.data.clone(),
+    }
+}
+
+fn convert_query_from_rpc(req: &QueryRequest) -> laoflchdb_db_engine::pb::Query {
+    use laoflchdb_db_engine::pb::{TableFilter, ColumnFilter, ColumnFilterCondition, FilterOperator, Field};
+    
+    let table_filters = req.table_filters.iter().map(|tf| {
+        let column_filters = tf.column_filters.iter().map(|cf| {
+            let conditions = cf.conditions.iter().map(|cond| {
+                let op = match FilterOperator::from_i32(cond.op) {
+                    Some(op) => op,
+                    None => FilterOperator::Unspecified,
+                };
+                
+                let value = cond.value.as_ref().map(|f| {
+                    use laoflchdb_db_engine::pb::field::Value;
+                    use laoflchdb_db_engine::pb::{String, Integer, Bytes, Float, List, Image};
+                    
+                    let val = match f.value {
+                        Some(ref v) => match v {
+                            crate::pb::rpc::field::Value::StringValue(s) => Value::StringValue(String {
+                                value: s.value.clone(),
+                            }),
+                            crate::pb::rpc::field::Value::IntegerValue(i) => Value::IntegerValue(Integer {
+                                value: i.value,
+                            }),
+                            crate::pb::rpc::field::Value::BytesValue(b) => Value::BytesValue(Bytes {
+                                value: b.value.clone(),
+                            }),
+                            crate::pb::rpc::field::Value::FloatValue(fv) => Value::FloatValue(Float {
+                                value: fv.value,
+                            }),
+                            crate::pb::rpc::field::Value::ListValue(l) => Value::ListValue(List {
+                                items: l.items.clone(),
+                            }),
+                            crate::pb::rpc::field::Value::ImageValue(img) => Value::ImageValue(Image {
+                                data: img.data.clone(),
+                                format: img.format.clone(),
+                            }),
+                        },
+                        None => Value::StringValue(String { value: std::string::String::new() }),
+                    };
+                    
+                    Field { value: Some(val) }
+                });
+                
+                let values = cond.values.iter().map(|f| {
+                    use laoflchdb_db_engine::pb::field::Value;
+                    use laoflchdb_db_engine::pb::{String, Integer, Bytes, Float, List, Image};
+                    
+                    let val = match f.value {
+                        Some(ref v) => match v {
+                            crate::pb::rpc::field::Value::StringValue(s) => Value::StringValue(String {
+                                value: s.value.clone(),
+                            }),
+                            crate::pb::rpc::field::Value::IntegerValue(i) => Value::IntegerValue(Integer {
+                                value: i.value,
+                            }),
+                            crate::pb::rpc::field::Value::BytesValue(b) => Value::BytesValue(Bytes {
+                                value: b.value.clone(),
+                            }),
+                            crate::pb::rpc::field::Value::FloatValue(fv) => Value::FloatValue(Float {
+                                value: fv.value,
+                            }),
+                            crate::pb::rpc::field::Value::ListValue(l) => Value::ListValue(List {
+                                items: l.items.clone(),
+                            }),
+                            crate::pb::rpc::field::Value::ImageValue(img) => Value::ImageValue(Image {
+                                data: img.data.clone(),
+                                format: img.format.clone(),
+                            }),
+                        },
+                        None => Value::StringValue(String { value: std::string::String::new() }),
+                    };
+                    
+                    Field { value: Some(val) }
+                }).collect();
+                
+                ColumnFilterCondition {
+                    op: op as i32,
+                    value,
+                    values,
+                }
+            }).collect();
+            
+            ColumnFilter {
+                column_name: cf.column_name.clone(),
+                conditions,
+            }
+        }).collect();
+        
+        TableFilter {
+            table_name: tf.table_name.clone(),
+            column_filters,
+        }
+    }).collect();
+    
+    laoflchdb_db_engine::pb::Query {
+        table_filters,
+        limit: req.limit,
+        offset: req.offset,
+    }
+}
+
+fn convert_query_row_to_rpc(qr: &laoflchdb_db_engine::pb::QueryRow) -> crate::pb::rpc::QueryRow {
+    crate::pb::rpc::QueryRow {
+        table_name: qr.table_name.clone(),
+        row_id: qr.row_id,
+        row: qr.row.as_ref().map(|r| convert_row_to_rpc(r)),
     }
 }
 
@@ -411,6 +521,28 @@ impl LaoflchDb for GrpcService {
                 message: String::new(),
             })),
             Ok(None) => Err(Status::not_found("Table not found")),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    async fn query(&self, request: Request<QueryRequest>) -> Result<Response<QueryResponse>, Status> {
+        let req = request.into_inner();
+        let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        
+        // 对于查询，我们检查权限（不指定具体表，因为查询可能涉及多个表）
+        self.check_permission(schema, None, PermissionAction::Query)?;
+        
+        let db_query = convert_query_from_rpc(&req);
+        
+        match self.service.query(schema, &db_query).await {
+            Ok(result) => {
+                let rows: Vec<_> = result.rows.iter().map(convert_query_row_to_rpc).collect();
+                Ok(Response::new(QueryResponse {
+                    success: true,
+                    rows,
+                    message: String::new(),
+                }))
+            },
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }

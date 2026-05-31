@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package laoflchdb.metadata;
+package laoflchdb;
 
 message SchemaMeta {
     string schema_name = 1;

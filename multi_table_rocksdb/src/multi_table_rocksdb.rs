@@ -3,7 +3,8 @@ use prost::Message;
 use std::sync::{Arc, RwLock};
 
 use laoflchdb_db_engine::{DBEngine, EngineOptions, META_TABLE_PREFIX, META_COLUMN_PREFIX, META_SCHEMA_PREFIX, MAX_TABLE_ID_LENGTH};
-use laoflchdb_db_engine::pb::{SchemaMeta, TableMeta, ColumnMeta, Row, ColumnType};
+use laoflchdb_db_engine::pb::{SchemaMeta, TableMeta, ColumnMeta, Row, ColumnType, Query, QueryResult, QueryRow,
+                                  FilterOperator, ColumnFilter, ColumnFilterCondition, TableFilter};
 
 pub struct MultiTableRocksDBEngine {
     db: DB,
@@ -508,7 +509,348 @@ impl DBEngine for MultiTableRocksDBEngine {
         Ok(())
     }
 
+    // Query 操作
+    async fn query(&self, query: &Query) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
+        let mut result_rows = Vec::new();
+
+        // CNF 表达式：多个表过滤器之间是 AND 关系
+        // 对于每个表，我们需要单独查询
+        for table_filter in &query.table_filters {
+            self.query_table(table_filter, &mut result_rows)?;
+        }
+
+        // 应用 offset 和 limit
+        let start = query.offset.unwrap_or(0) as usize;
+        let count = query.limit.map(|l| l as usize).unwrap_or(usize::MAX);
+        let end = std::cmp::min(start + count, result_rows.len());
+        let rows = result_rows.drain(start..end).collect();
+
+        Ok(QueryResult { rows })
+    }
+
     fn get_schema_name(&self) -> &str {
         &self.schema_name
+    }
+}
+
+impl MultiTableRocksDBEngine {
+    // 获取表的列元数据，返回列名到索引的映射
+    fn get_table_columns(&self, table_name: &str) -> Result<std::collections::HashMap<String, (u64, laoflchdb_db_engine::pb::ColumnType)>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut columns = std::collections::HashMap::new();
+        
+        let table_prefix = format!("{}:{}:", META_TABLE_PREFIX, table_name);
+        let table_entries = self.scan_meta_prefix_internal(table_prefix.as_bytes())?;
+        
+        let mut table_id = None;
+        for (_, value) in table_entries {
+            if let Ok(table_meta) = laoflchdb_db_engine::pb::TableMeta::decode(value.as_slice()) {
+                table_id = Some(table_meta.table_id);
+                break;
+            }
+        }
+        
+        if let Some(tid) = table_id {
+            let col_prefix = format!("{}:{}:", META_COLUMN_PREFIX, self.format_table_id(tid));
+            let col_entries = self.scan_meta_prefix_internal(col_prefix.as_bytes())?;
+            
+            for (_, value) in col_entries {
+                if let Ok(col_meta) = laoflchdb_db_engine::pb::ColumnMeta::decode(value.as_slice()) {
+                    columns.insert(
+                        col_meta.column_name.clone(), 
+                        (col_meta.column_id, col_meta.column_type())
+                    );
+                }
+            }
+        }
+        
+        Ok(columns)
+    }
+
+    // 查询单个表并返回结果
+    fn query_table(&self, table_filter: &TableFilter, result_rows: &mut Vec<QueryRow>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let table_name = &table_filter.table_name;
+        let cf_name = self.get_table_cf(table_name);
+        let cf_handle = match self.db.cf_handle(&cf_name) {
+            Some(handle) => handle,
+            None => return Ok(()),  // 表不存在，返回空结果
+        };
+
+        // 获取表的列元数据
+        let columns = self.get_table_columns(table_name)?;
+
+        // 扫描表中的所有行
+        let iter = self.db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item?;
+
+            // 只处理以 "row:" 开头的键
+            let key_str = String::from_utf8(key.to_vec())?;
+            if !key_str.starts_with("row:") {
+                continue;
+            }
+
+            // 解析 row_id
+            let row_id = match key_str.strip_prefix("row:").and_then(|s| s.parse::<u64>().ok()) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // 解码行数据
+            let row = match Row::decode(&value[..]) {
+                Ok(row) => row,
+                Err(_) => continue,
+            };
+
+            // 检查是否满足列过滤器条件
+            if self.check_table_filters(&row, &table_filter.column_filters, &columns) {
+                result_rows.push(QueryRow {
+                    table_name: table_name.to_string(),
+                    row_id,
+                    row: Some(row),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    // 检查行是否满足表过滤器条件（CNF 中一个 clause：多个列 AND）
+    fn check_table_filters(
+        &self, 
+        row: &Row, 
+        column_filters: &[ColumnFilter], 
+        columns: &std::collections::HashMap<String, (u64, laoflchdb_db_engine::pb::ColumnType)>
+    ) -> bool {
+        // 所有列过滤器都必须满足（AND 关系）
+        for column_filter in column_filters {
+            if !self.check_column_filter(row, column_filter, columns) {
+                return false;
+            }
+        }
+        true
+    }
+
+    // 检查行是否满足单个列过滤器（多个条件 OR）
+    fn check_column_filter(
+        &self, 
+        row: &Row, 
+        column_filter: &ColumnFilter, 
+        columns: &std::collections::HashMap<String, (u64, laoflchdb_db_engine::pb::ColumnType)>
+    ) -> bool {
+        // 至少有一个条件满足即可（OR 关系）
+        for condition in &column_filter.conditions {
+            if self.check_column_condition(row, column_filter, condition, columns) {
+                return true;
+            }
+        }
+        false
+    }
+
+    // 检查单个列条件
+    fn check_column_condition(
+        &self, 
+        row: &Row, 
+        column_filter: &ColumnFilter, 
+        condition: &ColumnFilterCondition, 
+        columns: &std::collections::HashMap<String, (u64, laoflchdb_db_engine::pb::ColumnType)>
+    ) -> bool {
+        // 查找列索引和类型
+        let (column_idx, column_type) = match columns.get(&column_filter.column_name) {
+            Some((idx, t)) => (*idx as usize, *t),
+            None => return false, // 列不存在，不匹配
+        };
+
+        // 获取字段值
+        let field_bytes = if column_idx < row.data.len() {
+            &row.data[column_idx]
+        } else {
+            return false; // 列索引超出范围
+        };
+
+        // 根据操作符比较
+        let op = FilterOperator::from_i32(condition.op).unwrap_or(FilterOperator::Unspecified);
+        match op {
+            FilterOperator::Eq => {
+                if let Some(ref value) = condition.value {
+                    self.compare_field_equals(field_bytes, value, column_type)
+                } else {
+                    false
+                }
+            }
+            FilterOperator::Neq => {
+                if let Some(ref value) = condition.value {
+                    !self.compare_field_equals(field_bytes, value, column_type)
+                } else {
+                    false
+                }
+            }
+            FilterOperator::Gt => {
+                if let Some(ref value) = condition.value {
+                    self.compare_field_greater(field_bytes, value, column_type)
+                } else {
+                    false
+                }
+            }
+            FilterOperator::Gte => {
+                if let Some(ref value) = condition.value {
+                    self.compare_field_equals(field_bytes, value, column_type) || 
+                    self.compare_field_greater(field_bytes, value, column_type)
+                } else {
+                    false
+                }
+            }
+            FilterOperator::Lt => {
+                if let Some(ref value) = condition.value {
+                    self.compare_field_less(field_bytes, value, column_type)
+                } else {
+                    false
+                }
+            }
+            FilterOperator::Lte => {
+                if let Some(ref value) = condition.value {
+                    self.compare_field_equals(field_bytes, value, column_type) || 
+                    self.compare_field_less(field_bytes, value, column_type)
+                } else {
+                    false
+                }
+            }
+            FilterOperator::In => {
+                if !condition.values.is_empty() {
+                    for value in &condition.values {
+                        if self.compare_field_equals(field_bytes, value, column_type) {
+                            return true;
+                        }
+                    }
+                }
+                false
+            }
+            FilterOperator::NotIn => {
+                if !condition.values.is_empty() {
+                    for value in &condition.values {
+                        if self.compare_field_equals(field_bytes, value, column_type) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                false
+            }
+            FilterOperator::IsNull => field_bytes.is_empty(),
+            FilterOperator::IsNotNull => !field_bytes.is_empty(),
+            _ => false, // 暂时不支持 Like
+        }
+    }
+
+    // 字段相等比较
+    fn compare_field_equals(
+        &self, 
+        field_bytes: &[u8], 
+        field: &laoflchdb_db_engine::pb::Field, 
+        _column_type: laoflchdb_db_engine::pb::ColumnType
+    ) -> bool {
+        use laoflchdb_db_engine::pb::field::Value;
+        
+        if let Some(ref value) = field.value {
+            match value {
+                Value::StringValue(s) => field_bytes == s.value.as_bytes(),
+                Value::IntegerValue(i) => {
+                    if field_bytes.len() >= 8 {
+                        let mut bytes = [0u8; 8];
+                        bytes.copy_from_slice(&field_bytes[0..8]);
+                        i64::from_be_bytes(bytes) == i.value
+                    } else {
+                        false
+                    }
+                }
+                Value::BytesValue(b) => field_bytes == b.value,
+                Value::FloatValue(f) => {
+                    if field_bytes.len() >= 8 {
+                        let mut bytes = [0u8; 8];
+                        bytes.copy_from_slice(&field_bytes[0..8]);
+                        f64::from_be_bytes(bytes) == f.value
+                    } else {
+                        false
+                    }
+                }
+                Value::ListValue(_) => false,
+                Value::ImageValue(_) => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    // 字段大于比较
+    fn compare_field_greater(
+        &self, 
+        field_bytes: &[u8], 
+        field: &laoflchdb_db_engine::pb::Field, 
+        _column_type: laoflchdb_db_engine::pb::ColumnType
+    ) -> bool {
+        use laoflchdb_db_engine::pb::field::Value;
+        
+        if let Some(ref value) = field.value {
+            match value {
+                Value::StringValue(s) => field_bytes > s.value.as_bytes(),
+                Value::IntegerValue(i) => {
+                    if field_bytes.len() >= 8 {
+                        let mut bytes = [0u8; 8];
+                        bytes.copy_from_slice(&field_bytes[0..8]);
+                        i64::from_be_bytes(bytes) > i.value
+                    } else {
+                        false
+                    }
+                }
+                Value::FloatValue(f) => {
+                    if field_bytes.len() >= 8 {
+                        let mut bytes = [0u8; 8];
+                        bytes.copy_from_slice(&field_bytes[0..8]);
+                        f64::from_be_bytes(bytes) > f.value
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+
+    // 字段小于比较
+    fn compare_field_less(
+        &self, 
+        field_bytes: &[u8], 
+        field: &laoflchdb_db_engine::pb::Field, 
+        _column_type: laoflchdb_db_engine::pb::ColumnType
+    ) -> bool {
+        use laoflchdb_db_engine::pb::field::Value;
+        
+        if let Some(ref value) = field.value {
+            match value {
+                Value::StringValue(s) => field_bytes < s.value.as_bytes(),
+                Value::IntegerValue(i) => {
+                    if field_bytes.len() >= 8 {
+                        let mut bytes = [0u8; 8];
+                        bytes.copy_from_slice(&field_bytes[0..8]);
+                        i64::from_be_bytes(bytes) < i.value
+                    } else {
+                        false
+                    }
+                }
+                Value::FloatValue(f) => {
+                    if field_bytes.len() >= 8 {
+                        let mut bytes = [0u8; 8];
+                        bytes.copy_from_slice(&field_bytes[0..8]);
+                        f64::from_be_bytes(bytes) < f.value
+                    } else {
+                        false
+                    }
+                }
+                _ => false,
+            }
+        } else {
+            false
+        }
     }
 }

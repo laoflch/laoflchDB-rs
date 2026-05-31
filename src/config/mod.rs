@@ -31,6 +31,8 @@ pub enum PermissionAction {
     GetSchemaInfo,
     #[serde(rename = "get_table_meta")]
     GetTableMeta,
+    #[serde(rename = "query")]
+    Query,
     #[serde(rename = "*")]
     All,
 }
@@ -52,6 +54,7 @@ impl std::fmt::Display for PermissionAction {
             PermissionAction::GetAllMeta => write!(f, "get_all_meta"),
             PermissionAction::GetSchemaInfo => write!(f, "get_schema_info"),
             PermissionAction::GetTableMeta => write!(f, "get_table_meta"),
+            PermissionAction::Query => write!(f, "query"),
             PermissionAction::All => write!(f, "*"),
         }
     }

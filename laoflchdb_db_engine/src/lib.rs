@@ -1,7 +1,5 @@
 pub mod pb {
-    include!(concat!(env!("OUT_DIR"), "/laoflchdb.metadata.rs"));
-    include!(concat!(env!("OUT_DIR"), "/laoflchdb.row.rs"));
-    include!(concat!(env!("OUT_DIR"), "/laoflchdb.field.rs"));
+    include!(concat!(env!("OUT_DIR"), "/laoflchdb.rs"));
 }
 
 pub const META_SCHEMA_PREFIX: &str = "META-SCHEMA";
@@ -33,6 +31,9 @@ pub trait DBEngine: Send + Sync + 'static {
     async fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>;
     async fn delete(&mut self, table: &str, key: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     
+    // Query 操作
+    async fn query(&self, query: &pb::Query) -> Result<pb::QueryResult, Box<dyn std::error::Error + Send + Sync>>;
+    
     fn get_schema_name(&self) -> &str;
 }
 
@@ -50,4 +51,5 @@ impl Default for EngineOptions {
     }
 }
 
-pub use pb::{SchemaMeta, TableMeta, ColumnMeta, ColumnType, Row, RowType};
+pub use pb::{SchemaMeta, TableMeta, ColumnMeta, ColumnType, Row, RowType, Query, QueryResult, QueryRow,
+               FilterOperator, ColumnFilter, ColumnFilterCondition, TableFilter};

@@ -255,6 +255,9 @@ pub trait DBEngine: Send + Sync + 'static {
     
     async fn get_table_meta(&self, table: &str) -> Result<Option<TableMeta>, ...>;
     
+    // Query 接口 - 支持 CNF 查询
+    async fn query(&self, query: &Query) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>;
+    
     fn get_schema_name(&self) -> &str;
 }
 ```
@@ -468,15 +471,60 @@ service LaoflchDb {
 db_path: ./laoflch_db_data    # 数据库根目录 (包含多个 Schema)
 log_level: info              # 日志级别
 
-# 访问协议配置
+# 默认权限策略 (当 service_id 没有特定权限配置时使用)
+default_policy: allow
+
+# 访问协议配置 (每个协议有独立的 service_id 和端口)
 access_protocols:
   - protocol: grpc
     enabled: true
     addr: 127.0.0.1:19777
+    service_id: grpc_admin
 
   - protocol: rest
     enabled: true
     addr: 127.0.0.1:8080
+    service_id: rest_admin
+
+# 权限配置 (每个 service_id 独立配置)
+permissions:
+  - service_id: grpc_admin
+    default_policy: allow
+    allowed_actions:
+      - get
+      - put
+      - delete
+      - create_table
+      - drop_table
+      - list_tables
+      - list_table_cols
+      - add_row
+      - get_row
+      - update_row
+      - delete_row
+      - get_all_meta
+      - get_schema_info
+      - get_table_meta
+      - query
+
+  - service_id: rest_admin
+    default_policy: allow
+    allowed_actions:
+      - get
+      - put
+      - delete
+      - create_table
+      - drop_table
+      - list_tables
+      - list_table_cols
+      - add_row
+      - get_row
+      - update_row
+      - delete_row
+      - get_all_meta
+      - get_schema_info
+      - get_table_meta
+      - query
 ```
 
 ---

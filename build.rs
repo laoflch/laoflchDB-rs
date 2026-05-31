@@ -5,6 +5,7 @@ fn main() {
         .build_server(true)
         .build_client(true)
         .include_file("pb.rs")
+        .protoc_arg("--experimental_allow_proto3_optional")
         .compile(
             &[
                 "src/access/proto/rpc.proto",

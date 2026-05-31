@@ -44,6 +44,7 @@ permissions:
       - get_all_meta
       - get_schema_info
       - get_table_meta
+      - query
 
   # REST 管理服务 - 允许所有操作
   - service_id: rest_admin
@@ -63,3 +64,4 @@ permissions:
       - get_all_meta
       - get_schema_info
       - get_table_meta
+      - query
