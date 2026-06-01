@@ -1,3 +1,5 @@
+
+
 use clap::Parser;
 
 #[derive(Parser, Debug)]
@@ -25,6 +27,9 @@ pub enum Commands {
     Init {
         #[arg(long, help = "数据库路径")]
         db_path: Option<String>,
+        
+        #[arg(long, help = "同时初始化示例数据")]
+        example: bool,
     },
 }
 
@@ -52,8 +57,9 @@ mod tests {
         let cli = Cli::try_parse_from(args).unwrap();
         assert_eq!(cli.config, Some("config.yaml".to_string()));
         match cli.command {
-            Commands::Init { db_path } => {
+            Commands::Init { db_path, example } => {
                 assert!(db_path.is_none());
+                assert!(!example);
             }
             _ => panic!("Expected Init command"),
         }
@@ -71,4 +77,18 @@ mod tests {
             _ => panic!("Expected Start command"),
         }
     }
+    
+    #[test]
+    fn test_cli_parse_init_with_example() {
+        let args = vec!["laoflchdb", "init", "--example"];
+        let cli = Cli::try_parse_from(args).unwrap();
+        match cli.command {
+            Commands::Init { db_path, example } => {
+                assert!(db_path.is_none());
+                assert!(example);
+            }
+            _ => panic!("Expected Init command"),
+        }
+    }
 }
+

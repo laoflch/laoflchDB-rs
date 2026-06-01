@@ -734,14 +734,235 @@ python3 tests_python/test_e2e_rest.py
 - ✅ Python REST E2E 测试 10 项全部通过
 - ✅ Python gRPC E2E 测试全部通过---
 
-## 16. 测试
+## 16. Query 接口设计
 
-### 测试套件
+### 16.1 接口定义
 
-项目包含完整的测试套件，覆盖单元测试、集成测试和端到端测试：| 测试类型 | 位置 | 说明 |
+`Query` 接口定义了服务层提交到 DBEngine 的数据查询信息，支持 **CNF (Conjunctive Normal Form) 表达式** 查询。
+
+**位置**: [laoflchdb_db_engine/proto/query.proto](laoflchdb_db_engine/proto/query.proto)
+
+```protobuf
+message Query {
+    repeated TableFilter table_filters = 1;  // 多个表过滤器，AND 关系 (CNF)
+    optional uint32 limit = 2;               // 返回结果数量限制
+    optional uint32 offset = 3;              // 跳过的结果数量
+}
+
+message TableFilter {
+    string table_name = 1;                    // 表名
+    repeated ColumnFilter column_filters = 2; // 多个列过滤器，AND 关系
+}
+
+message ColumnFilter {
+    string column_name = 1;                     // 列名
+    repeated ColumnFilterCondition conditions = 2; // 多个条件，OR 关系
+}
+
+message ColumnFilterCondition {
+    FilterOperator op = 1;       // 操作符
+    optional Field value = 2;    // 单值条件
+    repeated Field values = 3;   // 多值条件 (用于 IN/NOT_IN)
+}
+
+enum FilterOperator {
+    FILTER_OPERATOR_UNSPECIFIED = 0;
+    FILTER_OPERATOR_EQ = 1;      // 等于
+    FILTER_OPERATOR_NEQ = 2;     // 不等于
+    FILTER_OPERATOR_GT = 3;      // 大于
+    FILTER_OPERATOR_GTE = 4;     // 大于等于
+    FILTER_OPERATOR_LT = 5;      // 小于
+    FILTER_OPERATOR_LTE = 6;     // 小于等于
+    FILTER_OPERATOR_IN = 7;      // IN 列表
+    FILTER_OPERATOR_NOT_IN = 8;  // NOT IN 列表
+    FILTER_OPERATOR_IS_NULL = 9; // 为空
+    FILTER_OPERATOR_IS_NOT_NULL = 10; // 不为空
+}
+
+message QueryResult {
+    repeated QueryRow rows = 1;
+}
+
+message QueryRow {
+    string table_name = 1;
+    uint64 row_id = 2;
+    optional Row row = 3;
+}
+```
+
+### 16.2 CNF 表达式结构
+
+Query 接口的逻辑关系符合 **CNF (Conjunctive Normal Form)** 表达式：
+
+```
+Query = (TableFilter_1 AND TableFilter_2 AND ...)
+TableFilter = (ColumnFilter_1 AND ColumnFilter_2 AND ...)
+ColumnFilter = (Condition_1 OR Condition_2 OR ...)
+```
+
+### 16.3 DBEngine Query 方法
+
+```rust
+#[async_trait::async_trait]
+pub trait DBEngine: Send + Sync + 'static {
+    // Query 接口 - 支持 CNF 查询
+    async fn query(&self, query: &Query) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>;
+    // ... 其他方法
+}
+```
+
+### 16.4 实现逻辑
+
+**位置**: [multi_table_rocksdb/src/multi_table_rocksdb.rs](multi_table_rocksdb/src/multi_table_rocksdb.rs)
+
+查询实现流程：
+
+1. **表扫描**：遍历指定表的所有行（使用 RocksDB 迭代器）
+2. **列过滤**：对每一行检查是否满足所有 ColumnFilter 条件
+3. **条件比较**：支持 Int64、String、Float 等类型的比较操作
+4. **结果组装**：将符合条件的行封装为 QueryResult 返回
+
+---
+
+## 17. 前缀过滤与 Snowflake ID 设计
+
+### 17.1 Row ID 生成规则
+
+multi_table 的 `row_id` 生成规则为：
+
+1. **Snowflake 算法生成唯一 ID**
+2. **转换为大端字节序 (Big Endian) 存储**
+
+**核心优势**：
+- **RocksDB 保序**：大端字节序确保 ID 在 RocksDB 中按时间顺序排序
+- **前缀过滤**：时间戳作为 ID 的高位前缀，支持高效的时间范围扫描
+
+### 17.2 Snowflake ID 结构
+
+Snowflake ID 是一个 64 位整数，结构如下：
+
+| 位范围 | 位数 | 说明 |
+|--------|------|------|
+| 0-11 | 12 | 序列号 (0-4095) |
+| 12-21 | 10 | 机器 ID |
+| 22-23 | 2 | 数据中心 ID |
+| 24-63 | 40 | 时间戳 (毫秒级) |
+
+### 17.3 Big Endian 转换
+
+```rust
+fn row_id_to_key(&self, row_id: u64) -> Vec<u8> {
+    row_id.to_be_bytes().to_vec()
+}
+
+fn key_to_row_id(&self, key: &[u8]) -> Result<u64, ...> {
+    if key.len() != 8 {
+        return Err("Invalid row key length".into());
+    }
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(key);
+    Ok(u64::from_be_bytes(bytes))
+}
+```
+
+### 17.4 前缀过滤优势
+
+由于使用大端字节序存储，具有以下优势：
+
+1. **时间范围扫描**：相同时间戳前缀的行在 RocksDB 中连续存储
+2. **范围查询优化**：可以利用 RocksDB 的前缀迭代器进行高效扫描
+3. **ID 单调性保证**：Snowflake ID 保证单调递增，写入顺序即存储顺序
+
+### 17.5 依赖配置
+
+**位置**: [multi_table_rocksdb/Cargo.toml](multi_table_rocksdb/Cargo.toml)
+
+```toml
+snowflake_me = { version = "0.5", features = ["ip-fallback"] }
+```
+
+---
+
+## 18. 数据初始化模块
+
+### 18.1 Init 子命令
+
+数据初始化模块用于初始化数据库运行必要数据和样例数据：
+
+```bash
+# 初始化数据库
+./target/release/laoflchDB-rust init
+
+# 初始化并创建示例数据
+./target/release/laoflchDB-rust init --example
+```
+
+### 18.2 幂等性设计
+
+`init --example` 支持幂等执行：
+
+1. **检查 Schema 是否存在**：已存在则跳过创建
+2. **检查表是否存在**：已存在则跳过创建
+3. **检查数据是否已插入**：已存在则跳过插入
+
+**位置**: [src/cli/mod.rs](src/cli/mod.rs)
+
+### 18.3 示例数据
+
+执行 `init --example` 后会创建：
+
+- **example Schema**：示例数据库
+- **products 表**：产品信息表（id, name, price, stock）
+- **样例数据**：5 条产品记录
+
+---
+
+## 19. 测试
+
+### 19.1 测试套件
+
+项目包含完整的测试套件，覆盖单元测试、集成测试和端到端测试：
+
+| 测试类型 | 位置 | 说明 |
 |---------|------|------|
 | Rust 单元测试 | [tests/](tests/) | 基础功能和 API 测试 |
+| 前缀过滤测试 | [tests/prefix_filter_tests.rs](tests/prefix_filter_tests.rs) | 前缀过滤、Snowflake ID、Big Endian 测试 |
 | Python E2E 测试 | [tests_python/](tests_python/) | gRPC 和 REST 端到端测试 |
+
+### 19.2 前缀过滤测试覆盖
+
+| 测试名称 | 测试内容 |
+|---------|---------|
+| `test_row_id_to_key_big_endian` | 测试 row_id 到大端字节序键的转换 |
+| `test_row_id_to_key_roundtrip` | 测试 row_id 的往返转换 |
+| `test_big_endian_ordering_in_rocksdb` | 测试 RocksDB 中的大端字节序排序 |
+| `test_row_id_monotonic_increasing` | 测试 row_id 的单调递增性 |
+| `test_snowflake_id_distribution` | 测试 Snowflake ID 的唯一性分布 |
+| `test_prefix_comparison_across_boundaries` | 测试边界处的前缀比较 |
+| `test_query_with_cnf_filters` | 测试带 CNF 过滤器的查询功能 |
+| `test_scan_rows_in_key_range` | 测试键范围内的行扫描 |
+
+### 19.3 运行测试
+
+```bash
+# 运行所有 Rust 测试
+./run_tests.sh
+
+# 运行完整测试套件 (Rust + Python)
+./run_all_tests.sh
+
+# 快速验证
+./verify_tests.sh
+
+# 仅运行前缀过滤测试
+cargo test --test prefix_filter_tests -- --test-threads=1
+```
+
+### 19.4 测试文档
+
+- [TESTING.md](TESTING.md) - 测试指南和使用说明
+- [TEST_COVERAGE.md](TEST_COVERAGE.md) - 测试覆盖报告
+- [TEST_REPORT.md](TEST_REPORT.md) - 详细测试报告
 
 ### 运行测试
 

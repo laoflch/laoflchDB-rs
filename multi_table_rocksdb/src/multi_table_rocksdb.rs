@@ -1,15 +1,16 @@
 use rocksdb::{DB, Options, ColumnFamilyDescriptor};
 use prost::Message;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 use laoflchdb_db_engine::{DBEngine, EngineOptions, META_TABLE_PREFIX, META_COLUMN_PREFIX, META_SCHEMA_PREFIX, MAX_TABLE_ID_LENGTH};
 use laoflchdb_db_engine::pb::{SchemaMeta, TableMeta, ColumnMeta, Row, ColumnType, Query, QueryResult, QueryRow,
                                   FilterOperator, ColumnFilter, ColumnFilterCondition, TableFilter};
+use snowflake_me::Snowflake;
 
 pub struct MultiTableRocksDBEngine {
     db: DB,
     schema_name: String,
-    next_row_id: Arc<RwLock<u64>>,
+    snowflake: Snowflake,
 }
 
 impl MultiTableRocksDBEngine {
@@ -33,14 +34,15 @@ impl MultiTableRocksDBEngine {
 
         let db = DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
         
+        let snowflake = Snowflake::new().map_err(|e| e.to_string())?;
+        
         let mut engine = Self {
             db,
             schema_name,
-            next_row_id: Arc::new(RwLock::new(1)),
+            snowflake,
         };
         
         engine.init_schema_meta()?;
-        engine.init_row_id()?;
         engine.init_default_user_table()?;
         
         Ok(engine)
@@ -98,43 +100,13 @@ impl MultiTableRocksDBEngine {
         Ok(())
     }
 
-    fn init_row_id(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let mut max_id = 0u64;
-        
-        let all_tables = self.list_tables_internal()?;
-        
-        for table in &all_tables {
-            let cf_name = self.get_table_cf(table);
-            if let Some(cf_handle) = self.db.cf_handle(&cf_name) {
-                let mut iter = self.db.raw_iterator_cf(cf_handle);
-                iter.seek_to_last();
-                
-                while iter.valid() {
-                    if let Some(key) = iter.key() {
-                        if let Ok(key_str) = String::from_utf8(key.to_vec()) {
-                            if let Some(id_str) = key_str.strip_prefix("row:") {
-                                if let Ok(id) = id_str.parse::<u64>() {
-                                    if id > max_id {
-                                        max_id = id;
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    iter.prev();
-                }
-            }
-        }
-        
-        *self.next_row_id.write().unwrap() = max_id + 1;
-        Ok(())
-    }
-
     fn get_next_row_id(&self) -> u64 {
-        let mut id = self.next_row_id.write().unwrap();
-        let result = *id;
-        *id += 1;
-        result
+        self.snowflake.next_id().unwrap_or_else(|_| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as u64
+        })
     }
 
     pub fn db_path(&self) -> String {
@@ -379,10 +351,10 @@ impl DBEngine for MultiTableRocksDBEngine {
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
         
         let row_id = self.get_next_row_id();
-        let key = format!("row:{}", row_id);
+        let key = self.row_id_to_key(row_id);
         let value = row.encode_to_vec();
         
-        self.db.put_cf(cf_handle, key.as_bytes(), value)?;
+        self.db.put_cf(cf_handle, &key, value)?;
         
         Ok(row_id)
     }
@@ -392,8 +364,8 @@ impl DBEngine for MultiTableRocksDBEngine {
         let cf_handle = self.db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
         
-        let key = format!("row:{}", row_id);
-        let result = self.db.get_cf(cf_handle, key.as_bytes())?;
+        let key = self.row_id_to_key(row_id);
+        let result = self.db.get_cf(cf_handle, &key)?;
         
         match result {
             Some(data) => Ok(Some(Row::decode(data.as_slice())?)),
@@ -406,8 +378,8 @@ impl DBEngine for MultiTableRocksDBEngine {
         let cf_handle = self.db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
         
-        let key = format!("row:{}", row_id);
-        self.db.delete_cf(cf_handle, key.as_bytes())?;
+        let key = self.row_id_to_key(row_id);
+        self.db.delete_cf(cf_handle, &key)?;
         
         Ok(())
     }
@@ -417,14 +389,14 @@ impl DBEngine for MultiTableRocksDBEngine {
         let cf_handle = self.db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
         
-        let key = format!("row:{}", row_id);
+        let key = self.row_id_to_key(row_id);
         
-        if self.db.get_cf(cf_handle, key.as_bytes())?.is_none() {
+        if self.db.get_cf(cf_handle, &key)?.is_none() {
             return Err(format!("Row {} not found in table '{}'", row_id, table).into());
         }
         
         let value = row.encode_to_vec();
-        self.db.put_cf(cf_handle, key.as_bytes(), value)?;
+        self.db.put_cf(cf_handle, &key, value)?;
         
         Ok(())
     }
@@ -534,6 +506,21 @@ impl DBEngine for MultiTableRocksDBEngine {
 }
 
 impl MultiTableRocksDBEngine {
+    fn row_id_to_key(&self, row_id: u64) -> Vec<u8> {
+        row_id.to_be_bytes().to_vec()
+    }
+    
+    fn key_to_row_id(&self, key: &[u8]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        if key.len() != 8 {
+            return Err(format!("Invalid row key length: {}", key.len()).into());
+        }
+        let mut bytes = [0u8; 8];
+        bytes.copy_from_slice(key);
+        Ok(u64::from_be_bytes(bytes))
+    }
+}
+
+impl MultiTableRocksDBEngine {
     // 获取表的列元数据，返回列名到索引的映射
     fn get_table_columns(&self, table_name: &str) -> Result<std::collections::HashMap<String, (u64, laoflchdb_db_engine::pb::ColumnType)>, Box<dyn std::error::Error + Send + Sync>> {
         let mut columns = std::collections::HashMap::new();
@@ -583,16 +570,10 @@ impl MultiTableRocksDBEngine {
         for item in iter {
             let (key, value) = item?;
 
-            // 只处理以 "row:" 开头的键
-            let key_str = String::from_utf8(key.to_vec())?;
-            if !key_str.starts_with("row:") {
-                continue;
-            }
-
-            // 解析 row_id
-            let row_id = match key_str.strip_prefix("row:").and_then(|s| s.parse::<u64>().ok()) {
-                Some(id) => id,
-                None => continue,
+            // 解析 row_id（大端字节序）
+            let row_id = match self.key_to_row_id(key.as_ref()) {
+                Ok(id) => id,
+                Err(_) => continue,
             };
 
             // 解码行数据
@@ -750,30 +731,18 @@ impl MultiTableRocksDBEngine {
     ) -> bool {
         use laoflchdb_db_engine::pb::field::Value;
         
-        if let Some(ref value) = field.value {
-            match value {
-                Value::StringValue(s) => field_bytes == s.value.as_bytes(),
-                Value::IntegerValue(i) => {
-                    if field_bytes.len() >= 8 {
-                        let mut bytes = [0u8; 8];
-                        bytes.copy_from_slice(&field_bytes[0..8]);
-                        i64::from_be_bytes(bytes) == i.value
-                    } else {
-                        false
-                    }
-                }
-                Value::BytesValue(b) => field_bytes == b.value,
-                Value::FloatValue(f) => {
-                    if field_bytes.len() >= 8 {
-                        let mut bytes = [0u8; 8];
-                        bytes.copy_from_slice(&field_bytes[0..8]);
-                        f64::from_be_bytes(bytes) == f.value
-                    } else {
-                        false
-                    }
-                }
-                Value::ListValue(_) => false,
-                Value::ImageValue(_) => false,
+        let row_field = match laoflchdb_db_engine::pb::Field::decode(field_bytes) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        
+        if let (Some(ref row_value), Some(ref value)) = (&row_field.value, &field.value) {
+            match (row_value, value) {
+                (Value::StringValue(s1), Value::StringValue(s2)) => s1.value == s2.value,
+                (Value::IntegerValue(i1), Value::IntegerValue(i2)) => i1.value == i2.value,
+                (Value::BytesValue(b1), Value::BytesValue(b2)) => b1.value == b2.value,
+                (Value::FloatValue(f1), Value::FloatValue(f2)) => f1.value == f2.value,
+                _ => false,
             }
         } else {
             false
@@ -789,27 +758,16 @@ impl MultiTableRocksDBEngine {
     ) -> bool {
         use laoflchdb_db_engine::pb::field::Value;
         
-        if let Some(ref value) = field.value {
-            match value {
-                Value::StringValue(s) => field_bytes > s.value.as_bytes(),
-                Value::IntegerValue(i) => {
-                    if field_bytes.len() >= 8 {
-                        let mut bytes = [0u8; 8];
-                        bytes.copy_from_slice(&field_bytes[0..8]);
-                        i64::from_be_bytes(bytes) > i.value
-                    } else {
-                        false
-                    }
-                }
-                Value::FloatValue(f) => {
-                    if field_bytes.len() >= 8 {
-                        let mut bytes = [0u8; 8];
-                        bytes.copy_from_slice(&field_bytes[0..8]);
-                        f64::from_be_bytes(bytes) > f.value
-                    } else {
-                        false
-                    }
-                }
+        let row_field = match laoflchdb_db_engine::pb::Field::decode(field_bytes) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        
+        if let (Some(ref row_value), Some(ref value)) = (&row_field.value, &field.value) {
+            match (row_value, value) {
+                (Value::StringValue(s1), Value::StringValue(s2)) => s1.value > s2.value,
+                (Value::IntegerValue(i1), Value::IntegerValue(i2)) => i1.value > i2.value,
+                (Value::FloatValue(f1), Value::FloatValue(f2)) => f1.value > f2.value,
                 _ => false,
             }
         } else {
@@ -826,27 +784,16 @@ impl MultiTableRocksDBEngine {
     ) -> bool {
         use laoflchdb_db_engine::pb::field::Value;
         
-        if let Some(ref value) = field.value {
-            match value {
-                Value::StringValue(s) => field_bytes < s.value.as_bytes(),
-                Value::IntegerValue(i) => {
-                    if field_bytes.len() >= 8 {
-                        let mut bytes = [0u8; 8];
-                        bytes.copy_from_slice(&field_bytes[0..8]);
-                        i64::from_be_bytes(bytes) < i.value
-                    } else {
-                        false
-                    }
-                }
-                Value::FloatValue(f) => {
-                    if field_bytes.len() >= 8 {
-                        let mut bytes = [0u8; 8];
-                        bytes.copy_from_slice(&field_bytes[0..8]);
-                        f64::from_be_bytes(bytes) < f.value
-                    } else {
-                        false
-                    }
-                }
+        let row_field = match laoflchdb_db_engine::pb::Field::decode(field_bytes) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+        
+        if let (Some(ref row_value), Some(ref value)) = (&row_field.value, &field.value) {
+            match (row_value, value) {
+                (Value::StringValue(s1), Value::StringValue(s2)) => s1.value < s2.value,
+                (Value::IntegerValue(i1), Value::IntegerValue(i2)) => i1.value < i2.value,
+                (Value::FloatValue(f1), Value::FloatValue(f2)) => f1.value < f2.value,
                 _ => false,
             }
         } else {

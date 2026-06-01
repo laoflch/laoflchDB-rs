@@ -4,6 +4,7 @@ pub mod access;
 pub mod server;
 pub mod cli;
 pub mod config;
+pub mod init_data;
 
 pub mod pb {
     pub mod rpc {
