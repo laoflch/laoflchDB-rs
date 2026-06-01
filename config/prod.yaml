@@ -1,20 +1,29 @@
-# laoflchDB config
+# laoflchDB Production Configuration
 
+# Database configuration
 db_path: /app/data
+
+# Log configuration
 log_level: info
+
+# Default permission policy: allow or deny
 default_policy: allow
 
+# Access protocols configuration
 access_protocols:
+  # gRPC Admin Service
   - protocol: grpc
     enabled: true
     addr: 0.0.0.0:29777
     service_id: grpc_admin
 
+  # REST Admin Service
   - protocol: rest
     enabled: true
     addr: 0.0.0.0:38080
     service_id: rest_admin
 
+# Permissions configuration
 permissions:
   - service_id: grpc_admin
     default_policy: allow

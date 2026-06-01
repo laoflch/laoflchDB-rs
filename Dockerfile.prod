@@ -1,0 +1,29 @@
+# laoflchDB Production Docker Image
+FROM ubuntu:24.04
+
+# Create app user and directories
+RUN useradd -m appuser && \
+    mkdir -p /app/data && \
+    mkdir -p /app/config && \
+    chown -R appuser:appuser /app
+
+# Switch to non-root user
+USER appuser
+WORKDIR /app
+
+# Copy binary
+COPY target/release/laoflchDB-rust /app/laoflchDB-rust
+
+# Copy production configuration
+COPY config/prod.yaml /app/config/prod.yaml
+
+# Expose ports
+EXPOSE 29777
+EXPOSE 38080
+
+# Environment variables
+ENV RUST_LOG=info
+ENV DB_PATH=/app/data
+
+# Start command with production config
+CMD ["/app/laoflchDB-rust", "-c", "/app/config/prod.yaml", "start"]

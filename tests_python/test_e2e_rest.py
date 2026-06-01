@@ -2,8 +2,12 @@
 import requests
 import json
 import sys
+import os
 
-BASE_URL = "http://127.0.0.1:8080"
+PORT = os.environ.get("LAOFLCHDB_REST_PORT", "38080")
+BASE_URL = f"http://127.0.0.1:{PORT}"
+
+TABLE_NAME = "test_rest_api"
 
 def test_health():
     print("[测试] 健康检查...")
@@ -17,12 +21,20 @@ def test_health():
         print(f"    ✗ 健康检查失败: {e}")
         return False
 
+def cleanup_table():
+    print("[清理] 清理旧表...")
+    try:
+        resp = requests.delete(f"{BASE_URL}/api/v1/schemas/sys/tables/{TABLE_NAME}")
+        print("    ✓ 清理完成")
+    except Exception as e:
+        print(f"    - 清理失败(可能表不存在): {e}")
+
 def test_create_table():
     print("[测试] 创建表...")
     try:
         payload = {
             "schema": "sys",
-            "table_name": "test_rest_api",
+            "table_name": TABLE_NAME,
             "columns": [
                 {"name": "id", "column_type": "Int64"},
                 {"name": "name", "column_type": "String"},
@@ -31,9 +43,15 @@ def test_create_table():
         }
         resp = requests.post(f"{BASE_URL}/api/v1/tables", json=payload)
         data = resp.json()
-        assert data["success"] == True, f"Create table failed: {data}"
-        print("    ✓ 创建表成功")
-        return True
+        if data["success"] == True:
+            print("    ✓ 创建表成功")
+            return True
+        elif "already exists" in data.get("message", ""):
+            print("    - 表已存在，跳过创建")
+            return True
+        else:
+            print(f"    ✗ 创建表失败: {data}")
+            return False
     except Exception as e:
         print(f"    ✗ 创建表失败: {e}")
         return False
@@ -44,7 +62,7 @@ def test_list_tables():
         resp = requests.get(f"{BASE_URL}/api/v1/schemas/sys/tables")
         data = resp.json()
         assert data["success"] == True, f"List tables failed: {data}"
-        assert "test_rest_api" in data["data"], "test_rest_api not found"
+        assert TABLE_NAME in data["data"], f"{TABLE_NAME} not found"
         print("    ✓ 列出表成功")
         return True
     except Exception as e:
@@ -54,10 +72,10 @@ def test_list_tables():
 def test_get_table_meta():
     print("[测试] 获取表元数据...")
     try:
-        resp = requests.get(f"{BASE_URL}/api/v1/schemas/sys/tables/test_rest_api")
+        resp = requests.get(f"{BASE_URL}/api/v1/schemas/sys/tables/{TABLE_NAME}")
         data = resp.json()
         assert data["success"] == True, f"Get table meta failed: {data}"
-        assert data["data"]["table_name"] == "test_rest_api"
+        assert data["data"]["table_name"] == TABLE_NAME
         assert data["data"]["column_count"] == 3
         print("    ✓ 获取表元数据成功")
         return True
@@ -70,7 +88,7 @@ def test_put_data():
     try:
         payload = {
             "schema": "sys",
-            "table": "test_rest_api",
+            "table": TABLE_NAME,
             "key": "user_001",
             "value": '{"id":1,"name":"Alice","email":"alice@example.com"}'
         }
@@ -87,7 +105,7 @@ def test_get_data():
     print("[测试] 读取数据...")
     try:
         resp = requests.get(f"{BASE_URL}/api/v1/get",
-                           params={"schema": "sys", "table": "test_rest_api", "key": "user_001"})
+                           params={"schema": "sys", "table": TABLE_NAME, "key": "user_001"})
         data = resp.json()
         assert data["success"] == True, f"Get data failed: {data}"
         assert data["data"]["value"] is not None
@@ -102,7 +120,7 @@ def test_update_data():
     try:
         payload = {
             "schema": "sys",
-            "table": "test_rest_api",
+            "table": TABLE_NAME,
             "key": "user_001",
             "value": '{"id":1,"name":"Alice Updated","email":"alice.updated@example.com"}'
         }
@@ -120,7 +138,7 @@ def test_delete_data():
     try:
         payload = {
             "schema": "sys",
-            "table": "test_rest_api",
+            "table": TABLE_NAME,
             "key": "user_001"
         }
         resp = requests.post(f"{BASE_URL}/api/v1/delete", json=payload)
@@ -136,7 +154,7 @@ def test_verify_delete():
     print("[测试] 验证删除...")
     try:
         resp = requests.get(f"{BASE_URL}/api/v1/get",
-                           params={"schema": "sys", "table": "test_rest_api", "key": "user_001"})
+                           params={"schema": "sys", "table": TABLE_NAME, "key": "user_001"})
         data = resp.json()
         assert data["success"] == True, f"Verify delete failed: {data}"
         assert data["data"]["value"] is None, "Data should be null after delete"
@@ -162,7 +180,11 @@ def test_error_handling():
 def main():
     print("=" * 60)
     print("Python 自动回归测试: REST API 端到端验证")
+    print(f"目标端口: {PORT}")
     print("=" * 60)
+    print()
+
+    cleanup_table()
     print()
 
     tests = [
@@ -191,6 +213,8 @@ def main():
             print(f"    ✗ 测试异常: {e}")
             failed += 1
         print()
+
+    cleanup_table()
 
     print("=" * 60)
     print(f"测试结果: {passed} 通过, {failed} 失败")

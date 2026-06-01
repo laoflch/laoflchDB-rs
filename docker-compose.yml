@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  laoflchdb:
+    build:
+      context: .
+      dockerfile: Dockerfile.prod
+    image: laoflchdb-rust:prod
+    container_name: laoflchdb
+    ports:
+      - "8080:8080"    # REST API
+      - "19777:19777"  # gRPC
+    volumes:
+      - laoflchdb_data:/app/data
+      - ./laoflchdb.yaml:/app/laoflchdb.yaml
+    environment:
+      - RUST_LOG=info
+      - DB_PATH=/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  laoflchdb_data:
+    driver: local

@@ -1101,4 +1101,114 @@ impl MultiTableRocksDBEngine {
 
 ---
 
+---
+
+## 21. Docker 容器部署
+
+### 21.1 快速部署
+
+使用 `cargo deploy` 命令一键部署：
+
+```bash
+# 完整部署（构建 + 镜像 + 运行）
+cargo deploy
+```
+
+### 21.2 分步部署
+
+```bash
+# 1. 构建项目
+cargo build --release
+
+# 2. 构建 Docker 镜像
+cargo docker
+
+# 3. 运行容器
+cargo run-docker
+
+# 4. 停止容器
+cargo stop-docker
+```
+
+### 21.3 使用部署脚本
+
+```bash
+# 查看帮助
+./run_deploy.sh
+
+# 完整部署
+./run_deploy.sh deploy
+
+# 仅构建项目
+./run_deploy.sh build
+
+# 仅构建镜像
+./run_deploy.sh docker-build
+
+# 查看容器状态
+./run_deploy.sh docker-status
+
+# 查看日志
+./run_deploy.sh docker-logs
+```
+
+### 21.4 Docker Compose
+
+使用 `docker-compose` 管理容器：
+
+```bash
+# 启动容器（后台模式）
+docker-compose up -d
+
+# 查看容器状态
+docker-compose ps
+
+# 查看日志
+docker-compose logs -f
+
+# 停止并删除容器
+docker-compose down
+```
+
+### 21.5 配置说明
+
+**配置文件**: [laoflchdb.yaml](laoflchdb.yaml)
+
+```yaml
+db_path: ./laoflch_db_data    # 数据库数据目录
+log_level: info              # 日志级别
+
+access_protocols:
+  - protocol: grpc
+    enabled: true
+    addr: 127.0.0.1:19777
+    service_id: grpc_admin
+
+  - protocol: rest
+    enabled: true
+    addr: 127.0.0.1:8080
+    service_id: rest_admin
+```
+
+### 21.6 端口映射
+
+| 端口 | 服务 |
+|------|------|
+| 8080 | REST API |
+| 19777 | gRPC |
+
+### 21.7 数据持久化
+
+容器使用 Docker 卷 `laoflchdb_data` 持久化数据：
+
+```bash
+# 查看卷位置
+docker volume inspect laoflchdb_db_data
+
+# 备份数据
+docker run --rm -v laoflchdb_data:/data -v $(pwd):/backup alpine tar cvf /backup/backup.tar /data
+```
+
+---
+
 Copyright: laoflchDB-rust Project
