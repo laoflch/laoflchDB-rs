@@ -10,6 +10,7 @@ ldb
 gcc13/
 # 本地数据库文件
 laoflch_db_data/
+laoflch_db_data_prod/
 test_*/
 # 二进制可执行文件
 *.exe
