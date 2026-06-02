@@ -13,10 +13,11 @@ pub mod pb {
 }
 
 pub use db_engine::{
-    DBEngine, EngineOptions, MultiTableRocksDBEngine, MAX_TABLE_ID_LENGTH,
+    StorageEngine, EngineOptions, MultiTableRocksDBEngine, MAX_TABLE_ID_LENGTH,
     SchemaMeta, TableMeta, ColumnMeta, ColumnType,
     META_SCHEMA_PREFIX, META_TABLE_PREFIX, META_COLUMN_PREFIX
 };
+pub use laoflchdb_db_engine::{SQLEngine, DataFusionSQLEngine, QueryResult};
 pub use service::{DatabaseService, DatabaseServiceImpl, SchemaManager};
 pub use access::{AccessService, GrpcService, RestService};
 pub use server::LaoflchDBServer;

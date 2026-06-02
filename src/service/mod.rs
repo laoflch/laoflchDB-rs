@@ -1,6 +1,6 @@
-use laoflchdb_db_engine::{DBEngine, EngineOptions};
+use laoflchdb_db_engine::{StorageEngine, EngineOptions, SQLEngine, DataFusionSQLEngine, QueryResult, ColumnMeta, Query};
 use multi_table_rocksdb::MultiTableRocksDBEngine;
-use laoflchdb_db_engine::pb::{ColumnType, TableMeta, Row};
+use laoflchdb_db_engine::{ColumnType, TableMeta, Row};
 use std::sync::Arc;
 use std::collections::HashMap;
 
@@ -86,44 +86,55 @@ pub trait DatabaseService: Send + Sync + 'static {
     async fn list_schemas(&self) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>;
     async fn drop_schema(&self, schema: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     
-    // 表管理
     async fn create_table(&self, schema: &str, table: &str, columns: &[(u32, &str, ColumnType)]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>;
     async fn drop_table(&self, schema: &str, table: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn list_tables(&self, schema: &str) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>;
-    async fn list_table_cols(&self, schema: &str, table: &str) -> Result<Vec<laoflchdb_db_engine::pb::ColumnMeta>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn list_table_cols(&self, schema: &str, table: &str) -> Result<Vec<ColumnMeta>, Box<dyn std::error::Error + Send + Sync>>;
     
-    // 行操作
     async fn add_row(&self, schema: &str, table: &str, row: &Row) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_row(&self, schema: &str, table: &str, row_id: u64) -> Result<Option<Row>, Box<dyn std::error::Error + Send + Sync>>;
     async fn delete_row(&self, schema: &str, table: &str, row_id: u64) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn update_row(&self, schema: &str, table: &str, row_id: u64, row: &Row) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     
-    // 查询操作
-    async fn query(&self, schema: &str, query: &laoflchdb_db_engine::pb::Query) -> Result<laoflchdb_db_engine::pb::QueryResult, Box<dyn std::error::Error + Send + Sync>>;
+    async fn query(&self, schema: &str, query: &Query) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>;
     
-    // 元数据查询
     async fn get_all_meta(&self, schema: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_schema_info(&self, schema: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_table_meta(&self, schema: &str, table: &str) -> Result<Option<TableMeta>, Box<dyn std::error::Error + Send + Sync>>;
     
-    // KV 操作
     async fn put(&self, schema: &str, table: &str, key: &[u8], value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn get(&self, schema: &str, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>;
     async fn delete(&self, schema: &str, table: &str, key: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    
+    async fn sql_query(&self, schema: &str, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 pub struct DatabaseServiceImpl {
     schema_manager: Arc<SchemaManager>,
+    sql_engine: Arc<tokio::sync::RwLock<DataFusionSQLEngine<MultiTableRocksDBEngine>>>,
     default_schema: String,
 }
 
 impl DatabaseServiceImpl {
     pub async fn new(base_path: &str) -> Self {
-        let schema_manager = SchemaManager::new(base_path).await;
+        let schema_manager = Arc::new(SchemaManager::new(base_path).await);
+        
+        let engine = schema_manager.get_schema_engine("sys").await.unwrap();
+        let sql_engine = DataFusionSQLEngine::new(Arc::new(tokio::sync::RwLock::new(engine.lock().await.clone())));
+        
         Self { 
-            schema_manager: Arc::new(schema_manager),
+            schema_manager,
+            sql_engine: Arc::new(tokio::sync::RwLock::new(sql_engine)),
             default_schema: "sys".to_string(),
         }
+    }
+
+    pub fn schema_manager(&self) -> &Arc<SchemaManager> {
+        &self.schema_manager
+    }
+    
+    pub fn sql_engine(&self) -> &Arc<tokio::sync::RwLock<DataFusionSQLEngine<MultiTableRocksDBEngine>>> {
+        &self.sql_engine
     }
 }
 
@@ -153,13 +164,19 @@ impl DatabaseService for DatabaseServiceImpl {
         self.schema_manager.drop_schema(schema).await
     }
 
-    // 表管理
     async fn create_table(&self, schema: &str, table: &str, columns: &[(u32, &str, ColumnType)]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         let engine = self.schema_manager.get_schema_engine(schema).await?;
         let table = table.to_string();
         let columns = columns.to_vec();
         let mut engine = engine.lock().await;
-        engine.create_table(&table, &columns).await
+        let table_id = engine.create_table(&table, &columns).await?;
+        
+        if schema == "sys" {
+            let mut sql_engine = self.sql_engine.write().await;
+            sql_engine.register_table(&table).await?;
+        }
+        
+        Ok(table_id)
     }
 
     async fn drop_table(&self, schema: &str, table: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -175,14 +192,13 @@ impl DatabaseService for DatabaseServiceImpl {
         engine.list_tables().await
     }
 
-    async fn list_table_cols(&self, schema: &str, table: &str) -> Result<Vec<laoflchdb_db_engine::pb::ColumnMeta>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn list_table_cols(&self, schema: &str, table: &str) -> Result<Vec<ColumnMeta>, Box<dyn std::error::Error + Send + Sync>> {
         let engine = self.schema_manager.get_schema_engine(schema).await?;
         let table = table.to_string();
         let engine = engine.lock().await;
         engine.list_table_cols(&table).await
     }
 
-    // 行操作
     async fn add_row(&self, schema: &str, table: &str, row: &Row) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         let engine = self.schema_manager.get_schema_engine(schema).await?;
         let table = table.to_string();
@@ -213,7 +229,6 @@ impl DatabaseService for DatabaseServiceImpl {
         engine.update_row(&table, row_id, &row).await
     }
 
-    // 元数据查询
     async fn get_all_meta(&self, schema: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let engine = self.schema_manager.get_schema_engine(schema).await?;
         let engine = engine.lock().await;
@@ -233,7 +248,6 @@ impl DatabaseService for DatabaseServiceImpl {
         engine.get_table_meta(&table).await
     }
 
-    // KV 操作
     async fn put(&self, schema: &str, table: &str, key: &[u8], value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let engine = self.schema_manager.get_schema_engine(schema).await?;
         let table = table.to_string();
@@ -259,9 +273,14 @@ impl DatabaseService for DatabaseServiceImpl {
         engine.delete(&table, &key).await
     }
 
-    async fn query(&self, schema: &str, query: &laoflchdb_db_engine::pb::Query) -> Result<laoflchdb_db_engine::pb::QueryResult, Box<dyn std::error::Error + Send + Sync>> {
+    async fn query(&self, schema: &str, query: &Query) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
         let engine = self.schema_manager.get_schema_engine(schema).await?;
         let mut engine = engine.lock().await;
         engine.query(query).await
+    }
+    
+    async fn sql_query(&self, schema: &str, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
+        let sql_engine = self.sql_engine.read().await;
+        sql_engine.execute_query(sql).await
     }
 }

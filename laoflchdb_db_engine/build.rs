@@ -2,7 +2,11 @@ fn main() {
     let mut config = prost_build::Config::new();
     config.protoc_arg("--experimental_allow_proto3_optional");
     
-    // 移除 laoflchdb/ 前缀，直接在同一包中构建
+    println!("cargo:rerun-if-changed=proto/metadata.proto");
+    println!("cargo:rerun-if-changed=proto/row.proto");
+    println!("cargo:rerun-if-changed=proto/field.proto");
+    println!("cargo:rerun-if-changed=proto/query.proto");
+    
     config.compile_protos(
         &[
             "proto/metadata.proto",
@@ -11,6 +15,5 @@ fn main() {
             "proto/query.proto",
         ],
         &["proto/"],
-    )
-    .unwrap();
+    ).expect("Failed to compile protobuf");
 }

@@ -1,7 +1,8 @@
 use crate::service::DatabaseService;
 use crate::access::{PermissionChecker, PermissionContext};
 use crate::config::PermissionAction;
-use laoflchdb_db_engine::pb::{ColumnType, ColumnMeta, Row};
+use protobuf::Enum;
+use laoflchdb_db_engine::{ColumnType, ColumnMeta, Row, SpecialFields, EnumOrUnknown, RowType};
 use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use axum::{
@@ -243,17 +244,18 @@ fn encode_hex(data: &[u8]) -> String {
 
 fn convert_rest_row_to_db_row(rest_row: &RestRow) -> Result<Row, String> {
     Ok(Row {
-        row_type: rest_row.row_type,
+        row_type: EnumOrUnknown::new(RowType::from_i32(rest_row.row_type).unwrap_or(RowType::ROW_TYPE_NORMAL)),
         version: rest_row.version,
         data: rest_row.data.iter()
             .map(|s| decode_hex(s))
             .collect::<Result<Vec<_>, String>>()?,
+        special_fields: SpecialFields::default(),
     })
 }
 
 fn convert_db_row_to_rest_row(db_row: &Row) -> RestRow {
     RestRow {
-        row_type: db_row.row_type,
+        row_type: db_row.row_type.value(),
         version: db_row.version,
         data: db_row.data.iter()
             .map(|d| encode_hex(d))
@@ -266,7 +268,7 @@ fn convert_column_meta_to_rest(meta: &ColumnMeta) -> ColumnMetaResponse {
         table_id: meta.table_id,
         column_id: meta.column_id,
         column_name: meta.column_name.clone(),
-        column_type: meta.column_type,
+        column_type: meta.column_type.value(),
     }
 }
 
@@ -373,13 +375,13 @@ async fn create_table_handler(
         .enumerate()
         .map(|(idx, col)| {
             let ct = match col.column_type.to_uppercase().as_str() {
-                "STRING" => ColumnType::String,
-                "INT64" | "INT" => ColumnType::Int64,
-                "BYTES" | "BINARY" => ColumnType::Bytes,
-                "FLOAT" | "DOUBLE" => ColumnType::Float,
-                "LIST" => ColumnType::List,
-                "IMAGE" => ColumnType::Image,
-                _ => ColumnType::String,
+                "STRING" => ColumnType::COLUMN_TYPE_STRING,
+                "INT64" | "INT" => ColumnType::COLUMN_TYPE_INT64,
+                "BYTES" | "BINARY" => ColumnType::COLUMN_TYPE_BYTES,
+                "FLOAT" | "DOUBLE" => ColumnType::COLUMN_TYPE_FLOAT,
+                "LIST" => ColumnType::COLUMN_TYPE_LIST,
+                "IMAGE" => ColumnType::COLUMN_TYPE_IMAGE,
+                _ => ColumnType::COLUMN_TYPE_STRING,
             };
             (idx as u32, col.name.as_str(), ct)
         })

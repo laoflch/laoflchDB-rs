@@ -1,8 +1,7 @@
-use laoflchdb_db_engine::{DBEngine, EngineOptions};
-use laoflchdb_db_engine::pb::{ColumnType, Row, Field, Integer, String as PbString, Float};
-use laoflchdb_db_engine::pb::field::Value;
+use laoflchdb_db_engine::{StorageEngine, EngineOptions, ColumnType, Row, Field, Query, TableFilter, ColumnFilter, ColumnFilterCondition, FilterOperator, EnumOrUnknown, RowType, Message};
+use laoflchdb_db_engine::field::field::Value;
+use laoflchdb_db_engine::field::{Integer, String as PbString, Float};
 use multi_table_rocksdb::MultiTableRocksDBEngine;
-use prost::Message;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -20,6 +19,12 @@ fn create_temp_dir() -> PathBuf {
 
 fn remove_temp_dir(path: &PathBuf) {
     let _ = fs::remove_dir_all(path);
+}
+
+fn field_to_vec(field: &Field) -> Vec<u8> {
+    let mut v = Vec::new();
+    field.write_to_vec(&mut v).unwrap();
+    v
 }
 
 #[test]
@@ -71,26 +76,29 @@ async fn test_big_endian_ordering_in_rocksdb() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("test_table", &[
-        (1, "id", ColumnType::Int64),
-        (2, "name", ColumnType::String),
+        (1, "id", ColumnType::COLUMN_TYPE_INT64),
+        (2, "name", ColumnType::COLUMN_TYPE_STRING),
     ]).await.unwrap();
 
     let mut row_ids = Vec::new();
     for i in 0..5 {
-        let id_field = Field {
-            value: Some(Value::IntegerValue(Integer { value: i as i64 })),
+        let mut id_field = Field {
+            value: Some(Value::IntegerValue(Integer { value: i as i64, special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
-        let name_field = Field {
-            value: Some(Value::StringValue(PbString { value: format!("name_{}", i) })),
+        let mut name_field = Field {
+            value: Some(Value::StringValue(PbString { value: format!("name_{}", i), special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
 
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
             data: vec![
-                id_field.encode_to_vec(),
-                name_field.encode_to_vec(),
+                field_to_vec(&id_field),
+                field_to_vec(&name_field),
             ],
+            special_fields: Default::default(),
         };
 
         let row_id = engine.add_row("test_table", &row).await.unwrap();
@@ -117,30 +125,34 @@ async fn test_scan_with_prefix_filter() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("users", &[
-        (1, "id", ColumnType::Int64),
-        (2, "name", ColumnType::String),
-        (3, "age", ColumnType::Int64),
+        (1, "id", ColumnType::COLUMN_TYPE_INT64),
+        (2, "name", ColumnType::COLUMN_TYPE_STRING),
+        (3, "age", ColumnType::COLUMN_TYPE_INT64),
     ]).await.unwrap();
 
     for i in 0..10 {
-        let id_field = Field {
-            value: Some(Value::IntegerValue(Integer { value: i as i64 })),
+        let mut id_field = Field {
+            value: Some(Value::IntegerValue(Integer { value: i as i64, special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
-        let name_field = Field {
-            value: Some(Value::StringValue(PbString { value: format!("user_{}", i) })),
+        let mut name_field = Field {
+            value: Some(Value::StringValue(PbString { value: format!("user_{}", i), special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
-        let age_field = Field {
-            value: Some(Value::IntegerValue(Integer { value: (20 + i) as i64 })),
+        let mut age_field = Field {
+            value: Some(Value::IntegerValue(Integer { value: (20 + i) as i64, special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
 
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
             data: vec![
-                id_field.encode_to_vec(),
-                name_field.encode_to_vec(),
-                age_field.encode_to_vec(),
+                field_to_vec(&id_field),
+                field_to_vec(&name_field),
+                field_to_vec(&age_field),
             ],
+            special_fields: Default::default(),
         };
 
         engine.add_row("users", &row).await.unwrap();
@@ -165,19 +177,21 @@ async fn test_row_id_monotonic_increasing() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("test_table", &[
-        (1, "name", ColumnType::String),
+        (1, "name", ColumnType::COLUMN_TYPE_STRING),
     ]).await.unwrap();
 
     let mut previous_id: u64 = 0;
     for i in 0..100 {
-        let name_field = Field {
-            value: Some(Value::StringValue(PbString { value: format!("item_{}", i) })),
+        let mut name_field = Field {
+            value: Some(Value::StringValue(PbString { value: format!("item_{}", i), special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
 
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
-            data: vec![name_field.encode_to_vec()],
+            data: vec![field_to_vec(&name_field)],
+            special_fields: Default::default(),
         };
 
         let row_id = engine.add_row("test_table", &row).await.unwrap();
@@ -202,26 +216,33 @@ async fn test_get_row_by_id() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("products", &[
-        (1, "id", ColumnType::Int64),
-        (2, "name", ColumnType::String),
-        (3, "price", ColumnType::Float),
+        (1, "id", ColumnType::COLUMN_TYPE_INT64),
+        (2, "name", ColumnType::COLUMN_TYPE_STRING),
+        (3, "price", ColumnType::COLUMN_TYPE_FLOAT),
     ]).await.unwrap();
 
-    let name_field = Field {
-        value: Some(Value::StringValue(PbString { value: "Test Product".to_string() })),
+    let mut name_field = Field {
+        value: Some(Value::StringValue(PbString { value: "Test Product".to_string(), special_fields: Default::default() })),
+        special_fields: Default::default(),
     };
-    let price_field = Field {
-        value: Some(Value::FloatValue(Float { value: 99.99 })),
+    let mut price_field = Field {
+        value: Some(Value::FloatValue(Float { value: 99.99, special_fields: Default::default() })),
+        special_fields: Default::default(),
+    };
+    let mut id_field = Field {
+        value: Some(Value::IntegerValue(Integer { value: 1, special_fields: Default::default() })),
+        special_fields: Default::default(),
     };
 
     let row = Row {
-        row_type: 0,
+        row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
         version: 1,
         data: vec![
-            Field { value: Some(Value::IntegerValue(Integer { value: 1 })) }.encode_to_vec(),
-            name_field.encode_to_vec(),
-            price_field.encode_to_vec(),
+            field_to_vec(&id_field),
+            field_to_vec(&name_field),
+            field_to_vec(&price_field),
         ],
+        special_fields: Default::default(),
     };
 
     let row_id = engine.add_row("products", &row).await.unwrap();
@@ -249,15 +270,19 @@ async fn test_delete_row() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("items", &[
-        (1, "name", ColumnType::String),
+        (1, "name", ColumnType::COLUMN_TYPE_STRING),
     ]).await.unwrap();
 
+    let mut name_field = Field {
+        value: Some(Value::StringValue(PbString { value: "test_item".to_string(), special_fields: Default::default() })),
+        special_fields: Default::default(),
+    };
+
     let row = Row {
-        row_type: 0,
+        row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
         version: 1,
-        data: vec![
-            Field { value: Some(Value::StringValue(PbString { value: "test_item".to_string() })) }.encode_to_vec(),
-        ],
+        data: vec![field_to_vec(&name_field)],
+        special_fields: Default::default(),
     };
 
     let row_id = engine.add_row("items", &row).await.unwrap();
@@ -284,25 +309,33 @@ async fn test_update_row() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("items", &[
-        (1, "name", ColumnType::String),
+        (1, "name", ColumnType::COLUMN_TYPE_STRING),
     ]).await.unwrap();
 
+    let mut name_field1 = Field {
+        value: Some(Value::StringValue(PbString { value: "original".to_string(), special_fields: Default::default() })),
+        special_fields: Default::default(),
+    };
+
     let row1 = Row {
-        row_type: 0,
+        row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
         version: 1,
-        data: vec![
-            Field { value: Some(Value::StringValue(PbString { value: "original".to_string() })) }.encode_to_vec(),
-        ],
+        data: vec![field_to_vec(&name_field1)],
+        special_fields: Default::default(),
     };
 
     let row_id = engine.add_row("items", &row1).await.unwrap();
 
+    let mut name_field2 = Field {
+        value: Some(Value::StringValue(PbString { value: "updated".to_string(), special_fields: Default::default() })),
+        special_fields: Default::default(),
+    };
+
     let row2 = Row {
-        row_type: 0,
+        row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
         version: 2,
-        data: vec![
-            Field { value: Some(Value::StringValue(PbString { value: "updated".to_string() })) }.encode_to_vec(),
-        ],
+        data: vec![field_to_vec(&name_field2)],
+        special_fields: Default::default(),
     };
 
     engine.update_row("items", row_id, &row2).await.unwrap();
@@ -326,17 +359,21 @@ async fn test_snowflake_id_distribution() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("test_table", &[
-        (1, "value", ColumnType::String),
+        (1, "value", ColumnType::COLUMN_TYPE_STRING),
     ]).await.unwrap();
 
     let mut ids = Vec::new();
     for i in 0..1000 {
+        let mut name_field = Field {
+            value: Some(Value::StringValue(PbString { value: format!("val_{}", i), special_fields: Default::default() })),
+            special_fields: Default::default(),
+        };
+
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
-            data: vec![
-                Field { value: Some(Value::StringValue(PbString { value: format!("val_{}", i) })) }.encode_to_vec(),
-            ],
+            data: vec![field_to_vec(&name_field)],
+            special_fields: Default::default(),
         };
 
         let row_id = engine.add_row("test_table", &row).await.unwrap();
@@ -383,26 +420,29 @@ async fn test_prefix_scan_with_timestamp() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("events", &[
-        (1, "timestamp", ColumnType::Int64),
-        (2, "data", ColumnType::String),
+        (1, "timestamp", ColumnType::COLUMN_TYPE_INT64),
+        (2, "data", ColumnType::COLUMN_TYPE_STRING),
     ]).await.unwrap();
 
     let mut inserted_ids = Vec::new();
     for i in 0..5 {
-        let ts_field = Field {
-            value: Some(Value::IntegerValue(Integer { value: (1000 + i) as i64 })),
+        let mut ts_field = Field {
+            value: Some(Value::IntegerValue(Integer { value: (1000 + i) as i64, special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
-        let data_field = Field {
-            value: Some(Value::StringValue(PbString { value: format!("event_{}", i) })),
+        let mut data_field = Field {
+            value: Some(Value::StringValue(PbString { value: format!("event_{}", i), special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
 
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
             data: vec![
-                ts_field.encode_to_vec(),
-                data_field.encode_to_vec(),
+                field_to_vec(&ts_field),
+                field_to_vec(&data_field),
             ],
+            special_fields: Default::default(),
         };
 
         let row_id = engine.add_row("events", &row).await.unwrap();
@@ -437,17 +477,21 @@ async fn test_snowflake_id_timestamp_prefix() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("records", &[
-        (1, "value", ColumnType::String),
+        (1, "value", ColumnType::COLUMN_TYPE_STRING),
     ]).await.unwrap();
 
     let mut ids = Vec::new();
     for _ in 0..10 {
+        let mut name_field = Field {
+            value: Some(Value::StringValue(PbString { value: "test".to_string(), special_fields: Default::default() })),
+            special_fields: Default::default(),
+        };
+
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
-            data: vec![
-                Field { value: Some(Value::StringValue(PbString { value: "test".to_string() })) }.encode_to_vec(),
-            ],
+            data: vec![field_to_vec(&name_field)],
+            special_fields: Default::default(),
         };
 
         let row_id = engine.add_row("records", &row).await.unwrap();
@@ -469,8 +513,6 @@ async fn test_snowflake_id_timestamp_prefix() {
 
 #[tokio::test]
 async fn test_query_with_cnf_filters() {
-    use laoflchdb_db_engine::pb::{Query, TableFilter, ColumnFilter, ColumnFilterCondition, FilterOperator};
-
     let temp_dir = create_temp_dir();
     let db_path = temp_dir.to_str().unwrap();
 
@@ -482,10 +524,10 @@ async fn test_query_with_cnf_filters() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("products", &[
-        (1, "id", ColumnType::Int64),
-        (2, "name", ColumnType::String),
-        (3, "price", ColumnType::Float),
-        (4, "stock", ColumnType::Int64),
+        (1, "id", ColumnType::COLUMN_TYPE_INT64),
+        (2, "name", ColumnType::COLUMN_TYPE_STRING),
+        (3, "price", ColumnType::COLUMN_TYPE_FLOAT),
+        (4, "stock", ColumnType::COLUMN_TYPE_INT64),
     ]).await.unwrap();
 
     let products = vec![
@@ -497,28 +539,33 @@ async fn test_query_with_cnf_filters() {
     ];
 
     for (id, name, price, stock) in products {
-        let id_field = Field {
-            value: Some(Value::IntegerValue(Integer { value: id as i64 })),
+        let mut id_field = Field {
+            value: Some(Value::IntegerValue(Integer { value: id as i64, special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
-        let name_field = Field {
-            value: Some(Value::StringValue(PbString { value: name.to_string() })),
+        let mut name_field = Field {
+            value: Some(Value::StringValue(PbString { value: name.to_string(), special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
-        let price_field = Field {
-            value: Some(Value::FloatValue(Float { value: price })),
+        let mut price_field = Field {
+            value: Some(Value::FloatValue(Float { value: price, special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
-        let stock_field = Field {
-            value: Some(Value::IntegerValue(Integer { value: stock as i64 })),
+        let mut stock_field = Field {
+            value: Some(Value::IntegerValue(Integer { value: stock as i64, special_fields: Default::default() })),
+            special_fields: Default::default(),
         };
 
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
             data: vec![
-                id_field.encode_to_vec(),
-                name_field.encode_to_vec(),
-                price_field.encode_to_vec(),
-                stock_field.encode_to_vec(),
+                field_to_vec(&id_field),
+                field_to_vec(&name_field),
+                field_to_vec(&price_field),
+                field_to_vec(&stock_field),
             ],
+            special_fields: Default::default(),
         };
 
         engine.add_row("products", &row).await.unwrap();
@@ -533,31 +580,39 @@ async fn test_query_with_cnf_filters() {
                         column_name: "price".to_string(),
                         conditions: vec![
                             ColumnFilterCondition {
-                                op: FilterOperator::Lt as i32,
+                                op: EnumOrUnknown::new(FilterOperator::FILTER_OPERATOR_LT),
                                 value: Some(Field {
-                                    value: Some(Value::FloatValue(Float { value: 600.0 })),
-                                }),
+                                    value: Some(Value::FloatValue(Float { value: 600.0, special_fields: Default::default() })),
+                                    special_fields: Default::default(),
+                                }).into(),
                                 values: vec![],
+                                special_fields: Default::default(),
                             },
                         ],
+                        special_fields: Default::default(),
                     },
                     ColumnFilter {
                         column_name: "stock".to_string(),
                         conditions: vec![
                             ColumnFilterCondition {
-                                op: FilterOperator::Gte as i32,
+                                op: EnumOrUnknown::new(FilterOperator::FILTER_OPERATOR_GTE),
                                 value: Some(Field {
-                                    value: Some(Value::IntegerValue(Integer { value: 100 })),
-                                }),
+                                    value: Some(Value::IntegerValue(Integer { value: 100, special_fields: Default::default() })),
+                                    special_fields: Default::default(),
+                                }).into(),
                                 values: vec![],
+                                special_fields: Default::default(),
                             },
                         ],
+                        special_fields: Default::default(),
                     },
                 ],
+                special_fields: Default::default(),
             },
         ],
         limit: Some(10),
         offset: Some(0),
+        special_fields: Default::default(),
     };
 
     let result = engine.query(&query).await.unwrap();
@@ -566,7 +621,7 @@ async fn test_query_with_cnf_filters() {
     let names: Vec<String> = result.rows.iter()
         .filter_map(|r| r.row.as_ref())
         .map(|row| {
-            if let Ok(field) = Field::decode(row.data[1].as_slice()) {
+            if let Ok(field) = Field::parse_from_bytes(row.data[1].as_slice()) {
                 if let Some(Value::StringValue(s)) = field.value {
                     return s.value;
                 }
@@ -594,17 +649,21 @@ async fn test_scan_rows_in_key_range() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("scan_test", &[
-        (1, "index", ColumnType::Int64),
+        (1, "index", ColumnType::COLUMN_TYPE_INT64),
     ]).await.unwrap();
 
     let mut row_ids = Vec::new();
     for i in 0..100 {
+        let mut index_field = Field {
+            value: Some(Value::IntegerValue(Integer { value: i as i64, special_fields: Default::default() })),
+            special_fields: Default::default(),
+        };
+
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
-            data: vec![
-                Field { value: Some(Value::IntegerValue(Integer { value: i as i64 })) }.encode_to_vec(),
-            ],
+            data: vec![field_to_vec(&index_field)],
+            special_fields: Default::default(),
         };
 
         let row_id = engine.add_row("scan_test", &row).await.unwrap();
@@ -668,17 +727,21 @@ async fn test_parallel_row_insertion_order() {
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
     engine.create_table("parallel_test", &[
-        (1, "seq", ColumnType::Int64),
+        (1, "seq", ColumnType::COLUMN_TYPE_INT64),
     ]).await.unwrap();
 
     let mut row_ids = Vec::new();
     for i in 0..10 {
+        let mut seq_field = Field {
+            value: Some(Value::IntegerValue(Integer { value: i as i64, special_fields: Default::default() })),
+            special_fields: Default::default(),
+        };
+
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
-            data: vec![
-                Field { value: Some(Value::IntegerValue(Integer { value: i as i64 })) }.encode_to_vec(),
-            ],
+            data: vec![field_to_vec(&seq_field)],
+            special_fields: Default::default(),
         };
 
         let row_id = engine.add_row("parallel_test", &row).await.unwrap();

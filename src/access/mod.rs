@@ -20,8 +20,8 @@ use crate::pb::rpc::{
     Row as RpcRow,
 };
 use crate::config::PermissionAction;
-use laoflchdb_db_engine::pb::{ColumnMeta, Row};
-use laoflchdb_db_engine::pb::ColumnType;
+use protobuf::Enum;
+use laoflchdb_db_engine::{ColumnMeta, Row, ColumnType, Query, QueryResult, QueryRow, SpecialFields};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -142,134 +142,150 @@ impl AccessService {
     }
 }
 
-// 转换函数
 fn convert_column_meta_to_rpc(meta: &ColumnMeta) -> RpcColumnMeta {
     RpcColumnMeta {
         table_id: meta.table_id,
         column_id: meta.column_id,
         column_name: meta.column_name.clone(),
-        column_type: meta.column_type as i32,
+        column_type: meta.column_type.value(),
     }
 }
 
 fn convert_row_from_rpc(rpc_row: RpcRow) -> Row {
+    use laoflchdb_db_engine::{EnumOrUnknown, RowType};
     Row {
-        row_type: rpc_row.row_type,
+        row_type: EnumOrUnknown::new(RowType::from_i32(rpc_row.row_type).unwrap_or(RowType::ROW_TYPE_NORMAL)),
         version: rpc_row.version,
         data: rpc_row.data,
+        special_fields: SpecialFields::default(),
     }
 }
 
 fn convert_row_to_rpc(row: &Row) -> RpcRow {
     RpcRow {
-        row_type: row.row_type,
+        row_type: row.row_type.value(),
         version: row.version,
         data: row.data.clone(),
     }
 }
 
-fn convert_query_from_rpc(req: &QueryRequest) -> laoflchdb_db_engine::pb::Query {
-    use laoflchdb_db_engine::pb::{TableFilter, ColumnFilter, ColumnFilterCondition, FilterOperator, Field};
+fn convert_query_from_rpc(req: &QueryRequest) -> Query {
+    use laoflchdb_db_engine::{TableFilter, ColumnFilter, ColumnFilterCondition, FilterOperator, Field, EnumOrUnknown};
+    use laoflchdb_db_engine::field::field::Value;
+    use laoflchdb_db_engine::field::{String, Integer, Bytes, Float, List, Image};
     
     let table_filters = req.table_filters.iter().map(|tf| {
         let column_filters = tf.column_filters.iter().map(|cf| {
             let conditions = cf.conditions.iter().map(|cond| {
-                let op = match FilterOperator::from_i32(cond.op) {
-                    Some(op) => op,
-                    None => FilterOperator::Unspecified,
-                };
+                let op = FilterOperator::from_i32(cond.op).unwrap_or(FilterOperator::FILTER_OPERATOR_UNSPECIFIED);
                 
-                let value = cond.value.as_ref().map(|f| {
-                    use laoflchdb_db_engine::pb::field::Value;
-                    use laoflchdb_db_engine::pb::{String, Integer, Bytes, Float, List, Image};
-                    
+                let field_value = cond.value.as_ref().map(|f| {
                     let val = match f.value {
                         Some(ref v) => match v {
                             crate::pb::rpc::field::Value::StringValue(s) => Value::StringValue(String {
                                 value: s.value.clone(),
+                                special_fields: SpecialFields::default(),
                             }),
                             crate::pb::rpc::field::Value::IntegerValue(i) => Value::IntegerValue(Integer {
                                 value: i.value,
+                                special_fields: SpecialFields::default(),
                             }),
                             crate::pb::rpc::field::Value::BytesValue(b) => Value::BytesValue(Bytes {
                                 value: b.value.clone(),
+                                special_fields: SpecialFields::default(),
                             }),
                             crate::pb::rpc::field::Value::FloatValue(fv) => Value::FloatValue(Float {
                                 value: fv.value,
+                                special_fields: SpecialFields::default(),
                             }),
                             crate::pb::rpc::field::Value::ListValue(l) => Value::ListValue(List {
                                 items: l.items.clone(),
+                                special_fields: SpecialFields::default(),
                             }),
                             crate::pb::rpc::field::Value::ImageValue(img) => Value::ImageValue(Image {
                                 data: img.data.clone(),
                                 format: img.format.clone(),
+                                special_fields: SpecialFields::default(),
                             }),
                         },
-                        None => Value::StringValue(String { value: std::string::String::new() }),
+                        None => Value::StringValue(String { 
+                            value: std::string::String::new(),
+                            special_fields: SpecialFields::default(),
+                        }),
                     };
                     
-                    Field { value: Some(val) }
+                    Field { value: Some(val), special_fields: SpecialFields::default() }
                 });
                 
                 let values = cond.values.iter().map(|f| {
-                    use laoflchdb_db_engine::pb::field::Value;
-                    use laoflchdb_db_engine::pb::{String, Integer, Bytes, Float, List, Image};
-                    
                     let val = match f.value {
                         Some(ref v) => match v {
                             crate::pb::rpc::field::Value::StringValue(s) => Value::StringValue(String {
                                 value: s.value.clone(),
+                                special_fields: SpecialFields::default(),
                             }),
                             crate::pb::rpc::field::Value::IntegerValue(i) => Value::IntegerValue(Integer {
                                 value: i.value,
+                                special_fields: SpecialFields::default(),
                             }),
                             crate::pb::rpc::field::Value::BytesValue(b) => Value::BytesValue(Bytes {
                                 value: b.value.clone(),
+                                special_fields: SpecialFields::default(),
                             }),
                             crate::pb::rpc::field::Value::FloatValue(fv) => Value::FloatValue(Float {
                                 value: fv.value,
+                                special_fields: SpecialFields::default(),
                             }),
                             crate::pb::rpc::field::Value::ListValue(l) => Value::ListValue(List {
                                 items: l.items.clone(),
+                                special_fields: SpecialFields::default(),
                             }),
                             crate::pb::rpc::field::Value::ImageValue(img) => Value::ImageValue(Image {
                                 data: img.data.clone(),
                                 format: img.format.clone(),
+                                special_fields: SpecialFields::default(),
                             }),
                         },
-                        None => Value::StringValue(String { value: std::string::String::new() }),
+                        None => Value::StringValue(String { 
+                            value: std::string::String::new(),
+                            special_fields: SpecialFields::default(),
+                        }),
                     };
                     
-                    Field { value: Some(val) }
+                    Field { value: Some(val), special_fields: SpecialFields::default() }
                 }).collect();
                 
                 ColumnFilterCondition {
-                    op: op as i32,
-                    value,
+                    op: EnumOrUnknown::new(op),
+                    value: field_value.into(),
                     values,
+                    special_fields: SpecialFields::default(),
                 }
             }).collect();
             
             ColumnFilter {
                 column_name: cf.column_name.clone(),
                 conditions,
+                special_fields: SpecialFields::default(),
             }
         }).collect();
         
         TableFilter {
             table_name: tf.table_name.clone(),
             column_filters,
+            special_fields: SpecialFields::default(),
         }
     }).collect();
     
-    laoflchdb_db_engine::pb::Query {
+    Query {
         table_filters,
         limit: req.limit,
         offset: req.offset,
+        special_fields: SpecialFields::default(),
     }
 }
 
-fn convert_query_row_to_rpc(qr: &laoflchdb_db_engine::pb::QueryRow) -> crate::pb::rpc::QueryRow {
+fn convert_query_row_to_rpc(qr: &QueryRow) -> crate::pb::rpc::QueryRow {
     crate::pb::rpc::QueryRow {
         table_name: qr.table_name.clone(),
         row_id: qr.row_id,
@@ -336,8 +352,7 @@ impl LaoflchDb for GrpcService {
             .into_iter()
             .enumerate()
             .map(|(idx, col)| {
-                let ct = ColumnType::try_from(col.column_type)
-                    .unwrap_or(ColumnType::String);
+                let ct = ColumnType::from_i32(col.column_type).unwrap_or(ColumnType::COLUMN_TYPE_STRING);
                 (idx as u32, col.name, ct)
             })
             .collect();
@@ -529,7 +544,6 @@ impl LaoflchDb for GrpcService {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
         
-        // 对于查询，我们检查权限（不指定具体表，因为查询可能涉及多个表）
         self.check_permission(schema, None, PermissionAction::Query)?;
         
         let db_query = convert_query_from_rpc(&req);

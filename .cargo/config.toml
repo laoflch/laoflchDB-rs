@@ -6,3 +6,7 @@ all = "xtask all"
 init = "xtask init"
 docker = "xtask docker"
 auto-test = "xtask auto-test"
+
+[env]
+CC = "/usr/local/gcc-13/bin/gcc"
+CXX = "/usr/local/gcc-13/bin/g++"

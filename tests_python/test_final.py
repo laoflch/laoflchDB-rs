@@ -46,6 +46,8 @@ def run_tests():
                 failed += 1
         except Exception as e:
             print(f"    ✗ {name}异常: {e}")
+            import traceback
+            traceback.print_exc()
             failed += 1
         print()
 

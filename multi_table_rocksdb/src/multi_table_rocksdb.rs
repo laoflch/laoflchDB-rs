@@ -1,14 +1,26 @@
 use rocksdb::{DB, Options, ColumnFamilyDescriptor};
-use prost::Message;
-use std::sync::Arc;
-
-use laoflchdb_db_engine::{DBEngine, EngineOptions, META_TABLE_PREFIX, META_COLUMN_PREFIX, META_SCHEMA_PREFIX, MAX_TABLE_ID_LENGTH};
-use laoflchdb_db_engine::pb::{SchemaMeta, TableMeta, ColumnMeta, Row, ColumnType, Query, QueryResult, QueryRow,
-                                  FilterOperator, ColumnFilter, ColumnFilterCondition, TableFilter};
+use protobuf::{Message, Enum};
 use snowflake_me::Snowflake;
+use std::sync::Arc;
+use std::sync::RwLock;
 
+use laoflchdb_db_engine::{StorageEngine, EngineOptions, META_TABLE_PREFIX, META_COLUMN_PREFIX, META_SCHEMA_PREFIX, MAX_TABLE_ID_LENGTH};
+use laoflchdb_db_engine::{SchemaMeta, TableMeta, ColumnMeta, Row, ColumnType, Query, QueryResult, QueryRow,
+                                  FilterOperator, ColumnFilter, ColumnFilterCondition, TableFilter};
+
+fn write_proto_to_vec<T: Message>(msg: &T) -> Vec<u8> {
+    let mut v = Vec::new();
+    msg.write_to_vec(&mut v).expect("Failed to serialize protobuf");
+    v
+}
+
+fn parse_proto_from_bytes<T: Message + Default>(bytes: &[u8]) -> Result<T, protobuf::Error> {
+    T::parse_from_bytes(bytes)
+}
+
+#[derive(Clone)]
 pub struct MultiTableRocksDBEngine {
-    db: DB,
+    db: Arc<RwLock<DB>>,
     schema_name: String,
     snowflake: Snowflake,
 }
@@ -33,8 +45,9 @@ impl MultiTableRocksDBEngine {
         };
 
         let db = DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
+        let db = Arc::new(RwLock::new(db));
         
-        let snowflake = Snowflake::new().map_err(|e| e.to_string())?;
+        let snowflake = Snowflake::new()?;
         
         let mut engine = Self {
             db,
@@ -54,8 +67,9 @@ impl MultiTableRocksDBEngine {
             let schema_meta = SchemaMeta {
                 schema_name: self.schema_name.clone(),
                 next_auto_inc_table_id: 0,
+                special_fields: ::protobuf::SpecialFields::default(),
             };
-            let encoded = schema_meta.encode_to_vec();
+            let encoded = write_proto_to_vec(&schema_meta);
             self.put_meta_internal(schema_meta_key.as_bytes(), &encoded)?;
         }
         Ok(())
@@ -68,7 +82,7 @@ impl MultiTableRocksDBEngine {
             
             let cf_name = self.get_table_cf("user");
             let cf_opts = Options::default();
-            self.db.create_cf(&cf_name, &cf_opts)?;
+            self.db.write().unwrap().create_cf(&cf_name, &cf_opts)?;
             
             let table_meta_key = self.make_table_meta_key("user", next_table_id);
             let table_meta = TableMeta {
@@ -76,13 +90,14 @@ impl MultiTableRocksDBEngine {
                 table_name: "user".to_string(),
                 column_count: 2,
                 next_auto_inc_column_id: 2,
+                special_fields: ::protobuf::SpecialFields::default(),
             };
-            let encoded = table_meta.encode_to_vec();
+            let encoded = write_proto_to_vec(&table_meta);
             self.put_meta_internal(table_meta_key.as_bytes(), &encoded)?;
             
             let columns = vec![
-                (0, "user_id", ColumnType::Int64),
-                (1, "password", ColumnType::String),
+                (0, "user_id", ColumnType::COLUMN_TYPE_INT64),
+                (1, "password", ColumnType::COLUMN_TYPE_STRING),
             ];
             
             for (column_id, column_name, column_type) in columns {
@@ -92,8 +107,9 @@ impl MultiTableRocksDBEngine {
                     column_id,
                     column_name: column_name.to_string(),
                     column_type: column_type.into(),
+                    special_fields: ::protobuf::SpecialFields::default(),
                 };
-                let encoded = col_meta.encode_to_vec();
+                let encoded = write_proto_to_vec(&col_meta);
                 self.put_meta_internal(col_meta_key.as_bytes(), &encoded)?;
             }
         }
@@ -110,7 +126,7 @@ impl MultiTableRocksDBEngine {
     }
 
     pub fn db_path(&self) -> String {
-        self.db.path().to_string_lossy().to_string()
+        self.db.read().unwrap().path().to_string_lossy().to_string()
     }
 
     fn get_table_cf(&self, table: &str) -> String {
@@ -131,12 +147,13 @@ impl MultiTableRocksDBEngine {
 
     fn get_column_type_name(&self, column_type: ColumnType) -> &'static str {
         match column_type {
-            ColumnType::String => "COLUMN_TYPE_STRING",
-            ColumnType::Int64 => "COLUMN_TYPE_INT64",
-            ColumnType::Bytes => "COLUMN_TYPE_BYTES",
-            ColumnType::Float => "COLUMN_TYPE_FLOAT",
-            ColumnType::List => "COLUMN_TYPE_LIST",
-            ColumnType::Image => "COLUMN_TYPE_IMAGE",
+            ColumnType::COLUMN_TYPE_STRING => "COLUMN_TYPE_STRING",
+            ColumnType::COLUMN_TYPE_INT64 => "COLUMN_TYPE_INT64",
+            ColumnType::COLUMN_TYPE_BYTES => "COLUMN_TYPE_BYTES",
+            ColumnType::COLUMN_TYPE_FLOAT => "COLUMN_TYPE_FLOAT",
+            ColumnType::COLUMN_TYPE_LIST => "COLUMN_TYPE_LIST",
+            ColumnType::COLUMN_TYPE_IMAGE => "COLUMN_TYPE_IMAGE",
+            _ => "COLUMN_TYPE_STRING",
         }
     }
 
@@ -147,25 +164,28 @@ impl MultiTableRocksDBEngine {
     }
 
     fn put_meta_internal(&self, key: &[u8], value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let cf_handle = self.db.cf_handle("default")
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle("default")
             .ok_or_else(|| "Default column family not found".to_string())?;
-        self.db.put_cf(cf_handle, key, value)?;
+        db.put_cf(cf_handle, key, value)?;
         Ok(())
     }
 
     fn get_meta_internal(&self, key: &[u8]) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
-        let cf_handle = self.db.cf_handle("default")
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle("default")
             .ok_or_else(|| "Default column family not found".to_string())?;
-        let result = self.db.get_cf(cf_handle, key)?;
+        let result = db.get_cf(cf_handle, key)?;
         Ok(result)
     }
 
     fn scan_meta_prefix_internal(&self, prefix: &[u8]) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Box<dyn std::error::Error + Send + Sync>> {
-        let cf_handle = self.db.cf_handle("default")
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle("default")
             .ok_or_else(|| "Default column family not found".to_string())?;
         
         let mut result = Vec::new();
-        let mut iter = self.db.raw_iterator_cf(cf_handle);
+        let mut iter = db.raw_iterator_cf(cf_handle);
         iter.seek(prefix);
         
         while iter.valid() {
@@ -185,9 +205,10 @@ impl MultiTableRocksDBEngine {
     }
 
     fn delete_meta_internal(&mut self, key: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let cf_handle = self.db.cf_handle("default")
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle("default")
             .ok_or_else(|| "Default column family not found".to_string())?;
-        self.db.delete_cf(cf_handle, key)?;
+        db.delete_cf(cf_handle, key)?;
         Ok(())
     }
 
@@ -197,17 +218,18 @@ impl MultiTableRocksDBEngine {
         
         let mut next_table_id: u64 = 0;
         if let Some(data) = schema_meta_data {
-            let mut schema_meta: SchemaMeta = prost::Message::decode(&data[..])?;
+            let mut schema_meta: SchemaMeta = parse_proto_from_bytes(&data[..])?;
             next_table_id = schema_meta.next_auto_inc_table_id;
             schema_meta.next_auto_inc_table_id = next_table_id + 1;
-            let encoded = schema_meta.encode_to_vec();
+            let encoded = write_proto_to_vec(&schema_meta);
             self.put_meta_internal(schema_meta_key.as_bytes(), &encoded)?;
         } else {
             let schema_meta = SchemaMeta {
                 schema_name: self.schema_name.clone(),
                 next_auto_inc_table_id: 1,
+                special_fields: ::protobuf::SpecialFields::default(),
             };
-            let encoded = schema_meta.encode_to_vec();
+            let encoded = write_proto_to_vec(&schema_meta);
             self.put_meta_internal(schema_meta_key.as_bytes(), &encoded)?;
         }
         
@@ -234,8 +256,7 @@ impl MultiTableRocksDBEngine {
 }
 
 #[async_trait::async_trait]
-impl DBEngine for MultiTableRocksDBEngine {
-    // 表管理
+impl StorageEngine for MultiTableRocksDBEngine {
     async fn create_table(&mut self, table: &str, columns: &[(u32, &str, ColumnType)]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         if table == "default" {
             return Err("Cannot create reserved table 'default'".into());
@@ -243,14 +264,17 @@ impl DBEngine for MultiTableRocksDBEngine {
         
         let cf_name = self.get_table_cf(table);
         
-        if self.db.cf_handle(&cf_name).is_some() {
-            return Err(format!("Table '{}' already exists", cf_name).into());
+        {
+            let db = self.db.read().unwrap();
+            if db.cf_handle(&cf_name).is_some() {
+                return Err(format!("Table '{}' already exists", cf_name).into());
+            }
         }
         
         let next_table_id = self.get_next_table_id()?;
         
         let cf_opts = Options::default();
-        self.db.create_cf(&cf_name, &cf_opts)?;
+        self.db.write().unwrap().create_cf(&cf_name, &cf_opts)?;
 
         let table_meta_key = self.make_table_meta_key(table, next_table_id);
         let table_meta = TableMeta {
@@ -258,8 +282,9 @@ impl DBEngine for MultiTableRocksDBEngine {
             table_name: table.to_string(),
             column_count: columns.len() as u32,
             next_auto_inc_column_id: columns.len() as u64,
+            special_fields: ::protobuf::SpecialFields::default(),
         };
-        let encoded = table_meta.encode_to_vec();
+        let encoded = write_proto_to_vec(&table_meta);
         self.put_meta_internal(table_meta_key.as_bytes(), &encoded)?;
 
         for (idx, (_, col_name, col_type)) in columns.iter().enumerate() {
@@ -270,8 +295,9 @@ impl DBEngine for MultiTableRocksDBEngine {
                 column_id: col_id,
                 column_name: col_name.to_string(),
                 column_type: (*col_type).into(),
+                special_fields: ::protobuf::SpecialFields::default(),
             };
-            let encoded = col_meta.encode_to_vec();
+            let encoded = write_proto_to_vec(&col_meta);
             self.put_meta_internal(col_meta_key.as_bytes(), &encoded)?;
         }
 
@@ -281,8 +307,12 @@ impl DBEngine for MultiTableRocksDBEngine {
     async fn drop_table(&mut self, table: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
         
-        if self.db.cf_handle(&cf_name).is_some() {
-            self.db.drop_cf(&cf_name)?;
+        {
+            let db = self.db.read().unwrap();
+            if db.cf_handle(&cf_name).is_some() {
+                drop(db);
+                self.db.write().unwrap().drop_cf(&cf_name)?;
+            }
         }
         
         let prefix = format!("{}:{}:", META_TABLE_PREFIX, table);
@@ -320,12 +350,10 @@ impl DBEngine for MultiTableRocksDBEngine {
         let table_entries = self.scan_meta_prefix_internal(table_prefix.as_bytes())?;
         
         let mut table_id = None;
-        for (key, value) in table_entries {
-            if let Ok(key_str) = String::from_utf8(key) {
-                if let Ok(table_meta) = TableMeta::decode(value.as_slice()) {
-                    table_id = Some(table_meta.table_id);
-                    break;
-                }
+        for (_, value) in table_entries {
+            if let Ok(table_meta) = TableMeta::parse_from_bytes(value.as_slice()) {
+                table_id = Some(table_meta.table_id);
+                break;
             }
         }
         
@@ -334,7 +362,7 @@ impl DBEngine for MultiTableRocksDBEngine {
             let col_entries = self.scan_meta_prefix_internal(col_prefix.as_bytes())?;
             
             for (_, value) in col_entries {
-                if let Ok(col_meta) = ColumnMeta::decode(value.as_slice()) {
+                if let Ok(col_meta) = ColumnMeta::parse_from_bytes(value.as_slice()) {
                     cols.push(col_meta);
                 }
             }
@@ -344,64 +372,66 @@ impl DBEngine for MultiTableRocksDBEngine {
         Ok(cols)
     }
     
-    // 行操作
     async fn add_row(&mut self, table: &str, row: &Row) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
-        let cf_handle = self.db.cf_handle(&cf_name)
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
         
         let row_id = self.get_next_row_id();
         let key = self.row_id_to_key(row_id);
-        let value = row.encode_to_vec();
+        let value = write_proto_to_vec(row);
         
-        self.db.put_cf(cf_handle, &key, value)?;
+        db.put_cf(cf_handle, &key, value)?;
         
         Ok(row_id)
     }
 
     async fn get_row(&self, table: &str, row_id: u64) -> Result<Option<Row>, Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
-        let cf_handle = self.db.cf_handle(&cf_name)
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
         
         let key = self.row_id_to_key(row_id);
-        let result = self.db.get_cf(cf_handle, &key)?;
+        let result = db.get_cf(cf_handle, &key)?;
         
         match result {
-            Some(data) => Ok(Some(Row::decode(data.as_slice())?)),
+            Some(data) => Ok(Some(Row::parse_from_bytes(data.as_slice())?)),
             None => Ok(None),
         }
     }
 
     async fn delete_row(&mut self, table: &str, row_id: u64) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
-        let cf_handle = self.db.cf_handle(&cf_name)
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
         
         let key = self.row_id_to_key(row_id);
-        self.db.delete_cf(cf_handle, &key)?;
+        db.delete_cf(cf_handle, &key)?;
         
         Ok(())
     }
 
     async fn update_row(&mut self, table: &str, row_id: u64, row: &Row) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
-        let cf_handle = self.db.cf_handle(&cf_name)
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
         
         let key = self.row_id_to_key(row_id);
         
-        if self.db.get_cf(cf_handle, &key)?.is_none() {
+        if db.get_cf(cf_handle, &key)?.is_none() {
             return Err(format!("Row {} not found in table '{}'", row_id, table).into());
         }
         
-        let value = row.encode_to_vec();
-        self.db.put_cf(cf_handle, &key, value)?;
+        let value = write_proto_to_vec(row);
+        db.put_cf(cf_handle, &key, value)?;
         
         Ok(())
     }
     
-    // 元数据查询
     async fn get_all_meta(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut result = serde_json::Map::new();
         
@@ -409,16 +439,14 @@ impl DBEngine for MultiTableRocksDBEngine {
         
         let table_entries = self.scan_meta_prefix_internal(META_TABLE_PREFIX.as_bytes())?;
         
-        for (key, value) in table_entries {
-            if let Ok(key_str) = String::from_utf8(key) {
-                if let Ok(table_meta) = TableMeta::decode(value.as_slice()) {
-                    let mut table_obj = serde_json::Map::new();
-                    table_obj.insert("table_id".to_string(), table_meta.table_id.into());
-                    table_obj.insert("table_name".to_string(), table_meta.table_name.clone().into());
-                    table_obj.insert("column_count".to_string(), table_meta.column_count.into());
-                    
-                    tables.insert(table_meta.table_name, table_obj.into());
-                }
+        for (_, value) in table_entries {
+            if let Ok(table_meta) = TableMeta::parse_from_bytes(value.as_slice()) {
+                let mut table_obj = serde_json::Map::new();
+                table_obj.insert("table_id".to_string(), table_meta.table_id.into());
+                table_obj.insert("table_name".to_string(), table_meta.table_name.clone().into());
+                table_obj.insert("column_count".to_string(), table_meta.column_count.into());
+                
+                tables.insert(table_meta.table_name, table_obj.into());
             }
         }
         
@@ -449,59 +477,96 @@ impl DBEngine for MultiTableRocksDBEngine {
         let meta_entries = self.scan_meta_prefix_internal(prefix.as_bytes())?;
         
         for (_, value) in meta_entries {
-            let table_meta: TableMeta = prost::Message::decode(&value[..])?;
+            let table_meta: TableMeta = TableMeta::parse_from_bytes(&value[..])?;
             return Ok(Some(table_meta));
         }
         
         Ok(None)
     }
     
-    // KV 操作
     async fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
-        let cf_handle = self.db.cf_handle(&cf_name)
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
-        self.db.put_cf(cf_handle, key, value)?;
+        db.put_cf(cf_handle, key, value)?;
         Ok(())
     }
 
     async fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
-        let cf_handle = self.db.cf_handle(&cf_name)
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
-        let result = self.db.get_cf(cf_handle, key)?;
+        let result = db.get_cf(cf_handle, key)?;
         Ok(result)
     }
 
     async fn delete(&mut self, table: &str, key: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
-        let cf_handle = self.db.cf_handle(&cf_name)
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
-        self.db.delete_cf(cf_handle, key)?;
+        db.delete_cf(cf_handle, key)?;
         Ok(())
     }
 
-    // Query 操作
     async fn query(&self, query: &Query) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
         let mut result_rows = Vec::new();
 
-        // CNF 表达式：多个表过滤器之间是 AND 关系
-        // 对于每个表，我们需要单独查询
         for table_filter in &query.table_filters {
             self.query_table(table_filter, &mut result_rows)?;
         }
 
-        // 应用 offset 和 limit
         let start = query.offset.unwrap_or(0) as usize;
         let count = query.limit.map(|l| l as usize).unwrap_or(usize::MAX);
         let end = std::cmp::min(start + count, result_rows.len());
         let rows = result_rows.drain(start..end).collect();
 
-        Ok(QueryResult { rows })
+        Ok(QueryResult { 
+            rows,
+            special_fields: ::protobuf::SpecialFields::default(),
+        })
     }
 
     fn get_schema_name(&self) -> &str {
         &self.schema_name
+    }
+    
+    async fn scan_table(&self, table: &str, limit: Option<usize>) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>> {
+        let cf_name = self.get_table_cf(table);
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle(&cf_name)
+            .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
+        
+        let mut results = Vec::new();
+        let iter = db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start);
+        
+        for item in iter {
+            let (key, value) = item?;
+            let row_id = self.key_to_row_id(key.as_ref())?;
+            let row = Row::parse_from_bytes(&value[..])?;
+            results.push((row_id, row));
+            
+            if let Some(lim) = limit {
+                if results.len() >= lim {
+                    break;
+                }
+            }
+        }
+        
+        Ok(results)
+    }
+    
+    async fn get_column_types(&self, table: &str) -> Result<std::collections::HashMap<String, ColumnType>, Box<dyn std::error::Error + Send + Sync>> {
+        let columns = self.get_table_columns(table)?;
+        let mut column_types = std::collections::HashMap::new();
+        
+        for (name, (_, col_type)) in columns {
+            column_types.insert(name, col_type);
+        }
+        
+        Ok(column_types)
     }
 }
 
@@ -521,8 +586,7 @@ impl MultiTableRocksDBEngine {
 }
 
 impl MultiTableRocksDBEngine {
-    // 获取表的列元数据，返回列名到索引的映射
-    fn get_table_columns(&self, table_name: &str) -> Result<std::collections::HashMap<String, (u64, laoflchdb_db_engine::pb::ColumnType)>, Box<dyn std::error::Error + Send + Sync>> {
+    fn get_table_columns(&self, table_name: &str) -> Result<std::collections::HashMap<String, (u64, ColumnType)>, Box<dyn std::error::Error + Send + Sync>> {
         let mut columns = std::collections::HashMap::new();
         
         let table_prefix = format!("{}:{}:", META_TABLE_PREFIX, table_name);
@@ -530,7 +594,7 @@ impl MultiTableRocksDBEngine {
         
         let mut table_id = None;
         for (_, value) in table_entries {
-            if let Ok(table_meta) = laoflchdb_db_engine::pb::TableMeta::decode(value.as_slice()) {
+            if let Ok(table_meta) = TableMeta::parse_from_bytes(value.as_slice()) {
                 table_id = Some(table_meta.table_id);
                 break;
             }
@@ -541,10 +605,10 @@ impl MultiTableRocksDBEngine {
             let col_entries = self.scan_meta_prefix_internal(col_prefix.as_bytes())?;
             
             for (_, value) in col_entries {
-                if let Ok(col_meta) = laoflchdb_db_engine::pb::ColumnMeta::decode(value.as_slice()) {
+                if let Ok(col_meta) = ColumnMeta::parse_from_bytes(value.as_slice()) {
                     columns.insert(
                         col_meta.column_name.clone(), 
-                        (col_meta.column_id, col_meta.column_type())
+                        (col_meta.column_id, col_meta.column_type.enum_value_or(ColumnType::COLUMN_TYPE_STRING))
                     );
                 }
             }
@@ -553,41 +617,37 @@ impl MultiTableRocksDBEngine {
         Ok(columns)
     }
 
-    // 查询单个表并返回结果
     fn query_table(&self, table_filter: &TableFilter, result_rows: &mut Vec<QueryRow>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let table_name = &table_filter.table_name;
         let cf_name = self.get_table_cf(table_name);
-        let cf_handle = match self.db.cf_handle(&cf_name) {
+        let db = self.db.read().unwrap();
+        let cf_handle = match db.cf_handle(&cf_name) {
             Some(handle) => handle,
-            None => return Ok(()),  // 表不存在，返回空结果
+            None => return Ok(()),
         };
 
-        // 获取表的列元数据
         let columns = self.get_table_columns(table_name)?;
 
-        // 扫描表中的所有行
-        let iter = self.db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start);
+        let iter = db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start);
         for item in iter {
             let (key, value) = item?;
 
-            // 解析 row_id（大端字节序）
             let row_id = match self.key_to_row_id(key.as_ref()) {
                 Ok(id) => id,
                 Err(_) => continue,
             };
 
-            // 解码行数据
-            let row = match Row::decode(&value[..]) {
+            let row = match Row::parse_from_bytes(&value[..]) {
                 Ok(row) => row,
                 Err(_) => continue,
             };
 
-            // 检查是否满足列过滤器条件
             if self.check_table_filters(&row, &table_filter.column_filters, &columns) {
                 result_rows.push(QueryRow {
                     table_name: table_name.to_string(),
                     row_id,
-                    row: Some(row),
+                    row: ::protobuf::MessageField::some(row),
+                    special_fields: ::protobuf::SpecialFields::default(),
                 });
             }
         }
@@ -595,14 +655,12 @@ impl MultiTableRocksDBEngine {
         Ok(())
     }
 
-    // 检查行是否满足表过滤器条件（CNF 中一个 clause：多个列 AND）
     fn check_table_filters(
         &self, 
         row: &Row, 
         column_filters: &[ColumnFilter], 
-        columns: &std::collections::HashMap<String, (u64, laoflchdb_db_engine::pb::ColumnType)>
+        columns: &std::collections::HashMap<String, (u64, ColumnType)>
     ) -> bool {
-        // 所有列过滤器都必须满足（AND 关系）
         for column_filter in column_filters {
             if !self.check_column_filter(row, column_filter, columns) {
                 return false;
@@ -611,14 +669,12 @@ impl MultiTableRocksDBEngine {
         true
     }
 
-    // 检查行是否满足单个列过滤器（多个条件 OR）
     fn check_column_filter(
         &self, 
         row: &Row, 
         column_filter: &ColumnFilter, 
-        columns: &std::collections::HashMap<String, (u64, laoflchdb_db_engine::pb::ColumnType)>
+        columns: &std::collections::HashMap<String, (u64, ColumnType)>
     ) -> bool {
-        // 至少有一个条件满足即可（OR 关系）
         for condition in &column_filter.conditions {
             if self.check_column_condition(row, column_filter, condition, columns) {
                 return true;
@@ -627,75 +683,72 @@ impl MultiTableRocksDBEngine {
         false
     }
 
-    // 检查单个列条件
     fn check_column_condition(
         &self, 
         row: &Row, 
         column_filter: &ColumnFilter, 
         condition: &ColumnFilterCondition, 
-        columns: &std::collections::HashMap<String, (u64, laoflchdb_db_engine::pb::ColumnType)>
+        columns: &std::collections::HashMap<String, (u64, ColumnType)>
     ) -> bool {
-        // 查找列索引和类型
         let (column_idx, column_type) = match columns.get(&column_filter.column_name) {
             Some((idx, t)) => (*idx as usize, *t),
-            None => return false, // 列不存在，不匹配
+            None => return false,
         };
 
-        // 获取字段值
         let field_bytes = if column_idx < row.data.len() {
             &row.data[column_idx]
         } else {
-            return false; // 列索引超出范围
+            return false;
         };
 
-        // 根据操作符比较
-        let op = FilterOperator::from_i32(condition.op).unwrap_or(FilterOperator::Unspecified);
+        let op_val = condition.op.value();
+        let op = FilterOperator::from_i32(op_val);
         match op {
-            FilterOperator::Eq => {
-                if let Some(ref value) = condition.value {
+            Some(FilterOperator::FILTER_OPERATOR_EQ) => {
+                if let Some(value) = condition.value.as_ref() {
                     self.compare_field_equals(field_bytes, value, column_type)
                 } else {
                     false
                 }
             }
-            FilterOperator::Neq => {
-                if let Some(ref value) = condition.value {
+            Some(FilterOperator::FILTER_OPERATOR_NEQ) => {
+                if let Some(value) = condition.value.as_ref() {
                     !self.compare_field_equals(field_bytes, value, column_type)
                 } else {
                     false
                 }
             }
-            FilterOperator::Gt => {
-                if let Some(ref value) = condition.value {
+            Some(FilterOperator::FILTER_OPERATOR_GT) => {
+                if let Some(value) = condition.value.as_ref() {
                     self.compare_field_greater(field_bytes, value, column_type)
                 } else {
                     false
                 }
             }
-            FilterOperator::Gte => {
-                if let Some(ref value) = condition.value {
+            Some(FilterOperator::FILTER_OPERATOR_GTE) => {
+                if let Some(value) = condition.value.as_ref() {
                     self.compare_field_equals(field_bytes, value, column_type) || 
                     self.compare_field_greater(field_bytes, value, column_type)
                 } else {
                     false
                 }
             }
-            FilterOperator::Lt => {
-                if let Some(ref value) = condition.value {
+            Some(FilterOperator::FILTER_OPERATOR_LT) => {
+                if let Some(value) = condition.value.as_ref() {
                     self.compare_field_less(field_bytes, value, column_type)
                 } else {
                     false
                 }
             }
-            FilterOperator::Lte => {
-                if let Some(ref value) = condition.value {
+            Some(FilterOperator::FILTER_OPERATOR_LTE) => {
+                if let Some(value) = condition.value.as_ref() {
                     self.compare_field_equals(field_bytes, value, column_type) || 
                     self.compare_field_less(field_bytes, value, column_type)
                 } else {
                     false
                 }
             }
-            FilterOperator::In => {
+            Some(FilterOperator::FILTER_OPERATOR_IN) => {
                 if !condition.values.is_empty() {
                     for value in &condition.values {
                         if self.compare_field_equals(field_bytes, value, column_type) {
@@ -705,7 +758,7 @@ impl MultiTableRocksDBEngine {
                 }
                 false
             }
-            FilterOperator::NotIn => {
+            Some(FilterOperator::FILTER_OPERATOR_NOT_IN) => {
                 if !condition.values.is_empty() {
                     for value in &condition.values {
                         if self.compare_field_equals(field_bytes, value, column_type) {
@@ -716,22 +769,21 @@ impl MultiTableRocksDBEngine {
                 }
                 false
             }
-            FilterOperator::IsNull => field_bytes.is_empty(),
-            FilterOperator::IsNotNull => !field_bytes.is_empty(),
-            _ => false, // 暂时不支持 Like
+            Some(FilterOperator::FILTER_OPERATOR_IS_NULL) => field_bytes.is_empty(),
+            Some(FilterOperator::FILTER_OPERATOR_IS_NOT_NULL) => !field_bytes.is_empty(),
+            _ => false,
         }
     }
 
-    // 字段相等比较
     fn compare_field_equals(
         &self, 
         field_bytes: &[u8], 
-        field: &laoflchdb_db_engine::pb::Field, 
-        _column_type: laoflchdb_db_engine::pb::ColumnType
+        field: &laoflchdb_db_engine::Field, 
+        _column_type: ColumnType
     ) -> bool {
-        use laoflchdb_db_engine::pb::field::Value;
+        use laoflchdb_db_engine::field::field::Value;
         
-        let row_field = match laoflchdb_db_engine::pb::Field::decode(field_bytes) {
+        let row_field = match laoflchdb_db_engine::Field::parse_from_bytes(field_bytes) {
             Ok(f) => f,
             Err(_) => return false,
         };
@@ -749,16 +801,15 @@ impl MultiTableRocksDBEngine {
         }
     }
 
-    // 字段大于比较
     fn compare_field_greater(
         &self, 
         field_bytes: &[u8], 
-        field: &laoflchdb_db_engine::pb::Field, 
-        _column_type: laoflchdb_db_engine::pb::ColumnType
+        field: &laoflchdb_db_engine::Field, 
+        _column_type: ColumnType
     ) -> bool {
-        use laoflchdb_db_engine::pb::field::Value;
+        use laoflchdb_db_engine::field::field::Value;
         
-        let row_field = match laoflchdb_db_engine::pb::Field::decode(field_bytes) {
+        let row_field = match laoflchdb_db_engine::Field::parse_from_bytes(field_bytes) {
             Ok(f) => f,
             Err(_) => return false,
         };
@@ -775,16 +826,15 @@ impl MultiTableRocksDBEngine {
         }
     }
 
-    // 字段小于比较
     fn compare_field_less(
         &self, 
         field_bytes: &[u8], 
-        field: &laoflchdb_db_engine::pb::Field, 
-        _column_type: laoflchdb_db_engine::pb::ColumnType
+        field: &laoflchdb_db_engine::Field, 
+        _column_type: ColumnType
     ) -> bool {
-        use laoflchdb_db_engine::pb::field::Value;
+        use laoflchdb_db_engine::field::field::Value;
         
-        let row_field = match laoflchdb_db_engine::pb::Field::decode(field_bytes) {
+        let row_field = match laoflchdb_db_engine::Field::parse_from_bytes(field_bytes) {
             Ok(f) => f,
             Err(_) => return false,
         };

@@ -1,13 +1,16 @@
 
-
 use crate::service::{DatabaseService, DatabaseServiceImpl};
-use laoflchdb_db_engine::pb::ColumnType;
-use laoflchdb_db_engine::pb::Row;
-use laoflchdb_db_engine::pb::Field;
-use laoflchdb_db_engine::pb::{String, Integer, Float};
-use laoflchdb_db_engine::pb::field::Value;
-use prost::Message;
+use laoflchdb_db_engine::{ColumnType, Row, Field, SpecialFields, EnumOrUnknown, RowType};
+use laoflchdb_db_engine::field::{String, Integer, Float};
+use laoflchdb_db_engine::field::field::Value;
+use laoflchdb_db_engine::Message;
 use std::collections::HashSet;
+
+fn encode_field(f: &Field) -> Vec<u8> {
+    let mut buf = Vec::new();
+    f.write_to_vec(&mut buf).unwrap();
+    buf
+}
 
 pub async fn init_example_data(db_path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db_service = DatabaseServiceImpl::new(db_path).await;
@@ -16,19 +19,17 @@ pub async fn init_example_data(db_path: &str) -> Result<(), Box<dyn std::error::
     
     let schema = "example";
     
-    // 1. 创建 example schema（幂等）
     match db_service.create_schema(schema).await {
         Ok(_) => println!("✅ 创建 Schema 'example'"),
         Err(e) => println!("⚠️ Schema 'example' 已存在: {}", e),
     }
     
-    // 2. 创建用户表 users（幂等）
     println!("\n--- 创建用户表 users ---");
     let users_columns = [
-        (1, "id", ColumnType::Int64),
-        (2, "name", ColumnType::String),
-        (3, "age", ColumnType::Int64),
-        (4, "email", ColumnType::String),
+        (1, "id", ColumnType::COLUMN_TYPE_INT64),
+        (2, "name", ColumnType::COLUMN_TYPE_STRING),
+        (3, "age", ColumnType::COLUMN_TYPE_INT64),
+        (4, "email", ColumnType::COLUMN_TYPE_STRING),
     ];
     
     let existing_tables = match db_service.list_tables(schema).await {
@@ -43,13 +44,12 @@ pub async fn init_example_data(db_path: &str) -> Result<(), Box<dyn std::error::
         println!("⚠️ 表 'users' 已存在");
     }
     
-    // 3. 创建产品表 products（幂等）
     println!("\n--- 创建产品表 products ---");
     let products_columns = [
-        (1, "id", ColumnType::Int64),
-        (2, "name", ColumnType::String),
-        (3, "price", ColumnType::Float),
-        (4, "stock", ColumnType::Int64),
+        (1, "id", ColumnType::COLUMN_TYPE_INT64),
+        (2, "name", ColumnType::COLUMN_TYPE_STRING),
+        (3, "price", ColumnType::COLUMN_TYPE_FLOAT),
+        (4, "stock", ColumnType::COLUMN_TYPE_INT64),
     ];
     
     if !existing_tables.contains("products") {
@@ -59,7 +59,6 @@ pub async fn init_example_data(db_path: &str) -> Result<(), Box<dyn std::error::
         println!("⚠️ 表 'products' 已存在");
     }
     
-    // 4. 插入用户样例数据（使用 add_row，Protobuf 格式）
     println!("\n--- 插入用户数据 ---");
     let users = [
         (1, "Alice", 30, "alice@example.com"),
@@ -71,34 +70,50 @@ pub async fn init_example_data(db_path: &str) -> Result<(), Box<dyn std::error::
     
     for (id, name, age, email) in users {
         let id_field = Field {
-            value: Some(Value::IntegerValue(Integer { value: id as i64 })),
+            value: Some(Value::IntegerValue(Integer { 
+                value: id as i64,
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
         };
         let name_field = Field {
-            value: Some(Value::StringValue(String { value: name.to_string() })),
+            value: Some(Value::StringValue(String { 
+                value: name.to_string(),
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
         };
         let age_field = Field {
-            value: Some(Value::IntegerValue(Integer { value: age as i64 })),
+            value: Some(Value::IntegerValue(Integer { 
+                value: age as i64,
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
         };
         let email_field = Field {
-            value: Some(Value::StringValue(String { value: email.to_string() })),
+            value: Some(Value::StringValue(String { 
+                value: email.to_string(),
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
         };
         
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
             data: vec![
-                id_field.encode_to_vec(),
-                name_field.encode_to_vec(),
-                age_field.encode_to_vec(),
-                email_field.encode_to_vec(),
+                encode_field(&id_field),
+                encode_field(&name_field),
+                encode_field(&age_field),
+                encode_field(&email_field),
             ],
+            special_fields: SpecialFields::default(),
         };
         
         let row_id = db_service.add_row(schema, "users", &row).await?;
         println!("✅ 插入用户 {} (Row ID: {})", name, row_id);
     }
     
-    // 5. 插入产品样例数据（使用 add_row，Protobuf 格式）
     println!("\n--- 插入产品数据 ---");
     let products = [
         (1, "iPhone 15", 799.99, 100),
@@ -110,27 +125,44 @@ pub async fn init_example_data(db_path: &str) -> Result<(), Box<dyn std::error::
     
     for (id, name, price, stock) in products {
         let id_field = Field {
-            value: Some(Value::IntegerValue(Integer { value: id as i64 })),
+            value: Some(Value::IntegerValue(Integer { 
+                value: id as i64,
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
         };
         let name_field = Field {
-            value: Some(Value::StringValue(String { value: name.to_string() })),
+            value: Some(Value::StringValue(String { 
+                value: name.to_string(),
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
         };
         let price_field = Field {
-            value: Some(Value::FloatValue(Float { value: price })),
+            value: Some(Value::FloatValue(Float { 
+                value: price,
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
         };
         let stock_field = Field {
-            value: Some(Value::IntegerValue(Integer { value: stock as i64 })),
+            value: Some(Value::IntegerValue(Integer { 
+                value: stock as i64,
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
         };
         
         let row = Row {
-            row_type: 0,
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
             version: 1,
             data: vec![
-                id_field.encode_to_vec(),
-                name_field.encode_to_vec(),
-                price_field.encode_to_vec(),
-                stock_field.encode_to_vec(),
+                encode_field(&id_field),
+                encode_field(&name_field),
+                encode_field(&price_field),
+                encode_field(&stock_field),
             ],
+            special_fields: SpecialFields::default(),
         };
         
         let row_id = db_service.add_row(schema, "products", &row).await?;
@@ -140,4 +172,3 @@ pub async fn init_example_data(db_path: &str) -> Result<(), Box<dyn std::error::
     println!("\n🎉 Example 数据库初始化完成！");
     Ok(())
 }
-
