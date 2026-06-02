@@ -1,4 +1,4 @@
-use laoflchdb_db_engine::{TableMeta, ColumnMeta, ColumnType, SpecialFields, Message};
+use laoflchdb_engines::{TableMeta, ColumnMeta, ColumnType, SpecialFields, Message};
 
 #[test]
 fn test_protobuf_table_meta_encode_decode() {

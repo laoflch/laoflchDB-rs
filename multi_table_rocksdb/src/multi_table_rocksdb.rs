@@ -4,9 +4,12 @@ use snowflake_me::Snowflake;
 use std::sync::Arc;
 use std::sync::RwLock;
 
-use laoflchdb_db_engine::{StorageEngine, EngineOptions, META_TABLE_PREFIX, META_COLUMN_PREFIX, META_SCHEMA_PREFIX, MAX_TABLE_ID_LENGTH};
-use laoflchdb_db_engine::{SchemaMeta, TableMeta, ColumnMeta, Row, ColumnType, Query, QueryResult, QueryRow,
+use laoflchdb_engines::{StorageEngine, DataFusionStorageEngine, EngineOptions, META_TABLE_PREFIX, META_COLUMN_PREFIX, META_SCHEMA_PREFIX, MAX_TABLE_ID_LENGTH};
+use laoflchdb_engines::{SchemaMeta, TableMeta, ColumnMeta, Row, ColumnType, Query, QueryResult, QueryRow,
                                   FilterOperator, ColumnFilter, ColumnFilterCondition, TableFilter};
+
+use datafusion::arrow::array::{ArrayRef, StringArray, Int64Array, Float64Array, BinaryArray};
+use datafusion::arrow::datatypes::{DataType, Field as ArrowField, Schema};
 
 fn write_proto_to_vec<T: Message>(msg: &T) -> Vec<u8> {
     let mut v = Vec::new();
@@ -458,7 +461,7 @@ impl StorageEngine for MultiTableRocksDBEngine {
     async fn get_schema_info(&self) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         let mut result = serde_json::Map::new();
         
-        let tables = self.list_tables().await?;
+        let tables = StorageEngine::list_tables(self).await?;
         let mut table_names = Vec::new();
         
         for table in &tables {
@@ -778,12 +781,12 @@ impl MultiTableRocksDBEngine {
     fn compare_field_equals(
         &self, 
         field_bytes: &[u8], 
-        field: &laoflchdb_db_engine::Field, 
+        field: &laoflchdb_engines::Field, 
         _column_type: ColumnType
     ) -> bool {
-        use laoflchdb_db_engine::field::field::Value;
+        use laoflchdb_engines::field::field::Value;
         
-        let row_field = match laoflchdb_db_engine::Field::parse_from_bytes(field_bytes) {
+        let row_field = match laoflchdb_engines::Field::parse_from_bytes(field_bytes) {
             Ok(f) => f,
             Err(_) => return false,
         };
@@ -804,12 +807,12 @@ impl MultiTableRocksDBEngine {
     fn compare_field_greater(
         &self, 
         field_bytes: &[u8], 
-        field: &laoflchdb_db_engine::Field, 
+        field: &laoflchdb_engines::Field, 
         _column_type: ColumnType
     ) -> bool {
-        use laoflchdb_db_engine::field::field::Value;
+        use laoflchdb_engines::field::field::Value;
         
-        let row_field = match laoflchdb_db_engine::Field::parse_from_bytes(field_bytes) {
+        let row_field = match laoflchdb_engines::Field::parse_from_bytes(field_bytes) {
             Ok(f) => f,
             Err(_) => return false,
         };
@@ -829,12 +832,12 @@ impl MultiTableRocksDBEngine {
     fn compare_field_less(
         &self, 
         field_bytes: &[u8], 
-        field: &laoflchdb_db_engine::Field, 
+        field: &laoflchdb_engines::Field, 
         _column_type: ColumnType
     ) -> bool {
-        use laoflchdb_db_engine::field::field::Value;
+        use laoflchdb_engines::field::field::Value;
         
-        let row_field = match laoflchdb_db_engine::Field::parse_from_bytes(field_bytes) {
+        let row_field = match laoflchdb_engines::Field::parse_from_bytes(field_bytes) {
             Ok(f) => f,
             Err(_) => return false,
         };
@@ -849,5 +852,100 @@ impl MultiTableRocksDBEngine {
         } else {
             false
         }
+    }
+    
+    fn column_type_to_arrow_type(&self, col_type: &ColumnType) -> DataType {
+        match col_type {
+            ColumnType::COLUMN_TYPE_STRING => DataType::Utf8,
+            ColumnType::COLUMN_TYPE_INT64 => DataType::Int64,
+            ColumnType::COLUMN_TYPE_FLOAT => DataType::Float64,
+            ColumnType::COLUMN_TYPE_BYTES => DataType::Binary,
+            _ => DataType::Utf8,
+        }
+    }
+    
+    fn get_enum_value(&self, col_type: &ColumnType) -> i32 {
+        *col_type as i32
+    }
+    
+    #[inline]
+    fn parse_field_from_bytes(&self, field_bytes: &[u8]) -> Result<laoflchdb_engines::Field, protobuf::Error> {
+        let mut input = protobuf::CodedInputStream::from_bytes(field_bytes);
+        laoflchdb_engines::Field::parse_from(&mut input)
+    }
+}
+
+#[async_trait::async_trait]
+impl DataFusionStorageEngine for MultiTableRocksDBEngine {
+    async fn table_to_arrow(&self, table_name: &str) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
+        let columns = StorageEngine::list_table_cols(self, table_name).await?;
+        let rows = StorageEngine::scan_table(self, table_name, None).await?;
+        
+        let mut column_infos: Vec<(i32, String)> = Vec::new();
+        let mut arrow_fields = Vec::new();
+        let mut arrow_arrays: Vec<Vec<ArrayRef>> = Vec::new();
+        
+        for col in &columns {
+            let col_type = col.column_type.enum_value_or_default();
+            let data_type = self.column_type_to_arrow_type(&col_type);
+            column_infos.push((self.get_enum_value(&col_type), col.column_name.clone()));
+            arrow_fields.push(ArrowField::new(&col.column_name, data_type, true));
+            arrow_arrays.push(Vec::new());
+        }
+        
+        for (_, row) in rows {
+            for (idx, field_bytes) in row.data.iter().enumerate() {
+                if idx >= arrow_arrays.len() {
+                    break;
+                }
+                
+                let pb_field = match self.parse_field_from_bytes(field_bytes) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                
+                use laoflchdb_engines::field::field::Value;
+                let array = match pb_field.value {
+                    Some(Value::StringValue(s)) => {
+                        Arc::new(StringArray::from(vec![s.value.clone()])) as ArrayRef
+                    }
+                    Some(Value::IntegerValue(i)) => {
+                        Arc::new(Int64Array::from(vec![i.value])) as ArrayRef
+                    }
+                    Some(Value::FloatValue(f)) => {
+                        Arc::new(Float64Array::from(vec![f.value])) as ArrayRef
+                    }
+                    Some(Value::BytesValue(b)) => {
+                        Arc::new(BinaryArray::from(vec![b.value.as_slice()])) as ArrayRef
+                    }
+                    _ => Arc::new(StringArray::from(vec![""])) as ArrayRef,
+                };
+                arrow_arrays[idx].push(array);
+            }
+        }
+        
+        let merged_arrays: Vec<ArrayRef> = arrow_arrays.into_iter()
+            .enumerate()
+            .map(|(idx, arrays)| {
+                if arrays.is_empty() {
+                    let (col_type, _) = &column_infos[idx];
+                    match *col_type {
+                        0 => Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
+                        1 => Arc::new(Int64Array::from(Vec::<i64>::new())) as ArrayRef,
+                        3 => Arc::new(Float64Array::from(Vec::<f64>::new())) as ArrayRef,
+                        2 => Arc::new(BinaryArray::from(Vec::<&[u8]>::new())) as ArrayRef,
+                        _ => Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
+                    }
+                } else if arrays.len() == 1 {
+                    arrays[0].clone()
+                } else {
+                    let refs: Vec<&dyn datafusion::arrow::array::Array> = arrays.iter().map(|a| a.as_ref()).collect();
+                    datafusion::arrow::compute::concat(refs.as_slice()).unwrap()
+                }
+            })
+            .collect();
+        
+        let schema = Schema::new(arrow_fields);
+        Ok((schema, merged_arrays, column_infos))
     }
 }

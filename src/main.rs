@@ -1,6 +1,6 @@
 use laoflchDB_rust::{
-    Cli, Commands, DatabaseConfig, DatabaseServiceImpl, LaoflchDBServer,
-    AccessService, DatabaseService, init_data,
+    Cli, Commands, DatabaseConfig, LaoflchDBServer,
+    AccessService, init_data, engine_factory, DatabaseService,
 };
 use clap::Parser;
 use std::sync::Arc;
@@ -39,8 +39,7 @@ async fn start_server(
     info!("数据库路径: {}", effective_db_path);
     info!("监听地址: {}", effective_addr);
     
-    let service = Arc::new(DatabaseServiceImpl::new(effective_db_path).await);
-    
+    let service = engine_factory::create_default_database_service(effective_db_path).await?;
     let sql_engine = service.sql_engine().clone();
     
     let access_service = Arc::new(AccessService::new(service.clone()));
@@ -71,7 +70,7 @@ async fn init_database(
     info!("初始化数据库...");
     info!("数据库路径: {}", effective_db_path);
     
-    let service = DatabaseServiceImpl::new(effective_db_path).await;
+    let service = engine_factory::create_default_database_service(effective_db_path).await?;
     service.init_database().await?;
     
     if example {

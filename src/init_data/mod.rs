@@ -1,9 +1,10 @@
 
-use crate::service::{DatabaseService, DatabaseServiceImpl};
-use laoflchdb_db_engine::{ColumnType, Row, Field, SpecialFields, EnumOrUnknown, RowType};
-use laoflchdb_db_engine::field::{String, Integer, Float};
-use laoflchdb_db_engine::field::field::Value;
-use laoflchdb_db_engine::Message;
+use crate::service::DatabaseService;
+use crate::engine_factory;
+use laoflchdb_engines::{ColumnType, Row, Field, SpecialFields, EnumOrUnknown, RowType};
+use laoflchdb_engines::field::{String, Integer, Float};
+use laoflchdb_engines::field::field::Value;
+use laoflchdb_engines::Message;
 use std::collections::HashSet;
 
 fn encode_field(f: &Field) -> Vec<u8> {
@@ -13,7 +14,7 @@ fn encode_field(f: &Field) -> Vec<u8> {
 }
 
 pub async fn init_example_data(db_path: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let db_service = DatabaseServiceImpl::new(db_path).await;
+    let db_service = engine_factory::create_default_database_service(db_path).await?;
     
     println!("=== 初始化 laoflchDB 示例数据 ===");
     

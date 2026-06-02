@@ -773,41 +773,43 @@ python3 tests_python/test_e2e_rest.py
 
 ### 15.1 架构概述
 
-SQL 引擎基于 **DataFusion + Arrow + RocksDB** 实现，提供 SQL 查询能力：
+SQL 引擎基于 **DataFusion + Arrow + RocksDB** 实现，提供 SQL 查询能力。架构采用双层接口设计：
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     LaoflchDBServer                          │
-│                          │                                   │
-│                          ▼                                   │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │              SQLEngine (SQL 引擎层)                    │  │
-│  │  ┌─────────────────────────────────────────────────┐ │  │
-│  │  │          DataFusionSQLEngine                     │ │  │
-│  │  │  ┌─────────────────────────────────────────────┐│ │  │
-│  │  │  │  DataFusion SessionContext                  ││ │  │
-│  │  │  │  - SQL 解析                                  ││ │  │
-│  │  │  │  - 查询规划                                  ││ │  │
-│  │  │  │  - 查询优化                                  ││ │  │
-│  │  │  └─────────────────────────────────────────────┘│ │  │
-│  │  └─────────────────────────────────────────────────┘ │  │
-│  └───────────────────────┬──────────────────────────────┘  │
-│                          ▼                                   │
-│  ┌──────────────────────────────────────────────────────┐  │
-│  │              StorageEngine (存储引擎层)                │  │
-│  │  ┌─────────────────────────────────────────────────┐ │  │
-│  │  │          MultiTableRocksDBEngine                 │ │  │
-│  │  │  - 数据存储 (RocksDB)                            │ │  │
-│  │  │  - 表扫描                                        │ │  │
-│  │  │  - 元数据管理                                    │ │  │
-│  │  └─────────────────────────────────────────────────┘ │  │
-│  └──────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         LaoflchDBServer                              │
+│                                      │                               │
+│                                      ▼                               │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │                      SQLEngine (SQL 查询接口)                   │  │
+│  │  ┌────────────────────────────────────────────────────────────┐ │  │
+│  │  │            DataFusionSQLEngine<E>                        │ │  │
+│  │  │  ┌──────────────────────────────────────────────────────┐│ │  │
+│  │  │  │  DataFusion SessionContext                         ││ │  │
+│  │  │  │  - SQL 解析 / 查询规划 / 查询优化                   ││ │  │
+│  │  │  └──────────────────────────────────────────────────────┘│ │  │
+│  │  │                          │                             │ │  │
+│  │  │          ┌───────────────┴───────────────┐             │ │  │
+│  │  │          ▼                               ▼             │ │  │
+│  │  │  ┌─────────────────┐           ┌─────────────────────┐ │ │  │
+│  │  │  │  StorageEngine  │           │DataFusionStorageEngine│ │ │  │
+│  │  │  │  (通用存储接口) │           │  (SQL专用接口)      │ │ │  │
+│  │  │  └────────┬────────┘           └───────────┬─────────┘ │ │  │
+│  │  │           │                                  │         │ │  │
+│  │  │           └─────────────────┬────────────────┘         │ │  │
+│  │  │                             ▼                         │ │  │
+│  │  │           ┌─────────────────────────────┐             │ │  │
+│  │  │           │   MultiTableRocksDBEngine   │             │ │  │
+│  │  │           │  (实现两个接口)              │             │ │  │
+│  │  │           └─────────────────────────────┘             │ │  │
+│  │  └────────────────────────────────────────────────────────┘ │  │
+│  └──────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 15.2 SQLEngine Trait 定义
 
-**位置**: [laoflchdb_db_engine/src/lib.rs](laoflchdb_db_engine/src/lib.rs)
+**位置**: [laoflchdb_engines/src/lib.rs](file:///workspace/rust_space/laoflchDB-rust/laoflchdb_engines/src/lib.rs)
 
 ```rust
 #[async_trait::async_trait]
@@ -910,7 +912,7 @@ async fn register_table(&mut self, table_name: &str) -> Result<(), ...> {
 }
 ```
 
-### 15.6 SQL 查询执行流程
+### 15.7 SQL 查询执行流程
 
 ```
 SQL 字符串
@@ -946,7 +948,7 @@ SQL 字符串
 └─────────────────────┘
 ```
 
-### 15.7 异步设计要点
+### 15.8 异步设计要点
 
 **使用 `tokio::sync::RwLock` 而非 `std::sync::RwLock`**：
 
@@ -964,9 +966,9 @@ let columns = engine.list_table_cols(table_name).await?;  // 编译错误！
 - `std::sync::RwLockReadGuard` 不是 `Send`，不能跨 await 点
 - `tokio::sync::RwLock` 的锁是异步的，可以安全跨 await 点
 
-### 15.8 与 Server 的集成
+### 15.9 与 Server 的集成
 
-**位置**: [src/server/mod.rs](src/server/mod.rs)
+**位置**: [src/server/mod.rs](file:///workspace/rust_space/laoflchDB-rust/src/server/mod.rs)
 
 ```rust
 pub struct LaoflchDBServer {
@@ -977,7 +979,7 @@ pub struct LaoflchDBServer {
 }
 ```
 
-**位置**: [src/service/mod.rs](src/service/mod.rs)
+**位置**: [src/service/mod.rs](file:///workspace/rust_space/laoflchDB-rust/src/service/mod.rs)
 
 ```rust
 pub struct DatabaseServiceImpl {
@@ -1007,22 +1009,32 @@ impl DatabaseService for DatabaseServiceImpl {
 }
 ```
 
-### 15.9 依赖配置
+### 15.10 依赖配置
 
-**位置**: [laoflchdb_db_engine/Cargo.toml](laoflchdb_db_engine/Cargo.toml)
+**位置**: [laoflchdb_db_engine/Cargo.toml](file:///workspace/rust_space/laoflchDB-rust/laoflchdb_db_engine/Cargo.toml)
 
 ```toml
 [dependencies]
-datafusion = "37.0.0"
-arrow = "53.0.0"
-arrow-schema = "53.0.0"
-arrow-array = "53.0.0"
+datafusion = "53.1.0"
+arrow = "58.3.0"
+arrow-schema = "58.3.0"
+arrow-array = "58.3.0"
 tokio = { version = "1.0", features = ["rt"] }
 async-trait = "0.1"
 protobuf = "3.7"
 ```
 
-### 15.10 性能考虑
+**位置**: [multi_table_rocksdb/Cargo.toml](file:///workspace/rust_space/laoflchDB-rust/multi_table_rocksdb/Cargo.toml)
+
+```toml
+[dependencies]
+datafusion = "53.1.0"
+arrow = "58.3.0"
+arrow-schema = "58.3.0"
+arrow-array = "58.3.0"
+```
+
+### 15.11 性能考虑
 
 | 优化点 | 说明 |
 |--------|------|
@@ -1030,6 +1042,7 @@ protobuf = "3.7"
 | Arrow 列式存储 | 向量化计算，SIMD 优化 |
 | 查询优化 | DataFusion 内置查询优化器 |
 | 异步锁 | `tokio::sync::RwLock` 允许并发读取 |
+| 接口分离 | `DataFusionStorageEngine` 只包含 SQL 引擎所需方法，避免不必要的依赖 |
 
 ---
 
@@ -1334,9 +1347,25 @@ Access 层 (GrpcService/RestService)
     ↓ .await (异步调用)
 Service 层 (DatabaseService + SchemaManager)
     ↓ .lock().await (异步锁)
-DBEngine 层 (MultiTableRocksDBEngine)
+StorageEngine 层 (MultiTableRocksDBEngine)
     ↓ .await (异步方法调用)
 RocksDB 存储
+```
+
+### SQL 查询调用链路
+
+```
+SQL 查询请求
+    ↓
+Service 层 (DatabaseService.sql_query)
+    ↓ .read().await (异步读锁)
+SQLEngine 层 (DataFusionSQLEngine)
+    ↓ .await (异步执行)
+DataFusion SessionContext
+    ↓ 读取已注册的内存表
+RecordBatch 结果
+    ↓
+转换为 QueryResult
 ```
 
 ### 初始化同步与异步分离

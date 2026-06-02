@@ -2429,7 +2429,8 @@ dependencies = [
  "bytes",
  "clap",
  "env_logger",
- "laoflchdb_db_engine",
+ "laoflchdb_engines",
+ "laoflchdb_sql_df_engine",
  "log",
  "multi_table_rocksdb",
  "prost",
@@ -2448,7 +2449,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "laoflchdb_db_engine"
+name = "laoflchdb_engines"
 version = "0.1.0"
 dependencies = [
  "arrow",
@@ -2463,6 +2464,20 @@ dependencies = [
  "protobuf-codegen",
  "serde",
  "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "laoflchdb_sql_df_engine"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "datafusion",
+ "laoflchdb_engines",
+ "protobuf",
  "tokio",
 ]
 
@@ -2699,9 +2714,13 @@ dependencies = [
 name = "multi_table_rocksdb"
 version = "0.1.0"
 dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
  "async-trait",
  "bytes",
- "laoflchdb_db_engine",
+ "datafusion",
+ "laoflchdb_engines",
  "protobuf",
  "protobuf-codegen",
  "rust-rocksdb",

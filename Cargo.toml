@@ -7,13 +7,15 @@ edition = "2021"
 members = [
     ".",
     "xtask",
-    "laoflchdb_db_engine",
+    "laoflchdb_engines",
     "multi_table_rocksdb",
+    "laoflchdb_sql_df_engine",
 ]
 
 [dependencies]
-laoflchdb_db_engine = { path = "./laoflchdb_db_engine" }
+laoflchdb_engines = { path = "./laoflchdb_engines" }
 multi_table_rocksdb = { path = "./multi_table_rocksdb" }
+laoflchdb_sql_df_engine = { path = "./laoflchdb_sql_df_engine" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}
 prost = "0.12"
 protobuf = "3.7"

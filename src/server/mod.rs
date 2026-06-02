@@ -2,14 +2,13 @@ use crate::service::SchemaManager;
 use crate::service::DatabaseService;
 use crate::access::{AccessService, PermissionChecker};
 use crate::config::DatabaseConfig;
-use laoflchdb_db_engine::{SQLEngine, DataFusionSQLEngine};
-use multi_table_rocksdb::MultiTableRocksDBEngine;
+use laoflchdb_engines::SQLEngine;
 use std::sync::Arc;
 use log::info;
 
 pub struct LaoflchDBServer {
     schema_manager: Arc<SchemaManager>,
-    sql_engine: Arc<tokio::sync::RwLock<DataFusionSQLEngine<MultiTableRocksDBEngine>>>,
+    sql_engine: Arc<tokio::sync::RwLock<dyn SQLEngine>>,
     service: Arc<dyn DatabaseService>,
     access_service: Arc<AccessService>,
     permission_checker: Arc<PermissionChecker>,
@@ -18,7 +17,7 @@ pub struct LaoflchDBServer {
 impl LaoflchDBServer {
     pub async fn new(
         schema_manager: Arc<SchemaManager>,
-        sql_engine: Arc<tokio::sync::RwLock<DataFusionSQLEngine<MultiTableRocksDBEngine>>>,
+        sql_engine: Arc<tokio::sync::RwLock<dyn SQLEngine>>,
         service: Arc<dyn DatabaseService>,
         access_service: Arc<AccessService>,
         config: &DatabaseConfig,
@@ -114,7 +113,7 @@ impl LaoflchDBServer {
         &self.schema_manager
     }
     
-    pub fn sql_engine(&self) -> &Arc<tokio::sync::RwLock<DataFusionSQLEngine<MultiTableRocksDBEngine>>> {
+    pub fn sql_engine(&self) -> &Arc<tokio::sync::RwLock<dyn SQLEngine>> {
         &self.sql_engine
     }
 }

@@ -1,23 +1,36 @@
-use laoflchdb_db_engine::{StorageEngine, EngineOptions, SQLEngine, DataFusionSQLEngine, QueryResult, ColumnMeta, Query};
-use multi_table_rocksdb::MultiTableRocksDBEngine;
-use laoflchdb_db_engine::{ColumnType, TableMeta, Row};
+use laoflchdb_engines::{StorageEngine, EngineOptions, SQLEngine, QueryResult, ColumnMeta, Query};
+use laoflchdb_engines::{ColumnType, TableMeta, Row};
 use std::sync::Arc;
 use std::collections::HashMap;
+use std::fmt;
 
 pub struct SchemaManager {
-    engines: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<MultiTableRocksDBEngine>>>>,
+    engines: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<Box<dyn StorageEngine + 'static>>>>>,
     base_path: String,
+    engine_factory: Arc<dyn Fn(&EngineOptions) -> Result<Box<dyn StorageEngine + 'static>, Box<dyn std::error::Error + Send + Sync>> + Send + Sync>,
+}
+
+impl fmt::Debug for SchemaManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SchemaManager")
+            .field("base_path", &self.base_path)
+            .finish()
+    }
 }
 
 impl SchemaManager {
-    pub async fn new(base_path: &str) -> Self {
+    pub async fn new<F>(base_path: &str, engine_factory: F) -> Self
+    where
+        F: Fn(&EngineOptions) -> Result<Box<dyn StorageEngine>, Box<dyn std::error::Error + Send + Sync>> + Send + Sync + 'static,
+    {
         Self {
             engines: tokio::sync::Mutex::new(HashMap::new()),
             base_path: base_path.to_string(),
+            engine_factory: Arc::new(engine_factory),
         }
     }
 
-    pub async fn get_schema_engine(&self, schema: &str) -> Result<Arc<tokio::sync::Mutex<MultiTableRocksDBEngine>>, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn get_schema_engine(&self, schema: &str) -> Result<Arc<tokio::sync::Mutex<Box<dyn StorageEngine + 'static>>>, Box<dyn std::error::Error + Send + Sync>> {
         {
             let engines = self.engines.lock().await;
             if let Some(engine) = engines.get(schema) {
@@ -30,7 +43,7 @@ impl SchemaManager {
             db_path: schema_path,
             schema_name: schema.to_string(),
         };
-        let engine = MultiTableRocksDBEngine::new(&options)?;
+        let engine = (self.engine_factory)(&options)?;
         
         let mut engines = self.engines.lock().await;
         let engine = Arc::new(tokio::sync::Mutex::new(engine));
@@ -57,11 +70,10 @@ impl SchemaManager {
             db_path: schema_path,
             schema_name: schema.to_string(),
         };
-        let _ = MultiTableRocksDBEngine::new(&options)?;
+        let engine = (self.engine_factory)(&options)?;
         
         let mut engines = self.engines.lock().await;
-        let engine = Arc::new(tokio::sync::Mutex::new(MultiTableRocksDBEngine::new(&options)?));
-        engines.insert(schema.to_string(), engine);
+        engines.insert(schema.to_string(), Arc::new(tokio::sync::Mutex::new(engine)));
         
         Ok(())
     }
@@ -111,20 +123,40 @@ pub trait DatabaseService: Send + Sync + 'static {
 
 pub struct DatabaseServiceImpl {
     schema_manager: Arc<SchemaManager>,
-    sql_engine: Arc<tokio::sync::RwLock<DataFusionSQLEngine<MultiTableRocksDBEngine>>>,
+    sql_engine: Arc<tokio::sync::RwLock<dyn SQLEngine>>,
     default_schema: String,
 }
 
 impl DatabaseServiceImpl {
-    pub async fn new(base_path: &str) -> Self {
-        let schema_manager = Arc::new(SchemaManager::new(base_path).await);
-        
-        let engine = schema_manager.get_schema_engine("sys").await.unwrap();
-        let sql_engine = DataFusionSQLEngine::new(Arc::new(tokio::sync::RwLock::new(engine.lock().await.clone())));
+    pub async fn new_with_sql_engine(base_path: &str, sql_engine: Arc<tokio::sync::RwLock<dyn SQLEngine>>) -> Self {
+        let schema_manager = Arc::new(SchemaManager::new(base_path, |options| {
+            Ok(Box::new(multi_table_rocksdb::MultiTableRocksDBEngine::new(options)?))
+        }).await);
         
         Self { 
             schema_manager,
-            sql_engine: Arc::new(tokio::sync::RwLock::new(sql_engine)),
+            sql_engine,
+            default_schema: "sys".to_string(),
+        }
+    }
+
+    pub async fn new(base_path: &str) -> Self {
+        use laoflchdb_sql_df_engine::DataFusionSQLEngine;
+
+        let sys_engine = multi_table_rocksdb::MultiTableRocksDBEngine::new(&laoflchdb_engines::EngineOptions {
+            db_path: format!("{}/sys", base_path),
+            schema_name: "sys".to_string(),
+        }).unwrap();
+        let df_engine = DataFusionSQLEngine::new(Arc::new(tokio::sync::RwLock::new(sys_engine)));
+        let sql_engine = Arc::new(tokio::sync::RwLock::new(df_engine));
+
+        let schema_manager = Arc::new(SchemaManager::new(base_path, |options| {
+            Ok(Box::new(multi_table_rocksdb::MultiTableRocksDBEngine::new(options)?))
+        }).await);
+        
+        Self { 
+            schema_manager,
+            sql_engine,
             default_schema: "sys".to_string(),
         }
     }
@@ -133,7 +165,7 @@ impl DatabaseServiceImpl {
         &self.schema_manager
     }
     
-    pub fn sql_engine(&self) -> &Arc<tokio::sync::RwLock<DataFusionSQLEngine<MultiTableRocksDBEngine>>> {
+    pub fn sql_engine(&self) -> &Arc<tokio::sync::RwLock<dyn SQLEngine>> {
         &self.sql_engine
     }
 }
@@ -141,17 +173,17 @@ impl DatabaseServiceImpl {
 #[async_trait::async_trait]
 impl DatabaseService for DatabaseServiceImpl {
     async fn init_database(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let _ = self.schema_manager.get_schema_engine(&self.default_schema).await?;
+        let _ = self.schema_manager.as_ref().get_schema_engine(&self.default_schema).await?;
         Ok(())
     }
 
     async fn create_schema(&self, schema: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.schema_manager.create_schema(schema).await
+        self.schema_manager.as_ref().create_schema(schema).await
     }
 
     async fn list_schemas(&self) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
         let mut schemas = vec![self.default_schema.clone()];
-        let additional = self.schema_manager.list_schemas().await;
+        let additional = self.schema_manager.as_ref().list_schemas().await;
         for s in additional {
             if s != self.default_schema {
                 schemas.push(s);
@@ -161,15 +193,15 @@ impl DatabaseService for DatabaseServiceImpl {
     }
 
     async fn drop_schema(&self, schema: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.schema_manager.drop_schema(schema).await
+        self.schema_manager.as_ref().drop_schema(schema).await
     }
 
     async fn create_table(&self, schema: &str, table: &str, columns: &[(u32, &str, ColumnType)]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let columns = columns.to_vec();
         let mut engine = engine.lock().await;
-        let table_id = engine.create_table(&table, &columns).await?;
+        let table_id = engine.as_mut().create_table(&table, &columns).await?;
         
         if schema == "sys" {
             let mut sql_engine = self.sql_engine.write().await;
@@ -180,103 +212,103 @@ impl DatabaseService for DatabaseServiceImpl {
     }
 
     async fn drop_table(&self, schema: &str, table: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let mut engine = engine.lock().await;
-        engine.drop_table(&table).await
+        engine.as_mut().drop_table(&table).await
     }
 
     async fn list_tables(&self, schema: &str) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let engine = engine.lock().await;
-        engine.list_tables().await
+        engine.as_ref().list_tables().await
     }
 
     async fn list_table_cols(&self, schema: &str, table: &str) -> Result<Vec<ColumnMeta>, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let engine = engine.lock().await;
-        engine.list_table_cols(&table).await
+        engine.as_ref().list_table_cols(&table).await
     }
 
     async fn add_row(&self, schema: &str, table: &str, row: &Row) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let row = row.clone();
         let mut engine = engine.lock().await;
-        engine.add_row(&table, &row).await
+        engine.as_mut().add_row(&table, &row).await
     }
 
     async fn get_row(&self, schema: &str, table: &str, row_id: u64) -> Result<Option<Row>, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let engine = engine.lock().await;
-        engine.get_row(&table, row_id).await
+        engine.as_ref().get_row(&table, row_id).await
     }
 
     async fn delete_row(&self, schema: &str, table: &str, row_id: u64) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let mut engine = engine.lock().await;
-        engine.delete_row(&table, row_id).await
+        engine.as_mut().delete_row(&table, row_id).await
     }
 
     async fn update_row(&self, schema: &str, table: &str, row_id: u64, row: &Row) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let row = row.clone();
         let mut engine = engine.lock().await;
-        engine.update_row(&table, row_id, &row).await
+        engine.as_mut().update_row(&table, row_id, &row).await
     }
 
     async fn get_all_meta(&self, schema: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let engine = engine.lock().await;
-        engine.get_all_meta().await
+        engine.as_ref().get_all_meta().await
     }
 
     async fn get_schema_info(&self, schema: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let engine = engine.lock().await;
-        engine.get_schema_info().await
+        engine.as_ref().get_schema_info().await
     }
 
     async fn get_table_meta(&self, schema: &str, table: &str) -> Result<Option<TableMeta>, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let engine = engine.lock().await;
-        engine.get_table_meta(&table).await
+        engine.as_ref().get_table_meta(&table).await
     }
 
     async fn put(&self, schema: &str, table: &str, key: &[u8], value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let key = key.to_vec();
         let value = value.to_vec();
         let mut engine = engine.lock().await;
-        engine.put(&table, &key, &value).await
+        engine.as_mut().put(&table, &key, &value).await
     }
 
     async fn get(&self, schema: &str, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let key = key.to_vec();
         let engine = engine.lock().await;
-        engine.get(&table, &key).await
+        engine.as_ref().get(&table, &key).await
     }
 
     async fn delete(&self, schema: &str, table: &str, key: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let key = key.to_vec();
         let mut engine = engine.lock().await;
-        engine.delete(&table, &key).await
+        engine.as_mut().delete(&table, &key).await
     }
 
     async fn query(&self, schema: &str, query: &Query) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.get_schema_engine(schema).await?;
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let mut engine = engine.lock().await;
-        engine.query(query).await
+        engine.as_mut().query(query).await
     }
     
     async fn sql_query(&self, schema: &str, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {

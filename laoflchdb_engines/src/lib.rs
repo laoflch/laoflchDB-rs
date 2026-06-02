@@ -3,13 +3,10 @@ pub mod metadata;
 pub mod query;
 pub mod row;
 
-pub mod sql_engine;
-
 pub use metadata::{SchemaMeta, TableMeta, ColumnMeta, ColumnType};
 pub use row::Row;
 pub use query::{Query, QueryResult, QueryRow, FilterOperator, ColumnFilter, ColumnFilterCondition, TableFilter};
 pub use field::Field;
-pub use sql_engine::DataFusionSQLEngine;
 
 pub use protobuf::{SpecialFields, EnumOrUnknown, Message};
 pub use row::RowType;
@@ -60,4 +57,9 @@ pub trait SQLEngine: Send + Sync + 'static {
     async fn register_table(&mut self, table_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     
     async fn refresh_tables(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+
+#[async_trait::async_trait]
+pub trait DataFusionStorageEngine: Send + Sync + 'static {
+    async fn table_to_arrow(&self, table_name: &str) -> Result<(datafusion::arrow::datatypes::Schema, Vec<datafusion::arrow::array::ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>>;
 }
