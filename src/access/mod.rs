@@ -16,6 +16,9 @@ use crate::pb::rpc::{
     GetSchemaInfoRequest, GetSchemaInfoResponse,
     GetTableMetaRequest, GetTableMetaResponse,
     QueryRequest, QueryResponse,
+    SqlQueryRequest, SqlQueryResponse,
+    SqlQueryResultRow,
+    SqlField,
     ColumnMeta as RpcColumnMeta,
     Row as RpcRow,
 };
@@ -281,6 +284,7 @@ fn convert_query_from_rpc(req: &QueryRequest) -> Query {
         table_filters,
         limit: req.limit,
         offset: req.offset,
+        projected_columns: req.projected_columns.clone(),
         special_fields: SpecialFields::default(),
     }
 }
@@ -554,6 +558,69 @@ impl LaoflchDb for GrpcService {
                 Ok(Response::new(QueryResponse {
                     success: true,
                     rows,
+                    message: String::new(),
+                }))
+            },
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    async fn sql_query(&self, request: Request<SqlQueryRequest>) -> Result<Response<SqlQueryResponse>, Status> {
+        let req = request.into_inner();
+        let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        let sql = req.sql.as_str();
+        
+        self.check_permission(schema, None, PermissionAction::Query)?;
+        
+        match self.service.sql_query(schema, sql).await {
+            Ok(result) => {
+                let mut columns: Vec<String> = Vec::new();
+                let mut rows: Vec<SqlQueryResultRow> = Vec::new();
+                
+                if !result.rows.is_empty() {
+                    if let Some(first_row) = result.rows.first() {
+                        if first_row.row.is_some() {
+                            let row = first_row.row.get_or_default();
+                            for (idx, _) in row.data.iter().enumerate() {
+                                columns.push(format!("col_{}", idx));
+                            }
+                        }
+                    }
+                    
+                    for qr in &result.rows {
+                        if qr.row.is_some() {
+                            let row = qr.row.get_or_default();
+                            let mut fields: Vec<SqlField> = Vec::new();
+                            for data in &row.data {
+                                if let Ok(s) = String::from_utf8(data.clone()) {
+                                    if let Ok(num) = s.parse::<i64>() {
+                                        fields.push(SqlField {
+                                            value: Some(crate::pb::rpc::sql_field::Value::Int64Value(num)),
+                                        });
+                                    } else if let Ok(f) = s.parse::<f64>() {
+                                        fields.push(SqlField {
+                                            value: Some(crate::pb::rpc::sql_field::Value::FloatValue(f)),
+                                        });
+                                    } else {
+                                        fields.push(SqlField {
+                                            value: Some(crate::pb::rpc::sql_field::Value::StringValue(s)),
+                                        });
+                                    }
+                                } else {
+                                    fields.push(SqlField {
+                                        value: Some(crate::pb::rpc::sql_field::Value::BytesValue(data.clone())),
+                                    });
+                                }
+                            }
+                            rows.push(SqlQueryResultRow { values: fields });
+                        }
+                    }
+                }
+                
+                Ok(Response::new(SqlQueryResponse {
+                    success: true,
+                    rows,
+                    columns,
                     message: String::new(),
                 }))
             },

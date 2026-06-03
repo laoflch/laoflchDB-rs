@@ -612,6 +612,7 @@ async fn test_query_with_cnf_filters() {
         ],
         limit: Some(10),
         offset: Some(0),
+        projected_columns: vec![],
         special_fields: Default::default(),
     };
 

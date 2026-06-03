@@ -45,6 +45,7 @@ message Query {
     repeated TableFilter table_filters = 1;  // 多个表过滤器，AND 关系 (CNF)
     optional uint32 limit = 2;               // 返回结果数量限制
     optional uint32 offset = 3;              // 跳过的结果数量
+    repeated string projected_columns = 4;    // 需要返回的列名列表，为空则返回所有列
 }
 
 // 查询结果

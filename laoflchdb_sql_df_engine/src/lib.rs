@@ -3,19 +3,29 @@ use std::sync::Arc;
 use datafusion::arrow::array::{StringArray, Int64Array, Float64Array, BinaryArray};
 use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::datasource::MemTable;
+use datafusion::datasource::TableProvider;
 use datafusion::execution::context::{SessionContext, SessionConfig};
+use datafusion::logical_expr::Expr;
 use datafusion::sql::TableReference;
 use protobuf::Message;
 
-use laoflchdb_engines::{DataFusionStorageEngine, StorageEngine, SQLEngine, QueryResult, QueryRow};
+use laoflchdb_engines::{StorageEngine, SQLEngine, QueryResult, QueryRow};
 use laoflchdb_engines::field::Field as PbField;
 use laoflchdb_engines::field::field::Value;
+
+#[async_trait::async_trait]
+pub trait DataFusionStorageEngine: Send + Sync + 'static {
+    async fn table_to_arrow(&self, table_name: &str) -> Result<(Schema, Vec<datafusion::arrow::array::ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>>;
+    
+    fn create_table_provider(&self, table_name: &str) -> Arc<dyn TableProvider>;
+}
 
 pub struct DataFusionSQLEngine<E: StorageEngine + DataFusionStorageEngine> {
     storage_engine: Arc<tokio::sync::RwLock<E>>,
     ctx: SessionContext,
 }
+
+
 
 impl<E: StorageEngine + DataFusionStorageEngine> DataFusionSQLEngine<E> {
     pub fn new(storage_engine: Arc<tokio::sync::RwLock<E>>) -> Self {
@@ -124,36 +134,26 @@ impl<E: StorageEngine + DataFusionStorageEngine + 'static> SQLEngine for DataFus
         }
         
         let schema = batches[0].schema();
-        let (_, _, column_infos) = self.storage_engine.read().await.table_to_arrow("").await?;
-        let result = self.arrow_to_query_result(&schema, &batches[0], &column_infos);
+        let result = self.arrow_to_query_result(&schema, &batches[0], &[]);
         Ok(result)
     }
     
     async fn register_table(&mut self, table_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let engine = self.storage_engine.read().await;
-        let (schema, merged_arrays, _) = engine.table_to_arrow(table_name).await?;
+        let table_provider = engine.create_table_provider(table_name);
         drop(engine);
         
-        let batch = RecordBatch::try_new(Arc::new(schema), merged_arrays)?;
-        let table = MemTable::try_new(batch.schema().clone(), vec![vec![batch]])?;
-        self.ctx.register_table(TableReference::bare(table_name), Arc::new(table))?;
-        
+        self.ctx.register_table(TableReference::bare(table_name), table_provider)?;
         Ok(())
     }
     
     async fn refresh_tables(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let engine = self.storage_engine.read().await;
         let tables = StorageEngine::list_tables(&*engine).await?;
-        drop(engine);
         
         for table in tables {
-            let engine = self.storage_engine.read().await;
-            let (schema, merged_arrays, _) = engine.table_to_arrow(&table).await?;
-            drop(engine);
-            
-            let batch = RecordBatch::try_new(Arc::new(schema), merged_arrays)?;
-            let table_impl = MemTable::try_new(batch.schema().clone(), vec![vec![batch]])?;
-            self.ctx.register_table(TableReference::bare(&*table), Arc::new(table_impl))?;
+            let table_provider = engine.create_table_provider(&table);
+            self.ctx.register_table(TableReference::bare(&*table), table_provider)?;
         }
         
         Ok(())

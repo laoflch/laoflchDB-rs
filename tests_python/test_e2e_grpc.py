@@ -76,9 +76,9 @@ def main():
         for key, expected_value in test_data:
             get_resp = stub.Get(rpc_pb2.GetRequest(table="user", key=key))
             print(f"    读取 key={key.decode()}:")
-            print(f"        found = {get_resp.found}")
+            print(f"        success = {get_resp.success}")
             print(f"        value = {get_resp.value.decode('utf-8')}")
-            assert get_resp.found == True
+            assert get_resp.success == True
             assert get_resp.value == expected_value
             print(f"        ✓ 数据校验通过")
 

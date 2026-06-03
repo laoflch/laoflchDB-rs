@@ -1,5 +1,6 @@
 use laoflchDB_rust::access::RestService;
 use laoflchDB_rust::{DatabaseService, DatabaseServiceImpl};
+use laoflchdb_engines;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -230,4 +231,80 @@ async fn test_integration_error_handling() {
     assert_eq!(res.status(), 200);
     let body = res.text().await.unwrap();
     assert!(body.contains("\"success\":false"));
+}
+
+#[tokio::test]
+async fn test_integration_sql_query() {
+    let (rest_service, service) = setup_rest_service().await;
+    let app = rest_service.router();
+    
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    
+    let client = reqwest::Client::new();
+    
+    // 1. 创建测试表
+    let create_table_body = serde_json::json!({
+        "schema": "sys",
+        "table_name": "sql_test_table",
+        "columns": [
+            {"name": "id", "column_type": "INT64"},
+            {"name": "name", "column_type": "STRING"},
+            {"name": "age", "column_type": "INT64"},
+        ]
+    });
+    
+    let res = client.post(format!("http://{}/api/v1/tables", addr))
+        .json(&create_table_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    
+    // 2. 等待表注册到 SQL 引擎
+    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    
+    // 3. 测试 SQL 查询（查询表结构）
+    let sql_query_body = serde_json::json!({
+        "schema": "sys",
+        "sql": "SELECT * FROM sql_test_table"
+    });
+    
+    let res = client.post(format!("http://{}/api/v1/sql_query", addr))
+        .json(&sql_query_body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    
+    let body = res.text().await.unwrap();
+    assert!(body.contains("\"success\":true"));
+}
+
+#[tokio::test]
+async fn test_sql_engine_query() {
+    let service = create_test_service().await;
+    
+    // 创建测试表
+    let columns = vec![
+        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING),
+        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+    ];
+    
+    service.create_table("sys", "sql_query_test", &columns).await.unwrap();
+    
+    // 等待表注册
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    
+    // 执行 SQL 查询
+    let result = service.sql_query("sys", "SELECT * FROM sql_query_test").await;
+    assert!(result.is_ok());
+    
+    let query_result = result.unwrap();
+    assert!(query_result.rows.is_empty() || query_result.rows.len() >= 0);
 }

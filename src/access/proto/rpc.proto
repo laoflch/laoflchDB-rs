@@ -29,6 +29,9 @@ service LaoflchDb {
   
   // 查询操作
   rpc Query(QueryRequest) returns (QueryResponse);
+  
+  // SQL 查询操作
+  rpc SqlQuery(SqlQueryRequest) returns (SqlQueryResponse);
 }
 
 message GetRequest {
@@ -220,6 +223,7 @@ message QueryRequest {
   repeated TableFilter table_filters = 2;
   optional uint32 limit = 3;
   optional uint32 offset = 4;
+  repeated string projected_columns = 5;
 }
 
 message QueryResponse {
@@ -299,4 +303,31 @@ message ListValue {
 message ImageValue {
   bytes data = 1;
   string format = 2;
+}
+
+// SQL 查询相关类型
+message SqlQueryRequest {
+  string schema = 1;
+  string sql = 2;
+}
+
+message SqlQueryResponse {
+  bool success = 1;
+  repeated SqlQueryResultRow rows = 2;
+  repeated string columns = 3;
+  string message = 4;
+}
+
+message SqlQueryResultRow {
+  repeated SqlField values = 1;
+}
+
+message SqlField {
+  oneof value {
+    string string_value = 1;
+    int64 int64_value = 2;
+    double float_value = 3;
+    bytes bytes_value = 4;
+    bool bool_value = 5;
+  }
 }

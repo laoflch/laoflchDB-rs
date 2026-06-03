@@ -59,7 +59,4 @@ pub trait SQLEngine: Send + Sync + 'static {
     async fn refresh_tables(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
-#[async_trait::async_trait]
-pub trait DataFusionStorageEngine: Send + Sync + 'static {
-    async fn table_to_arrow(&self, table_name: &str) -> Result<(datafusion::arrow::datatypes::Schema, Vec<datafusion::arrow::array::ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>>;
-}
+

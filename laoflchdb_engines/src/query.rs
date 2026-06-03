@@ -480,6 +480,8 @@ pub struct Query {
     pub limit: ::std::option::Option<u32>,
     // @@protoc_insertion_point(field:laoflchdb.Query.offset)
     pub offset: ::std::option::Option<u32>,
+    // @@protoc_insertion_point(field:laoflchdb.Query.projected_columns)
+    pub projected_columns: ::std::vec::Vec<::std::string::String>,
     // special fields
     // @@protoc_insertion_point(special_field:laoflchdb.Query.special_fields)
     pub special_fields: ::protobuf::SpecialFields,
@@ -497,7 +499,7 @@ impl Query {
     }
 
     fn generated_message_descriptor_data() -> ::protobuf::reflect::GeneratedMessageDescriptorData {
-        let mut fields = ::std::vec::Vec::with_capacity(3);
+        let mut fields = ::std::vec::Vec::with_capacity(4);
         let mut oneofs = ::std::vec::Vec::with_capacity(0);
         fields.push(::protobuf::reflect::rt::v2::make_vec_simpler_accessor::<_, _>(
             "table_filters",
@@ -513,6 +515,11 @@ impl Query {
             "offset",
             |m: &Query| { &m.offset },
             |m: &mut Query| { &mut m.offset },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_vec_simpler_accessor::<_, _>(
+            "projected_columns",
+            |m: &Query| { &m.projected_columns },
+            |m: &mut Query| { &mut m.projected_columns },
         ));
         ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<Query>(
             "Query",
@@ -541,6 +548,9 @@ impl ::protobuf::Message for Query {
                 24 => {
                     self.offset = ::std::option::Option::Some(is.read_uint32()?);
                 },
+                34 => {
+                    self.projected_columns.push(is.read_string()?);
+                },
                 tag => {
                     ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
                 },
@@ -563,6 +573,9 @@ impl ::protobuf::Message for Query {
         if let Some(v) = self.offset {
             my_size += ::protobuf::rt::uint32_size(3, v);
         }
+        for value in &self.projected_columns {
+            my_size += ::protobuf::rt::string_size(4, value);
+        };
         my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
         self.special_fields.cached_size().set(my_size as u32);
         my_size
@@ -578,6 +591,9 @@ impl ::protobuf::Message for Query {
         if let Some(v) = self.offset {
             os.write_uint32(3, v)?;
         }
+        for v in &self.projected_columns {
+            os.write_string(4, v)?;
+        };
         os.write_unknown_fields(self.special_fields.unknown_fields())?;
         ::std::result::Result::Ok(())
     }
@@ -598,6 +614,7 @@ impl ::protobuf::Message for Query {
         self.table_filters.clear();
         self.limit = ::std::option::Option::None;
         self.offset = ::std::option::Option::None;
+        self.projected_columns.clear();
         self.special_fields.clear();
     }
 
@@ -606,6 +623,7 @@ impl ::protobuf::Message for Query {
             table_filters: ::std::vec::Vec::new(),
             limit: ::std::option::Option::None,
             offset: ::std::option::Option::None,
+            projected_columns: ::std::vec::Vec::new(),
             special_fields: ::protobuf::SpecialFields::new(),
         };
         &instance

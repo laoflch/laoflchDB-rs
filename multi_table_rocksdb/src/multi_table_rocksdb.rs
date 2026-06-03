@@ -3,13 +3,20 @@ use protobuf::{Message, Enum};
 use snowflake_me::Snowflake;
 use std::sync::Arc;
 use std::sync::RwLock;
+use tokio::sync::RwLock as TokioRwLock;
 
-use laoflchdb_engines::{StorageEngine, DataFusionStorageEngine, EngineOptions, META_TABLE_PREFIX, META_COLUMN_PREFIX, META_SCHEMA_PREFIX, MAX_TABLE_ID_LENGTH};
+use laoflchdb_engines::{StorageEngine, EngineOptions, META_TABLE_PREFIX, META_COLUMN_PREFIX, META_SCHEMA_PREFIX, MAX_TABLE_ID_LENGTH};
+use laoflchdb_sql_df_engine::DataFusionStorageEngine;
 use laoflchdb_engines::{SchemaMeta, TableMeta, ColumnMeta, Row, ColumnType, Query, QueryResult, QueryRow,
                                   FilterOperator, ColumnFilter, ColumnFilterCondition, TableFilter};
 
 use datafusion::arrow::array::{ArrayRef, StringArray, Int64Array, Float64Array, BinaryArray};
 use datafusion::arrow::datatypes::{DataType, Field as ArrowField, Schema};
+use datafusion::catalog::Session;
+use datafusion::datasource::TableProvider;
+use datafusion::physical_plan::ExecutionPlan;
+
+use crate::rocksdb_table::RocksDBTable;
 
 fn write_proto_to_vec<T: Message>(msg: &T) -> Vec<u8> {
     let mut v = Vec::new();
@@ -26,6 +33,14 @@ pub struct MultiTableRocksDBEngine {
     db: Arc<RwLock<DB>>,
     schema_name: String,
     snowflake: Snowflake,
+}
+
+impl std::fmt::Debug for MultiTableRocksDBEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MultiTableRocksDBEngine")
+            .field("schema_name", &self.schema_name)
+            .finish()
+    }
 }
 
 impl MultiTableRocksDBEngine {
@@ -854,7 +869,7 @@ impl MultiTableRocksDBEngine {
         }
     }
     
-    fn column_type_to_arrow_type(&self, col_type: &ColumnType) -> DataType {
+    pub fn column_type_to_arrow_type(&self, col_type: &ColumnType) -> DataType {
         match col_type {
             ColumnType::COLUMN_TYPE_STRING => DataType::Utf8,
             ColumnType::COLUMN_TYPE_INT64 => DataType::Int64,
@@ -873,11 +888,121 @@ impl MultiTableRocksDBEngine {
         let mut input = protobuf::CodedInputStream::from_bytes(field_bytes);
         laoflchdb_engines::Field::parse_from(&mut input)
     }
-}
-
-#[async_trait::async_trait]
-impl DataFusionStorageEngine for MultiTableRocksDBEngine {
-    async fn table_to_arrow(&self, table_name: &str) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
+    
+    pub async fn table_to_arrow_with_pushdown(
+        &self, 
+        table_name: &str,
+        projection: Option<&Vec<usize>>,
+        filters: &[ColumnFilter],
+        limit: Option<usize>
+    ) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
+        let columns = StorageEngine::list_table_cols(self, table_name).await?;
+        
+        let projected_columns: Vec<ColumnMeta> = match projection {
+            Some(p) => p.iter()
+                .filter(|&&idx| idx < columns.len())
+                .map(|&idx| columns[idx].clone())
+                .collect(),
+            None => columns.clone(),
+        };
+        
+        let projected_column_names: Vec<String> = projected_columns.iter()
+            .map(|col| col.column_name.clone())
+            .collect();
+        
+        let query = Query {
+            table_filters: vec![TableFilter {
+                table_name: table_name.to_string(),
+                column_filters: filters.to_vec(),
+                special_fields: ::protobuf::SpecialFields::default(),
+            }],
+            limit: limit.map(|l| l as u32),
+            offset: None,
+            projected_columns: projected_column_names,
+            special_fields: ::protobuf::SpecialFields::default(),
+        };
+        
+        let result = self.query(&query).await?;
+        
+        let mut column_infos: Vec<(i32, String)> = Vec::new();
+        let mut arrow_fields = Vec::new();
+        let mut arrow_arrays: Vec<Vec<ArrayRef>> = Vec::new();
+        
+        for col in &projected_columns {
+            let col_type = col.column_type.enum_value_or_default();
+            let data_type = self.column_type_to_arrow_type(&col_type);
+            column_infos.push((self.get_enum_value(&col_type), col.column_name.clone()));
+            arrow_fields.push(ArrowField::new(&col.column_name, data_type, true));
+            arrow_arrays.push(Vec::new());
+        }
+        
+        let column_name_to_idx: std::collections::HashMap<String, usize> = columns.iter()
+            .enumerate()
+            .map(|(idx, col)| (col.column_name.clone(), idx))
+            .collect();
+        
+        for qr in &result.rows {
+            if let Some(row) = qr.row.as_ref() {
+                for (arr_idx, col) in projected_columns.iter().enumerate() {
+                    if let Some(&orig_idx) = column_name_to_idx.get(&col.column_name) {
+                        if orig_idx >= row.data.len() {
+                            continue;
+                        }
+                        
+                        let field_bytes = &row.data[orig_idx];
+                        let pb_field = match self.parse_field_from_bytes(field_bytes) {
+                            Ok(f) => f,
+                            Err(_) => continue,
+                        };
+                        
+                        use laoflchdb_engines::field::field::Value;
+                        let array = match pb_field.value {
+                            Some(Value::StringValue(s)) => {
+                                Arc::new(StringArray::from(vec![s.value.clone()])) as ArrayRef
+                            }
+                            Some(Value::IntegerValue(i)) => {
+                                Arc::new(Int64Array::from(vec![i.value])) as ArrayRef
+                            }
+                            Some(Value::FloatValue(f)) => {
+                                Arc::new(Float64Array::from(vec![f.value])) as ArrayRef
+                            }
+                            Some(Value::BytesValue(b)) => {
+                                Arc::new(BinaryArray::from(vec![b.value.as_slice()])) as ArrayRef
+                            }
+                            _ => Arc::new(StringArray::from(vec![""])) as ArrayRef,
+                        };
+                        arrow_arrays[arr_idx].push(array);
+                    }
+                }
+            }
+        }
+        
+        let merged_arrays: Vec<ArrayRef> = arrow_arrays.into_iter()
+            .enumerate()
+            .map(|(idx, arrays)| {
+                if arrays.is_empty() {
+                    let (col_type, _) = &column_infos[idx];
+                    match *col_type {
+                        0 => Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
+                        1 => Arc::new(Int64Array::from(Vec::<i64>::new())) as ArrayRef,
+                        3 => Arc::new(Float64Array::from(Vec::<f64>::new())) as ArrayRef,
+                        2 => Arc::new(BinaryArray::from(Vec::<&[u8]>::new())) as ArrayRef,
+                        _ => Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
+                    }
+                } else if arrays.len() == 1 {
+                    arrays[0].clone()
+                } else {
+                    let refs: Vec<&dyn datafusion::arrow::array::Array> = arrays.iter().map(|a| a.as_ref()).collect();
+                    datafusion::arrow::compute::concat(refs.as_slice()).unwrap()
+                }
+            })
+            .collect();
+        
+        let schema = Schema::new(arrow_fields);
+        Ok((schema, merged_arrays, column_infos))
+    }
+    
+    pub async fn table_to_arrow(&self, table_name: &str) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
         let columns = StorageEngine::list_table_cols(self, table_name).await?;
         let rows = StorageEngine::scan_table(self, table_name, None).await?;
         
@@ -948,4 +1073,53 @@ impl DataFusionStorageEngine for MultiTableRocksDBEngine {
         let schema = Schema::new(arrow_fields);
         Ok((schema, merged_arrays, column_infos))
     }
+    
+    fn create_table_provider(&self, table_name: &str) -> Arc<dyn TableProvider> {
+        use std::thread;
+        use std::sync::mpsc;
+        
+        let engine = Arc::new(TokioRwLock::new(self.clone()));
+        let table_name_clone = table_name.to_string();
+        
+        let (tx, rx) = mpsc::channel();
+        
+        thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let table = rt.block_on(async move {
+                RocksDBTable::new(engine, &table_name_clone).await
+            });
+            let _ = tx.send(table);
+        });
+        
+        Arc::new(rx.recv().unwrap())
+    }
 }
+
+#[async_trait::async_trait]
+impl DataFusionStorageEngine for MultiTableRocksDBEngine {
+    async fn table_to_arrow(&self, table_name: &str) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
+        self.table_to_arrow(table_name).await
+    }
+    
+    fn create_table_provider(&self, table_name: &str) -> Arc<dyn TableProvider> {
+        use std::thread;
+        use std::sync::mpsc;
+        
+        let engine = Arc::new(TokioRwLock::new(self.clone()));
+        let table_name_clone = table_name.to_string();
+        
+        let (tx, rx) = mpsc::channel();
+        
+        thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let table = rt.block_on(async move {
+                RocksDBTable::new(engine, &table_name_clone).await
+            });
+            let _ = tx.send(table);
+        });
+        
+        Arc::new(rx.recv().unwrap())
+    }
+}
+
+
