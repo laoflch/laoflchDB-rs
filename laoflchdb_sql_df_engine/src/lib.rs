@@ -113,6 +113,20 @@ impl<E: StorageEngine + DataFusionStorageEngine + 'static> SQLEngine for DataFus
         let sql = sql.to_string();
         
         let df = ctx.sql(sql.as_str()).await.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        
+        println!("\n===== Logical Plan =====");
+        println!("{}", df.logical_plan());
+        
+        let physical_plan = df.clone().create_physical_plan().await.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        println!("\n===== Physical Plan =====");
+        println!("{:?}", physical_plan);
+        
+        println!("\n===== Optimization Tips =====");
+        println!("1. Filter pushdown: Check if WHERE conditions are pushed to storage");
+        println!("2. Projection pushdown: Check if only needed columns are scanned");
+        println!("3. Limit pushdown: Check if LIMIT is applied early");
+        println!("4. Join optimization: Check join order and type");
+        
         let batches = df.collect().await.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         
         if batches.is_empty() {
