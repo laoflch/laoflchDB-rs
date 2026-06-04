@@ -24,17 +24,19 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0emetadata.proto\x12\x12laoflchdb.metadata\"G\n\tTableMeta\x12\x10\n\x08table_id\x18\x01 \x01(\t\x12\x12\n\ntable_name\x18\x02 \x01(\t\x12\x14\n\x0c\x63olumn_count\x18\x03 \x01(\r\"{\n\nColumnMeta\x12\x10\n\x08table_id\x18\x01 \x01(\t\x12\x11\n\tcolumn_id\x18\x02 \x01(\t\x12\x13\n\x0b\x63olumn_name\x18\x03 \x01(\t\x12\x33\n\x0b\x63olumn_type\x18\x04 \x01(\x0e\x32\x1e.laoflchdb.metadata.ColumnType*k\n\nColumnType\x12\x17\n\x13\x43OLUMN_TYPE_UNKNOWN\x10\x00\x12\x15\n\x11\x43OLUMN_TYPE_INT64\x10\x01\x12\x16\n\x12\x43OLUMN_TYPE_STRING\x10\x02\x12\x15\n\x11\x43OLUMN_TYPE_BYTES\x10\x03\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0emetadata.proto\x12\tlaoflchdb\"A\n\nSchemaMeta\x12\x13\n\x0bschema_name\x18\x01 \x01(\t\x12\x1e\n\x16next_auto_inc_table_id\x18\x02 \x01(\x04\"h\n\tTableMeta\x12\x10\n\x08table_id\x18\x01 \x01(\x04\x12\x12\n\ntable_name\x18\x02 \x01(\t\x12\x14\n\x0c\x63olumn_count\x18\x03 \x01(\r\x12\x1f\n\x17next_auto_inc_column_id\x18\x04 \x01(\x04\"r\n\nColumnMeta\x12\x10\n\x08table_id\x18\x01 \x01(\x04\x12\x11\n\tcolumn_id\x18\x02 \x01(\x04\x12\x13\n\x0b\x63olumn_name\x18\x03 \x01(\t\x12*\n\x0b\x63olumn_type\x18\x04 \x01(\x0e\x32\x15.laoflchdb.ColumnType*\x96\x01\n\nColumnType\x12\x16\n\x12\x43OLUMN_TYPE_STRING\x10\x00\x12\x15\n\x11\x43OLUMN_TYPE_INT64\x10\x01\x12\x15\n\x11\x43OLUMN_TYPE_BYTES\x10\x02\x12\x15\n\x11\x43OLUMN_TYPE_FLOAT\x10\x03\x12\x14\n\x10\x43OLUMN_TYPE_LIST\x10\x04\x12\x15\n\x11\x43OLUMN_TYPE_IMAGE\x10\x05\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'metadata_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_COLUMNTYPE']._serialized_start=236
-  _globals['_COLUMNTYPE']._serialized_end=343
-  _globals['_TABLEMETA']._serialized_start=38
-  _globals['_TABLEMETA']._serialized_end=109
-  _globals['_COLUMNMETA']._serialized_start=111
-  _globals['_COLUMNMETA']._serialized_end=234
+  _globals['_COLUMNTYPE']._serialized_start=319
+  _globals['_COLUMNTYPE']._serialized_end=469
+  _globals['_SCHEMAMETA']._serialized_start=29
+  _globals['_SCHEMAMETA']._serialized_end=94
+  _globals['_TABLEMETA']._serialized_start=96
+  _globals['_TABLEMETA']._serialized_end=200
+  _globals['_COLUMNMETA']._serialized_start=202
+  _globals['_COLUMNMETA']._serialized_end=316
 # @@protoc_insertion_point(module_scope)

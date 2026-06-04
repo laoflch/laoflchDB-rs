@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package laoflchdb;
+
+message Field {
+    oneof value {
+        String string_value = 1;
+        Integer integer_value = 2;
+        Bytes bytes_value = 3;
+        Float float_value = 4;
+        List list_value = 5;
+        Image image_value = 6;
+    }
+}
+
+message String {
+    string value = 1;
+}
+
+message Integer {
+    int64 value = 1;
+}
+
+message Bytes {
+    bytes value = 1;
+}
+
+message Float {
+    double value = 1;
+}
+
+message List {
+    repeated bytes items = 1;
+}
+
+message Image {
+    bytes data = 1;
+    string format = 2;
+}

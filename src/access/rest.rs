@@ -79,6 +79,8 @@ impl RestService {
             // 元数据查询
             .route("/api/v1/schemas/:schema/meta", get(get_all_meta_handler))
             .route("/api/v1/schemas/:schema/info", get(get_schema_info_handler))
+            // SQL 查询
+            .route("/api/v1/sql_query", post(sql_query_handler))
             .with_state((self.service.clone(), self.permission_checker.clone(), self.service_id.clone()))
     }
 
@@ -135,6 +137,18 @@ pub struct GetQuery {
     pub schema: Option<String>,
     pub table: String,
     pub key: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct SqlQueryBody {
+    pub schema: Option<String>,
+    pub sql: String,
+}
+
+#[derive(Serialize)]
+pub struct SqlQueryResponse {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -605,6 +619,52 @@ async fn get_schema_info_handler(
     
     match service.get_schema_info(&schema).await {
         Ok(json) => Ok(Json(ApiResponse::success(MetaJsonResponse { json }))),
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn sql_query_handler(
+    State((service, checker, service_id)): State<SharedState>,
+    Json(body): Json<SqlQueryBody>,
+) -> Result<Json<ApiResponse<SqlQueryResponse>>, ApiError> {
+    let schema = body.schema.unwrap_or_else(|| "sys".to_string());
+    let context = PermissionContext {
+        schema: schema.clone(),
+        table: None,
+        action: PermissionAction::Query,
+    };
+    if !checker.check_permission(&service_id, &context).allowed {
+        return Err(ApiError { message: "Permission denied".to_string() });
+    }
+    
+    match service.sql_query(&schema, &body.sql).await {
+        Ok(result) => {
+            let mut columns: Vec<String> = Vec::new();
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            
+            if !result.rows.is_empty() {
+                if let Some(first_row) = result.rows.first() {
+                    if first_row.row.is_some() {
+                        let row = first_row.row.get_or_default();
+                        for (idx, _) in row.data.iter().enumerate() {
+                            columns.push(format!("col_{}", idx));
+                        }
+                    }
+                }
+                
+                for qr in &result.rows {
+                    if qr.row.is_some() {
+                        let row = qr.row.get_or_default();
+                        let row_values: Vec<String> = row.data.iter()
+                            .map(|d| String::from_utf8_lossy(d).to_string())
+                            .collect();
+                        rows.push(row_values);
+                    }
+                }
+            }
+            
+            Ok(Json(ApiResponse::success(SqlQueryResponse { columns, rows })))
+        }
         Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
     }
 }

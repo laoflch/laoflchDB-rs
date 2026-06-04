@@ -617,10 +617,11 @@ cargo all          # 编译所有 (Rust + ldb)
 | async-trait | 0.1 | 异步 trait 支持 |
 | serde | 1.0 | YAML 配置序列化 |
 | serde_yaml | 0.9 | YAML 解析 |
-| datafusion | 37.0.0 | SQL 解析和查询引擎 |
-| arrow | 53.0.0 | 列式数据格式 |
-| arrow-schema | 53.0.0 | Arrow Schema 定义 |
-| arrow-array | 53.0.0 | Arrow Array 实现 |
+| datafusion | 53.1.0 | SQL 解析和查询引擎 |
+| arrow | 58.3.0 | 列式数据格式 |
+| arrow-schema | 58.3.0 | Arrow Schema 定义 |
+| arrow-array | 58.3.0 | Arrow Array 实现 |
+| futures | 0.3 | 异步流处理 |
 
 ---
 

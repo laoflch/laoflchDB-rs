@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 laoflchdb_engines = { path = "../laoflchdb_engines" }
+laoflchdb_sql_df_engine = { path = "../laoflchdb_sql_df_engine" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}
 protobuf = "3.7"
 bytes = "1.6"
@@ -14,9 +15,11 @@ async-trait = "0.1"
 tokio = { version = "1.0", features = ["rt"] }
 snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 datafusion = "53.1.0"
+datafusion-physical-expr = "53.1.0"
 arrow = "58.3.0"
 arrow-schema = "58.3.0"
 arrow-array = "58.3.0"
+futures = "0.3"
 
 [build-dependencies]
 protobuf-codegen = "3.7"

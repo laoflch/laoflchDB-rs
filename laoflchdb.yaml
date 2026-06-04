@@ -1,18 +1,18 @@
 # laoflchDB config
 
-db_path: /app/data
+db_path: ./laoflchdb_db_data
 log_level: info
 default_policy: allow
 
 access_protocols:
   - protocol: grpc
     enabled: true
-    addr: 0.0.0.0:29777
+    addr: 0.0.0.0:19777
     service_id: grpc_admin
 
   - protocol: rest
     enabled: true
-    addr: 0.0.0.0:38080
+    addr: 0.0.0.0:8080
     service_id: rest_admin
 
 permissions:

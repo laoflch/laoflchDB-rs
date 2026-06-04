@@ -2,6 +2,7 @@
 import sys
 import os
 import grpc
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rpc_pb2
@@ -9,6 +10,7 @@ import rpc_pb2_grpc
 
 SCHEMA = "sys"
 TABLE_NAME = "test_grpc_api"
+SQL_TABLE_NAME = "test_sql_table"
 
 def run_tests():
     print("=" * 60)
@@ -16,7 +18,7 @@ def run_tests():
     print("=" * 60)
     print()
 
-    channel = grpc.insecure_channel("127.0.0.1:29777")
+    channel = grpc.insecure_channel("127.0.0.1:19777")
     stub = rpc_pb2_grpc.LaoflchDbStub(channel)
 
     tests = [
@@ -30,6 +32,13 @@ def run_tests():
         ("删除数据", test_delete_data, stub),
         ("验证删除", test_verify_delete, stub),
         ("错误处理", test_error_handling, stub),
+        # SQL 查询全链路测试
+        ("创建SQL测试表", test_create_sql_table, stub),
+        ("添加SQL测试数据", test_add_sql_data, stub),
+        ("SQL查询-SELECT", test_sql_query_select, stub),
+        ("SQL查询-过滤", test_sql_query_filter, stub),
+        ("SQL查询-聚合", test_sql_query_aggregate, stub),
+        ("删除SQL测试表", test_drop_sql_table, stub),
     ]
 
     passed = 0
@@ -55,6 +64,12 @@ def run_tests():
     try:
         stub.DropTable(rpc_pb2.DropTableRequest(schema=SCHEMA, table_name=TABLE_NAME))
         print("    ✓ 清理完成")
+    except:
+        pass
+
+    try:
+        stub.DropTable(rpc_pb2.DropTableRequest(schema=SCHEMA, table_name=SQL_TABLE_NAME))
+        print("    ✓ SQL测试表清理完成")
     except:
         pass
 
@@ -152,6 +167,136 @@ def test_error_handling(stub):
         return not resp.success
     except grpc.RpcError as e:
         return True
+
+# ==================== SQL 查询全链路测试 ====================
+
+def test_create_sql_table(stub):
+    """创建用于SQL查询测试的表"""
+    resp = stub.CreateTable(rpc_pb2.CreateTableRequest(
+        schema=SCHEMA,
+        table_name=SQL_TABLE_NAME,
+        columns=[
+            rpc_pb2.ColumnDef(name="id", column_type=1),      # INT64
+            rpc_pb2.ColumnDef(name="name", column_type=2),    # STRING
+            rpc_pb2.ColumnDef(name="age", column_type=1),     # INT64
+            rpc_pb2.ColumnDef(name="score", column_type=4),   # FLOAT
+        ]
+    ))
+    if not resp.success:
+        return False
+    
+    time.sleep(1)
+    return True
+
+def test_add_sql_data(stub):
+    """添加测试数据到SQL测试表"""
+    test_rows = [
+        {"id": 1, "name": "Alice", "age": 25, "score": 95.5},
+        {"id": 2, "name": "Bob", "age": 30, "score": 88.0},
+        {"id": 3, "name": "Charlie", "age": 28, "score": 92.3},
+        {"id": 4, "name": "David", "age": 22, "score": 85.0},
+        {"id": 5, "name": "Eve", "age": 35, "score": 97.8},
+    ]
+    
+    for row in test_rows:
+        resp = stub.AddRow(rpc_pb2.AddRowRequest(
+            schema=SCHEMA,
+            table_name=SQL_TABLE_NAME,
+            row=rpc_pb2.Row(
+                row_type=0,
+                version=1,
+                data=[
+                    str(row["id"]).encode(),
+                    row["name"].encode(),
+                    str(row["age"]).encode(),
+                    str(row["score"]).encode(),
+                ]
+            )
+        ))
+        if not resp.success:
+            return False
+    
+    time.sleep(0.5)
+    return True
+
+def test_sql_query_select(stub):
+    """测试SQL SELECT查询"""
+    resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
+        schema=SCHEMA,
+        sql="SELECT * FROM {}".format(SQL_TABLE_NAME)
+    ))
+    
+    if not resp.success:
+        print(f"    SQL查询失败: {resp.message}")
+        return False
+    
+    print(f"    查询结果: {len(resp.rows)} 行")
+    for i, row in enumerate(resp.rows):
+        values = []
+        for field in row.values:
+            if field.HasField("string_value"):
+                values.append(field.string_value)
+            elif field.HasField("int64_value"):
+                values.append(str(field.int64_value))
+            elif field.HasField("float_value"):
+                values.append(str(field.float_value))
+        print(f"      行{i+1}: {values}")
+    
+    return len(resp.rows) >= 0
+
+def test_sql_query_filter(stub):
+    """测试带过滤条件的SQL查询"""
+    resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
+        schema=SCHEMA,
+        sql="SELECT name, age FROM {} WHERE age > 25".format(SQL_TABLE_NAME)
+    ))
+    
+    if not resp.success:
+        print(f"    SQL查询失败: {resp.message}")
+        return False
+    
+    print(f"    过滤查询结果: {len(resp.rows)} 行")
+    for i, row in enumerate(resp.rows):
+        values = []
+        for field in row.values:
+            if field.HasField("string_value"):
+                values.append(field.string_value)
+            elif field.HasField("int64_value"):
+                values.append(str(field.int64_value))
+        print(f"      行{i+1}: {values}")
+    
+    return len(resp.rows) >= 1
+
+def test_sql_query_aggregate(stub):
+    """测试SQL聚合查询"""
+    resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
+        schema=SCHEMA,
+        sql="SELECT COUNT(*), AVG(age), MAX(score) FROM {}".format(SQL_TABLE_NAME)
+    ))
+    
+    if not resp.success:
+        print(f"    SQL聚合查询失败: {resp.message}")
+        return False
+    
+    print(f"    聚合查询结果: {len(resp.rows)} 行")
+    for row in resp.rows:
+        values = []
+        for field in row.values:
+            if field.HasField("int64_value"):
+                values.append(str(field.int64_value))
+            elif field.HasField("float_value"):
+                values.append(str(field.float_value))
+        print(f"      聚合结果: {values}")
+    
+    return len(resp.rows) >= 1
+
+def test_drop_sql_table(stub):
+    """删除SQL测试表"""
+    resp = stub.DropTable(rpc_pb2.DropTableRequest(
+        schema=SCHEMA,
+        table_name=SQL_TABLE_NAME
+    ))
+    return resp.success
 
 if __name__ == "__main__":
     run_tests()

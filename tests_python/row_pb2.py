@@ -24,15 +24,15 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\trow.proto\x12\rlaoflchdb.row\"_\n\x03Row\x12(\n\x08row_type\x18\x01 \x01(\x0e\x32\x16.laoflchdb.row.RowType\x12\x0f\n\x07version\x18\x02 \x01(\r\x12\x0f\n\x07\x63ol_ids\x18\x03 \x03(\x04\x12\x0c\n\x04\x64\x61ta\x18\x04 \x03(\x0c*I\n\x07RowType\x12\x14\n\x10ROW_TYPE_UNKNOWN\x10\x00\x12\x13\n\x0fROW_TYPE_NORMAL\x10\x01\x12\x13\n\x0fROW_TYPE_DELETE\x10\x02\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\trow.proto\x12\tlaoflchdb\"J\n\x03Row\x12$\n\x08row_type\x18\x01 \x01(\x0e\x32\x12.laoflchdb.RowType\x12\x0f\n\x07version\x18\x02 \x01(\r\x12\x0c\n\x04\x64\x61ta\x18\x03 \x03(\x0c*0\n\x07RowType\x12\x13\n\x0fROW_TYPE_NORMAL\x10\x00\x12\x10\n\x0cROW_TYPE_RAW\x10\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'row_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_ROWTYPE']._serialized_start=125
-  _globals['_ROWTYPE']._serialized_end=198
-  _globals['_ROW']._serialized_start=28
-  _globals['_ROW']._serialized_end=123
+  _globals['_ROWTYPE']._serialized_start=100
+  _globals['_ROWTYPE']._serialized_end=148
+  _globals['_ROW']._serialized_start=24
+  _globals['_ROW']._serialized_end=98
 # @@protoc_insertion_point(module_scope)
