@@ -67,7 +67,7 @@ impl RestService {
             .route("/api/v1/delete", post(delete_kv_handler))
             // 表管理
             .route("/api/v1/tables", post(create_table_handler))
-            .route("/api/v1/tables/:table", delete(drop_table_handler))
+            .route("/api/v1/schemas/:schema/tables/:table", delete(drop_table_handler))
             .route("/api/v1/schemas/:schema/tables", get(list_tables_handler))
             .route("/api/v1/schemas/:schema/tables/:table/columns", get(list_table_cols_handler))
             .route("/api/v1/schemas/:schema/tables/:table", get(get_table_meta_handler))
@@ -639,27 +639,33 @@ async fn sql_query_handler(
     
     match service.sql_query(&schema, &body.sql).await {
         Ok(result) => {
-            let mut columns: Vec<String> = Vec::new();
-            let mut rows: Vec<Vec<String>> = Vec::new();
-            
-            if !result.rows.is_empty() {
+            let columns: Vec<String> = if !result.columns.is_empty() {
+                result.columns.clone()
+            } else if !result.rows.is_empty() {
                 if let Some(first_row) = result.rows.first() {
                     if first_row.row.is_some() {
                         let row = first_row.row.get_or_default();
-                        for (idx, _) in row.data.iter().enumerate() {
-                            columns.push(format!("col_{}", idx));
-                        }
+                        row.data.iter().enumerate()
+                            .map(|(idx, _)| format!("col_{}", idx))
+                            .collect()
+                    } else {
+                        Vec::new()
                     }
+                } else {
+                    Vec::new()
                 }
-                
-                for qr in &result.rows {
-                    if qr.row.is_some() {
-                        let row = qr.row.get_or_default();
-                        let row_values: Vec<String> = row.data.iter()
-                            .map(|d| String::from_utf8_lossy(d).to_string())
-                            .collect();
-                        rows.push(row_values);
-                    }
+            } else {
+                Vec::new()
+            };
+            
+            let mut rows: Vec<Vec<String>> = Vec::new();
+            for qr in &result.rows {
+                if qr.row.is_some() {
+                    let row = qr.row.get_or_default();
+                    let row_values: Vec<String> = row.data.iter()
+                        .map(|d| String::from_utf8_lossy(d).to_string())
+                        .collect();
+                    rows.push(row_values);
                 }
             }
             

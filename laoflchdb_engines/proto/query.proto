@@ -51,6 +51,7 @@ message Query {
 // 查询结果
 message QueryResult {
     repeated QueryRow rows = 1;  // 查询到的行
+    repeated string columns = 2;  // 列名列表
 }
 
 // 查询返回的行（包含表名和行数据）

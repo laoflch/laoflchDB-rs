@@ -543,6 +543,7 @@ impl StorageEngine for MultiTableRocksDBEngine {
 
         Ok(QueryResult { 
             rows,
+            columns: Vec::new(),
             special_fields: ::protobuf::SpecialFields::default(),
         })
     }
@@ -594,11 +595,15 @@ impl MultiTableRocksDBEngine {
     }
     
     fn key_to_row_id(&self, key: &[u8]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
-        if key.len() != 8 {
+        let key_bytes = if key.len() == 9 {
+            &key[1..]
+        } else if key.len() == 8 {
+            key
+        } else {
             return Err(format!("Invalid row key length: {}", key.len()).into());
-        }
+        };
         let mut bytes = [0u8; 8];
-        bytes.copy_from_slice(key);
+        bytes.copy_from_slice(key_bytes);
         Ok(u64::from_be_bytes(bytes))
     }
 }
@@ -950,24 +955,37 @@ impl MultiTableRocksDBEngine {
                         }
                         
                         let field_bytes = &row.data[orig_idx];
-                        let pb_field = match self.parse_field_from_bytes(field_bytes) {
-                            Ok(f) => f,
-                            Err(_) => continue,
-                        };
                         
-                        use laoflchdb_engines::field::field::Value;
-                        let array = match pb_field.value {
-                            Some(Value::StringValue(s)) => {
-                                Arc::new(StringArray::from(vec![s.value.clone()])) as ArrayRef
+                        let col_type = col.column_type.enum_value_or_default();
+                        let array = match col_type {
+                            ColumnType::COLUMN_TYPE_INT64 => {
+                                let value = if field_bytes.len() >= 8 {
+                                    let mut bytes = [0u8; 8];
+                                    bytes.copy_from_slice(&field_bytes[..8]);
+                                    i64::from_be_bytes(bytes)
+                                } else if !field_bytes.is_empty() {
+                                    field_bytes[0] as i64
+                                } else {
+                                    0
+                                };
+                                Arc::new(Int64Array::from(vec![value])) as ArrayRef
                             }
-                            Some(Value::IntegerValue(i)) => {
-                                Arc::new(Int64Array::from(vec![i.value])) as ArrayRef
+                            ColumnType::COLUMN_TYPE_STRING => {
+                                let value = String::from_utf8_lossy(field_bytes).to_string();
+                                Arc::new(StringArray::from(vec![value])) as ArrayRef
                             }
-                            Some(Value::FloatValue(f)) => {
-                                Arc::new(Float64Array::from(vec![f.value])) as ArrayRef
+                            ColumnType::COLUMN_TYPE_BYTES => {
+                                Arc::new(BinaryArray::from(vec![field_bytes.as_slice()])) as ArrayRef
                             }
-                            Some(Value::BytesValue(b)) => {
-                                Arc::new(BinaryArray::from(vec![b.value.as_slice()])) as ArrayRef
+                            ColumnType::COLUMN_TYPE_FLOAT => {
+                                let value = if field_bytes.len() >= 8 {
+                                    let mut bytes = [0u8; 8];
+                                    bytes.copy_from_slice(&field_bytes[..8]);
+                                    f64::from_be_bytes(bytes)
+                                } else {
+                                    0.0
+                                };
+                                Arc::new(Float64Array::from(vec![value])) as ArrayRef
                             }
                             _ => Arc::new(StringArray::from(vec![""])) as ArrayRef,
                         };

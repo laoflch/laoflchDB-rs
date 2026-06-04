@@ -654,6 +654,8 @@ pub struct QueryResult {
     // message fields
     // @@protoc_insertion_point(field:laoflchdb.QueryResult.rows)
     pub rows: ::std::vec::Vec<QueryRow>,
+    // @@protoc_insertion_point(field:laoflchdb.QueryResult.columns)
+    pub columns: ::std::vec::Vec<::std::string::String>,
     // special fields
     // @@protoc_insertion_point(special_field:laoflchdb.QueryResult.special_fields)
     pub special_fields: ::protobuf::SpecialFields,
@@ -748,6 +750,7 @@ impl ::protobuf::Message for QueryResult {
     fn default_instance() -> &'static QueryResult {
         static instance: QueryResult = QueryResult {
             rows: ::std::vec::Vec::new(),
+            columns: ::std::vec::Vec::new(),
             special_fields: ::protobuf::SpecialFields::new(),
         };
         &instance

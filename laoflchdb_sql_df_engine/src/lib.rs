@@ -47,47 +47,31 @@ impl<E: StorageEngine + DataFusionStorageEngine> DataFusionSQLEngine<E> {
             for (j, field) in schema.fields().iter().enumerate() {
                 let array = batch.column(j);
                 
-                let mut pb_field = PbField::new();
-                
-                match field.data_type() {
+                let value_bytes = match field.data_type() {
                     DataType::Utf8 => {
                         let array = array.as_any().downcast_ref::<StringArray>().unwrap();
                         let value = array.value(i);
-                        pb_field.value = Some(Value::StringValue(laoflchdb_engines::field::String {
-                            value: value.to_string(),
-                            special_fields: ::protobuf::SpecialFields::default(),
-                        }));
+                        value.as_bytes().to_vec()
                     }
                     DataType::Int64 => {
                         let array = array.as_any().downcast_ref::<Int64Array>().unwrap();
                         let value = array.value(i);
-                        pb_field.value = Some(Value::IntegerValue(laoflchdb_engines::field::Integer {
-                            value,
-                            special_fields: ::protobuf::SpecialFields::default(),
-                        }));
+                        value.to_string().as_bytes().to_vec()
                     }
                     DataType::Float64 => {
                         let array = array.as_any().downcast_ref::<Float64Array>().unwrap();
                         let value = array.value(i);
-                        pb_field.value = Some(Value::FloatValue(laoflchdb_engines::field::Float {
-                            value,
-                            special_fields: ::protobuf::SpecialFields::default(),
-                        }));
+                        value.to_string().as_bytes().to_vec()
                     }
                     DataType::Binary => {
                         let array = array.as_any().downcast_ref::<BinaryArray>().unwrap();
                         let value = array.value(i);
-                        pb_field.value = Some(Value::BytesValue(laoflchdb_engines::field::Bytes {
-                            value: value.to_vec(),
-                            special_fields: ::protobuf::SpecialFields::default(),
-                        }));
+                        value.to_vec()
                     }
-                    _ => {}
+                    _ => Vec::new(),
                 };
                 
-                let mut buf = Vec::new();
-                pb_field.write_to_vec(&mut buf).unwrap();
-                row_data.push(buf);
+                row_data.push(value_bytes);
             }
             
             proto_rows.push(row_data);
@@ -110,8 +94,13 @@ impl<E: StorageEngine + DataFusionStorageEngine> DataFusionSQLEngine<E> {
             });
         }
         
+        let columns: Vec<String> = schema.fields().iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        
         QueryResult {
             rows: query_rows,
+            columns,
             special_fields: ::protobuf::SpecialFields::default(),
         }
     }
@@ -129,6 +118,7 @@ impl<E: StorageEngine + DataFusionStorageEngine + 'static> SQLEngine for DataFus
         if batches.is_empty() {
             return Ok(QueryResult {
                 rows: Vec::new(),
+                columns: Vec::new(),
                 special_fields: ::protobuf::SpecialFields::default(),
             });
         }

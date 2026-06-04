@@ -177,11 +177,11 @@ impl ExecutionPlan for RocksScanExec {
             datafusion::error::DataFusionError::Execution(format!("Thread communication error: {}", e))
         })?;
         
-        let (inner_schema, arrays, _) = result.map_err(|e| {
+        let (_, arrays, _) = result.map_err(|e| {
             datafusion::error::DataFusionError::Execution(e.to_string())
         })?;
         
-        let batch = RecordBatch::try_new(Arc::new(inner_schema), arrays)?;
+        let batch = RecordBatch::try_new(self.schema.clone(), arrays)?;
         
         Ok(Box::pin(RocksBatchStream::new(vec![batch])))
     }
@@ -246,8 +246,19 @@ impl TableProvider for RocksDBTable {
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
         let column_filters = self.parse_filters(filters);
         
+        let projected_schema = match projection {
+            Some(p) => {
+                let fields: Vec<_> = p.iter()
+                    .filter(|&&idx| idx < self.schema.fields().len())
+                    .map(|&idx| self.schema.field(idx).clone())
+                    .collect();
+                Arc::new(Schema::new(fields))
+            }
+            None => self.schema.clone(),
+        };
+        
         let properties = Arc::new(PlanProperties::new(
-            EquivalenceProperties::new(self.schema.clone()),
+            EquivalenceProperties::new(projected_schema.clone()),
             Partitioning::UnknownPartitioning(1),
             EmissionType::Incremental,
             Boundedness::Bounded,
@@ -259,7 +270,7 @@ impl TableProvider for RocksDBTable {
             projection: projection.cloned(),
             filters: column_filters,
             limit,
-            schema: self.schema.clone(),
+            schema: projected_schema,
             properties,
         }))
     }

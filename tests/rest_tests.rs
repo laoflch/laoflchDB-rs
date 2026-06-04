@@ -57,12 +57,13 @@ async fn test_rest_create_table() {
     
     service.create_schema("test").await.unwrap();
     
-    let resp = client.post(&format!("http://{}/schemas/test/tables", addr))
+    let resp = client.post(&format!("http://{}/api/v1/tables", addr))
         .json(&serde_json::json!({
+            "schema": "test",
             "table_name": "users",
             "columns": [
-                {"column_id": 1, "column_name": "id", "column_type": "INT64"},
-                {"column_id": 2, "column_name": "name", "column_type": "STRING"}
+                {"name": "id", "column_type": "Int64"},
+                {"name": "name", "column_type": "String"}
             ]
         }))
         .send()

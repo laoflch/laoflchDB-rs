@@ -161,7 +161,8 @@ impl DatabaseServiceImpl {
             schema_name: "sys".to_string(),
         }).unwrap()));
         
-        let df_engine = DataFusionSQLEngine::new(sys_engine.clone());
+        let mut df_engine = DataFusionSQLEngine::new(sys_engine.clone());
+        df_engine.refresh_tables().await.unwrap();
         let sql_engine = Arc::new(tokio::sync::RwLock::new(df_engine));
 
         let schema_manager = Arc::new(SchemaManager::new_with_engine(base_path, "sys", sys_engine).await);
