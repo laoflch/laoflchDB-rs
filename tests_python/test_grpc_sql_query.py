@@ -164,6 +164,52 @@ def run_grpc_test():
         print(f"        ✓ age={row.values[2].int64_value} (int64)")
         print(f"        ✓ score={row.values[3].float_value} (float)")
 
+        # 测试 OR 条件
+        print("\n    测试 OR 条件 (age < 30 OR age > 40):")
+        sql_req = rpc_pb2.SqlQueryRequest(
+            schema="sys",
+            sql="SELECT name, age FROM test_grpc_sql WHERE age < 30 OR age > 40"
+        )
+        sql_resp = stub.SqlQuery(sql_req)
+        assert sql_resp.success == True, "SQL 查询失败"
+        assert len(sql_resp.rows) == 1, f"应返回 1 行，实际返回 {len(sql_resp.rows)} 行"
+        assert sql_resp.rows[0].values[0].string_value == "Bob", "name 应为 Bob"
+        assert sql_resp.rows[0].values[1].int64_value == 25, "age 应为 25"
+        print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
+
+        # 测试同一列多个 OR 条件
+        print("\n    测试同一列多个 OR (age = 25 OR age = 30 OR age = 35):")
+        sql_req = rpc_pb2.SqlQueryRequest(
+            schema="sys",
+            sql="SELECT name, age FROM test_grpc_sql WHERE age = 25 OR age = 30 OR age = 35"
+        )
+        sql_resp = stub.SqlQuery(sql_req)
+        assert sql_resp.success == True, "SQL 查询失败"
+        assert len(sql_resp.rows) == 3, f"应返回 3 行，实际返回 {len(sql_resp.rows)} 行"
+        print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
+
+        # 测试 AND 条件
+        print("\n    测试 AND 条件 (age > 25 AND score > 90):")
+        sql_req = rpc_pb2.SqlQueryRequest(
+            schema="sys",
+            sql="SELECT name, age, score FROM test_grpc_sql WHERE age > 25 AND score > 90"
+        )
+        sql_resp = stub.SqlQuery(sql_req)
+        assert sql_resp.success == True, "SQL 查询失败"
+        assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
+        print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
+
+        # 测试组合逻辑表达式
+        print("\n    测试组合逻辑 ((age > 25 AND age < 40) OR score > 92):")
+        sql_req = rpc_pb2.SqlQueryRequest(
+            schema="sys",
+            sql="SELECT name, age, score FROM test_grpc_sql WHERE (age > 25 AND age < 40) OR score > 92"
+        )
+        sql_resp = stub.SqlQuery(sql_req)
+        assert sql_resp.success == True, "SQL 查询失败"
+        assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
+        print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
+
         # 测试 Limit 下推
         print("\n    测试 Limit 下推:")
         sql_req = rpc_pb2.SqlQueryRequest(

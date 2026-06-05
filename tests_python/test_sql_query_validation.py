@@ -241,6 +241,104 @@ def test_sql_query_filter():
         traceback.print_exc()
         return False
 
+def test_sql_query_filter_or():
+    print("[测试] SQL 查询 - 同一列 OR 条件...")
+    try:
+        # 测试同一列的 OR 条件 (age < 30 OR age > 40)
+        payload = {
+            "sql": f"SELECT name, age FROM {TABLE_NAME} WHERE age < 30 OR age > 40"
+        }
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        data = resp.json()
+        
+        assert data["success"] == True, f"查询失败: {data}"
+        
+        rows = data["data"]["rows"]
+        assert len(rows) == 1, f"应返回 1 条记录 (Bob, age=25)，实际返回 {len(rows)} 条"
+        assert rows[0][0] == "Bob", f"name 应为 Bob，实际为 {rows[0][0]}"
+        assert rows[0][1] == 25, f"age 应为 25，实际为 {rows[0][1]}"
+        
+        print(f"    ✓ 同一列 OR (age < 30 OR age > 40) 成功")
+        
+        # 测试同一列的多个 OR 条件 (age = 25 OR age = 30 OR age = 35)
+        payload = {
+            "sql": f"SELECT name, age FROM {TABLE_NAME} WHERE age = 25 OR age = 30 OR age = 35"
+        }
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        data = resp.json()
+        
+        assert data["success"] == True, f"查询失败: {data}"
+        
+        rows = data["data"]["rows"]
+        assert len(rows) == 3, f"应返回 3 条记录，实际返回 {len(rows)} 条"
+        
+        # 验证所有返回的记录都满足条件
+        ages = {row[1] for row in rows}
+        assert ages == {25, 30, 35}, f"age 值不正确: {ages}"
+        
+        print(f"    ✓ 同一列多个 OR (age = 25 OR age = 30 OR age = 35) 成功")
+        
+        return True
+    except Exception as e:
+        print(f"    ✗ OR 条件测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_sql_query_filter_and():
+    print("[测试] SQL 查询 - AND 条件...")
+    try:
+        # 测试 AND 条件 (age > 25 AND score > 90)
+        payload = {
+            "sql": f"SELECT name, age, score FROM {TABLE_NAME} WHERE age > 25 AND score > 90"
+        }
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        data = resp.json()
+        
+        assert data["success"] == True, f"查询失败: {data}"
+        
+        rows = data["data"]["rows"]
+        assert len(rows) == 2, f"应返回 2 条记录 (Alice:95.5, Charlie:92.5)，实际返回 {len(rows)} 条"
+        
+        # 验证所有返回的记录都满足条件
+        for row in rows:
+            name, age, score = row[0], row[1], row[2]
+            assert age > 25, f"age 应大于 25，实际为 {age}"
+            assert score > 90, f"score 应大于 90，实际为 {score}"
+        
+        print(f"    ✓ AND 条件 (age > 25 AND score > 90) 成功")
+        
+        return True
+    except Exception as e:
+        print(f"    ✗ AND 条件测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def test_sql_query_filter_combined_logic():
+    print("[测试] SQL 查询 - 组合逻辑表达式...")
+    try:
+        # 测试组合逻辑 ((age > 25 AND age < 40) OR score > 92)
+        payload = {
+            "sql": f"SELECT name, age, score FROM {TABLE_NAME} WHERE (age > 25 AND age < 40) OR score > 92"
+        }
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        data = resp.json()
+        
+        assert data["success"] == True, f"查询失败: {data}"
+        
+        rows = data["data"]["rows"]
+        assert len(rows) == 2, f"应返回 2 条记录，实际返回 {len(rows)} 条"
+        
+        print(f"    ✓ 组合逻辑 ((age > 25 AND age < 40) OR score > 92) 成功")
+        
+        return True
+    except Exception as e:
+        print(f"    ✗ 组合逻辑测试失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
 def test_sql_query_limit():
     print("[测试] SQL 查询 - Limit 下推...")
     try:
@@ -351,6 +449,9 @@ def main():
         ("全表查询", test_sql_query_full),
         ("投影下推", test_sql_query_projection),
         ("谓词下推", test_sql_query_filter),
+        ("OR 条件", test_sql_query_filter_or),
+        ("AND 条件", test_sql_query_filter_and),
+        ("组合逻辑", test_sql_query_filter_combined_logic),
         ("Limit 下推", test_sql_query_limit),
         ("组合查询", test_sql_query_combined),
         ("数据类型验证", test_data_type_validation),

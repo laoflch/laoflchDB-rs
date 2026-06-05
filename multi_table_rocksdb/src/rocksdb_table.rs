@@ -57,69 +57,101 @@ impl RocksDBTable {
         let mut column_filters = Vec::new();
         
         for filter in filters {
-            match filter {
-                Expr::BinaryExpr(BinaryExpr { left, op, right }) => {
-                    if let Expr::Column(c) = left.as_ref() {
-                        let column_name = c.name.clone();
-                        
-                        let pb_field = match right.as_ref() {
-                            Expr::Literal(lit, _) => {
-                                use datafusion::scalar::ScalarValue;
-                                let mut field = laoflchdb_engines::Field::new();
-                                match lit {
-                                    ScalarValue::Int64(Some(v)) => {
-                                        field.value = Some(laoflchdb_engines::field::field::Value::IntegerValue(laoflchdb_engines::field::Integer {
-                                            value: *v,
-                                            special_fields: ::protobuf::SpecialFields::default(),
-                                        }));
-                                    }
-                                    ScalarValue::Float64(Some(v)) => {
-                                        field.value = Some(laoflchdb_engines::field::field::Value::FloatValue(laoflchdb_engines::field::Float {
-                                            value: *v,
-                                            special_fields: ::protobuf::SpecialFields::default(),
-                                        }));
-                                    }
-                                    ScalarValue::Utf8(Some(v)) | ScalarValue::LargeUtf8(Some(v)) => {
-                                        field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
-                                            value: v.clone(),
-                                            special_fields: ::protobuf::SpecialFields::default(),
-                                        }));
-                                    }
-                                    ScalarValue::Binary(Some(v)) | ScalarValue::LargeBinary(Some(v)) => {
-                                        field.value = Some(laoflchdb_engines::field::field::Value::BytesValue(laoflchdb_engines::field::Bytes {
-                                            value: v.clone(),
-                                            special_fields: ::protobuf::SpecialFields::default(),
-                                        }));
-                                    }
-                                    _ => {
-                                        field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
-                                            value: lit.to_string(),
-                                            special_fields: ::protobuf::SpecialFields::default(),
-                                        }));
-                                    }
+            self.parse_filter_expr(filter, &mut column_filters);
+        }
+        
+        column_filters
+    }
+    
+    fn parse_filter_expr(&self, expr: &Expr, column_filters: &mut Vec<ColumnFilter>) {
+        match expr {
+            Expr::BinaryExpr(BinaryExpr { left, op, right }) => {
+                match op {
+                    // AND 表达式：递归解析左右两边
+                    Operator::And => {
+                        self.parse_filter_expr(left, column_filters);
+                        self.parse_filter_expr(right, column_filters);
+                        return;
+                    }
+                    // OR 表达式：递归解析左右两边
+                    Operator::Or => {
+                        self.parse_filter_expr(left, column_filters);
+                        self.parse_filter_expr(right, column_filters);
+                        return;
+                    }
+                    _ => {}
+                }
+                
+                if let Expr::Column(c) = left.as_ref() {
+                    let column_name = c.name.clone();
+                    
+                    let pb_field = match right.as_ref() {
+                        Expr::Literal(lit, _) => {
+                            use datafusion::scalar::ScalarValue;
+                            let mut field = laoflchdb_engines::Field::new();
+                            match lit {
+                                ScalarValue::Int64(Some(v)) => {
+                                    field.value = Some(laoflchdb_engines::field::field::Value::IntegerValue(laoflchdb_engines::field::Integer {
+                                        value: *v,
+                                        special_fields: ::protobuf::SpecialFields::default(),
+                                    }));
                                 }
-                                field
+                                ScalarValue::Float64(Some(v)) => {
+                                    field.value = Some(laoflchdb_engines::field::field::Value::FloatValue(laoflchdb_engines::field::Float {
+                                        value: *v,
+                                        special_fields: ::protobuf::SpecialFields::default(),
+                                    }));
+                                }
+                                ScalarValue::Utf8(Some(v)) | ScalarValue::LargeUtf8(Some(v)) => {
+                                    field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
+                                        value: v.clone(),
+                                        special_fields: ::protobuf::SpecialFields::default(),
+                                    }));
+                                }
+                                ScalarValue::Binary(Some(v)) | ScalarValue::LargeBinary(Some(v)) => {
+                                    field.value = Some(laoflchdb_engines::field::field::Value::BytesValue(laoflchdb_engines::field::Bytes {
+                                        value: v.clone(),
+                                        special_fields: ::protobuf::SpecialFields::default(),
+                                    }));
+                                }
+                                _ => {
+                                    field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
+                                        value: lit.to_string(),
+                                        special_fields: ::protobuf::SpecialFields::default(),
+                                    }));
+                                }
                             }
-                            _ => {
-                                let mut field = laoflchdb_engines::Field::new();
-                                field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
-                                    value: right.to_string(),
-                                    special_fields: ::protobuf::SpecialFields::default(),
-                                }));
-                                field
-                            }
-                        };
-                        
-                        let filter_op = match op {
-                            Operator::Eq => FilterOperator::FILTER_OPERATOR_EQ,
-                            Operator::NotEq => FilterOperator::FILTER_OPERATOR_NEQ,
-                            Operator::Lt => FilterOperator::FILTER_OPERATOR_LT,
-                            Operator::Gt => FilterOperator::FILTER_OPERATOR_GT,
-                            Operator::LtEq => FilterOperator::FILTER_OPERATOR_LTE,
-                            Operator::GtEq => FilterOperator::FILTER_OPERATOR_GTE,
-                            _ => continue,
-                        };
-                        
+                            field
+                        }
+                        _ => {
+                            let mut field = laoflchdb_engines::Field::new();
+                            field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
+                                value: right.to_string(),
+                                special_fields: ::protobuf::SpecialFields::default(),
+                            }));
+                            field
+                        }
+                    };
+                    
+                    let filter_op = match op {
+                        Operator::Eq => FilterOperator::FILTER_OPERATOR_EQ,
+                        Operator::NotEq => FilterOperator::FILTER_OPERATOR_NEQ,
+                        Operator::Lt => FilterOperator::FILTER_OPERATOR_LT,
+                        Operator::Gt => FilterOperator::FILTER_OPERATOR_GT,
+                        Operator::LtEq => FilterOperator::FILTER_OPERATOR_LTE,
+                        Operator::GtEq => FilterOperator::FILTER_OPERATOR_GTE,
+                        _ => return,
+                    };
+                    
+                    // 检查是否已经有该列的过滤器，如果有则添加条件
+                    if let Some(existing_filter) = column_filters.iter_mut().find(|cf| cf.column_name == column_name) {
+                        existing_filter.conditions.push(ColumnFilterCondition {
+                            op: filter_op.into(),
+                            value: Some(pb_field).into(),
+                            values: Vec::new(),
+                            special_fields: ::protobuf::SpecialFields::default(),
+                        });
+                    } else {
                         column_filters.push(ColumnFilter {
                             column_name,
                             conditions: vec![ColumnFilterCondition {
@@ -132,11 +164,9 @@ impl RocksDBTable {
                         });
                     }
                 }
-                _ => {}
             }
+            _ => {}
         }
-        
-        column_filters
     }
 }
 
@@ -283,34 +313,50 @@ impl TableProvider for RocksDBTable {
     ) -> datafusion::error::Result<Vec<datafusion_expr::TableProviderFilterPushDown>> {
         use datafusion_expr::TableProviderFilterPushDown;
         
-        /// Filter Pushdown 类型说明:
-        /// 
-        /// - `Exact`: 过滤器可以精确下推到存储层执行，返回的结果与在内存中过滤完全一致
-        ///   支持的比较操作符: =, !=, <, >, <=, >=, BETWEEN, IN, LIKE, IS NULL, IS NOT NULL
-        /// 
-        /// - `Inexact`: 过滤器可以下推，但结果可能不完全精确
-        ///   例如：使用了存储层不完全支持的函数（如正则表达式）
-        /// 
-        /// - `Unsupported`: 过滤器不能下推，必须在内存中执行
-        ///   例如：使用了存储层不支持的函数或表达式
-        
-        let mut supported = Vec::new();
-        for filter in filters {
-            match filter {
-                datafusion::logical_expr::Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr { op, .. }) => match op {
+        /// 判断单个表达式是否支持下推
+        fn is_supported(expr: &datafusion::logical_expr::Expr) -> bool {
+            match expr {
+                datafusion::logical_expr::Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr { op, left, right }) => match op {
+                    // AND 表达式：两个子表达式都支持才支持
+                    datafusion::logical_expr::Operator::And => {
+                        is_supported(left) && is_supported(right)
+                    },
+                    // OR 表达式：两个子表达式都支持才支持
+                    datafusion::logical_expr::Operator::Or => {
+                        is_supported(left) && is_supported(right)
+                    },
                     // 支持的比较操作符可以精确下推
                     datafusion::logical_expr::Operator::Eq |       // = (等于)
                     datafusion::logical_expr::Operator::NotEq |    // != (不等于)
                     datafusion::logical_expr::Operator::Lt |       // < (小于)
                     datafusion::logical_expr::Operator::Gt |       // > (大于)
                     datafusion::logical_expr::Operator::LtEq |    // <= (小于等于)
-                    datafusion::logical_expr::Operator::GtEq => {  // >= (大于等于)
-                        supported.push(TableProviderFilterPushDown::Exact)
-                    }
-                    _ => supported.push(TableProviderFilterPushDown::Unsupported),
+                    datafusion::logical_expr::Operator::GtEq => true,  // >= (大于等于)
+                    _ => false,
                 },
-                // 其他表达式类型（如函数调用、LIKE等）暂不支持下推
-                _ => supported.push(TableProviderFilterPushDown::Unsupported),
+                // 其他表达式类型暂不支持
+                _ => false,
+            }
+        }
+        
+        /// Filter Pushdown 类型说明:
+        /// 
+        /// - `Exact`: 过滤器可以精确下推到存储层执行，返回的结果与在内存中过滤完全一致
+        ///   支持的比较操作符: =, !=, <, >, <=, >=
+        ///   支持的逻辑操作符: AND, OR (仅当所有子表达式都支持时)
+        /// 
+        /// - `Inexact`: 过滤器可以下推，但结果可能不完全精确
+        ///   例如：使用了存储层不完全支持的函数
+        /// 
+        /// - `Unsupported`: 过滤器不能下推，必须在内存中执行
+        ///   例如：使用了存储层不支持的函数或表达式
+        
+        let mut supported = Vec::new();
+        for filter in filters {
+            if is_supported(filter) {
+                supported.push(TableProviderFilterPushDown::Exact);
+            } else {
+                supported.push(TableProviderFilterPushDown::Unsupported);
             }
         }
         Ok(supported)
