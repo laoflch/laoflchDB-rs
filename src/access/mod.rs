@@ -592,24 +592,49 @@ impl LaoflchDb for GrpcService {
                             let row = qr.row.get_or_default();
                             let mut fields: Vec<SqlField> = Vec::new();
                             for data in &row.data {
-                                if let Ok(s) = String::from_utf8(data.clone()) {
-                                    if let Ok(num) = s.parse::<i64>() {
-                                        fields.push(SqlField {
-                                            value: Some(crate::pb::rpc::sql_field::Value::Int64Value(num)),
-                                        });
-                                    } else if let Ok(f) = s.parse::<f64>() {
-                                        fields.push(SqlField {
-                                            value: Some(crate::pb::rpc::sql_field::Value::FloatValue(f)),
-                                        });
+                                use protobuf::CodedInputStream;
+                                use laoflchdb_engines::Message;
+                                let mut input = CodedInputStream::from_bytes(data);
+                                if let Ok(field) = laoflchdb_engines::Field::parse_from(&mut input) {
+                                    use laoflchdb_engines::field::field::Value;
+                                    let sql_field = match field.value {
+                                        Some(Value::StringValue(s)) => SqlField {
+                                            value: Some(crate::pb::rpc::sql_field::Value::StringValue(s.value)),
+                                        },
+                                        Some(Value::IntegerValue(i)) => SqlField {
+                                            value: Some(crate::pb::rpc::sql_field::Value::Int64Value(i.value)),
+                                        },
+                                        Some(Value::FloatValue(f)) => SqlField {
+                                            value: Some(crate::pb::rpc::sql_field::Value::FloatValue(f.value)),
+                                        },
+                                        Some(Value::BytesValue(b)) => SqlField {
+                                            value: Some(crate::pb::rpc::sql_field::Value::BytesValue(b.value)),
+                                        },
+                                        _ => SqlField {
+                                            value: Some(crate::pb::rpc::sql_field::Value::StringValue(String::new())),
+                                        },
+                                    };
+                                    fields.push(sql_field);
+                                } else {
+                                    if let Ok(s) = String::from_utf8(data.clone()) {
+                                        if let Ok(num) = s.parse::<i64>() {
+                                            fields.push(SqlField {
+                                                value: Some(crate::pb::rpc::sql_field::Value::Int64Value(num)),
+                                            });
+                                        } else if let Ok(f) = s.parse::<f64>() {
+                                            fields.push(SqlField {
+                                                value: Some(crate::pb::rpc::sql_field::Value::FloatValue(f)),
+                                            });
+                                        } else {
+                                            fields.push(SqlField {
+                                                value: Some(crate::pb::rpc::sql_field::Value::StringValue(s)),
+                                            });
+                                        }
                                     } else {
                                         fields.push(SqlField {
-                                            value: Some(crate::pb::rpc::sql_field::Value::StringValue(s)),
+                                            value: Some(crate::pb::rpc::sql_field::Value::BytesValue(data.clone())),
                                         });
                                     }
-                                } else {
-                                    fields.push(SqlField {
-                                        value: Some(crate::pb::rpc::sql_field::Value::BytesValue(data.clone())),
-                                    });
                                 }
                             }
                             rows.push(SqlQueryResultRow { values: fields });

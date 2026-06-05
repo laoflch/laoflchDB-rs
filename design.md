@@ -856,7 +856,15 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 ## 14. 版本历史
 
-### 0.1.0 (当前)
+### 0.1.1 (当前)
+- 支持存储格式改为 protobuf Field 对象
+- 实现完整的数据类型映射（INT64、STRING、FLOAT、BYTES）
+- SQL 查询返回正确的数据类型（整数、字符串、浮点数）
+- 修复谓词下推的比较逻辑
+- 更新单元测试和集成测试
+- 添加 Python 自动回归测试
+
+### 0.1.0
 - 实现基础 SQL 查询引擎
 - 添加 filter、project、limit 下推优化
 - 实现自定义物理执行算子 RocksScanExec
@@ -866,6 +874,6 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 ---
 
-**文档版本**: v0.1.0  
-**最后更新**: 2026-06-04  
+**文档版本**: v0.1.1  
+**最后更新**: 2026-06-05  
 **项目**: laoflchDB-rust

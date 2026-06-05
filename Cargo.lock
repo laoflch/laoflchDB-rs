@@ -2720,6 +2720,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "datafusion",
+ "datafusion-expr",
  "datafusion-physical-expr",
  "futures",
  "laoflchdb_engines",

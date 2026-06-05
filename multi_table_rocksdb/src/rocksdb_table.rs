@@ -62,7 +62,53 @@ impl RocksDBTable {
                     if let Expr::Column(c) = left.as_ref() {
                         let column_name = c.name.clone();
                         
-                        let value_str = right.to_string();
+                        let pb_field = match right.as_ref() {
+                            Expr::Literal(lit, _) => {
+                                use datafusion::scalar::ScalarValue;
+                                let mut field = laoflchdb_engines::Field::new();
+                                match lit {
+                                    ScalarValue::Int64(Some(v)) => {
+                                        field.value = Some(laoflchdb_engines::field::field::Value::IntegerValue(laoflchdb_engines::field::Integer {
+                                            value: *v,
+                                            special_fields: ::protobuf::SpecialFields::default(),
+                                        }));
+                                    }
+                                    ScalarValue::Float64(Some(v)) => {
+                                        field.value = Some(laoflchdb_engines::field::field::Value::FloatValue(laoflchdb_engines::field::Float {
+                                            value: *v,
+                                            special_fields: ::protobuf::SpecialFields::default(),
+                                        }));
+                                    }
+                                    ScalarValue::Utf8(Some(v)) | ScalarValue::LargeUtf8(Some(v)) => {
+                                        field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
+                                            value: v.clone(),
+                                            special_fields: ::protobuf::SpecialFields::default(),
+                                        }));
+                                    }
+                                    ScalarValue::Binary(Some(v)) | ScalarValue::LargeBinary(Some(v)) => {
+                                        field.value = Some(laoflchdb_engines::field::field::Value::BytesValue(laoflchdb_engines::field::Bytes {
+                                            value: v.clone(),
+                                            special_fields: ::protobuf::SpecialFields::default(),
+                                        }));
+                                    }
+                                    _ => {
+                                        field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
+                                            value: lit.to_string(),
+                                            special_fields: ::protobuf::SpecialFields::default(),
+                                        }));
+                                    }
+                                }
+                                field
+                            }
+                            _ => {
+                                let mut field = laoflchdb_engines::Field::new();
+                                field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
+                                    value: right.to_string(),
+                                    special_fields: ::protobuf::SpecialFields::default(),
+                                }));
+                                field
+                            }
+                        };
                         
                         let filter_op = match op {
                             Operator::Eq => FilterOperator::FILTER_OPERATOR_EQ,
@@ -73,12 +119,6 @@ impl RocksDBTable {
                             Operator::GtEq => FilterOperator::FILTER_OPERATOR_GTE,
                             _ => continue,
                         };
-                        
-                        let mut pb_field = laoflchdb_engines::Field::new();
-                        pb_field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
-                            value: value_str,
-                            special_fields: ::protobuf::SpecialFields::default(),
-                        }));
                         
                         column_filters.push(ColumnFilter {
                             column_name,
@@ -235,6 +275,45 @@ impl TableProvider for RocksDBTable {
     
     fn table_type(&self) -> datafusion::datasource::TableType {
         datafusion::datasource::TableType::Base
+    }
+    
+    fn supports_filters_pushdown(
+        &self,
+        filters: &[&datafusion::logical_expr::Expr],
+    ) -> datafusion::error::Result<Vec<datafusion_expr::TableProviderFilterPushDown>> {
+        use datafusion_expr::TableProviderFilterPushDown;
+        
+        /// Filter Pushdown 类型说明:
+        /// 
+        /// - `Exact`: 过滤器可以精确下推到存储层执行，返回的结果与在内存中过滤完全一致
+        ///   支持的比较操作符: =, !=, <, >, <=, >=, BETWEEN, IN, LIKE, IS NULL, IS NOT NULL
+        /// 
+        /// - `Inexact`: 过滤器可以下推，但结果可能不完全精确
+        ///   例如：使用了存储层不完全支持的函数（如正则表达式）
+        /// 
+        /// - `Unsupported`: 过滤器不能下推，必须在内存中执行
+        ///   例如：使用了存储层不支持的函数或表达式
+        
+        let mut supported = Vec::new();
+        for filter in filters {
+            match filter {
+                datafusion::logical_expr::Expr::BinaryExpr(datafusion::logical_expr::BinaryExpr { op, .. }) => match op {
+                    // 支持的比较操作符可以精确下推
+                    datafusion::logical_expr::Operator::Eq |       // = (等于)
+                    datafusion::logical_expr::Operator::NotEq |    // != (不等于)
+                    datafusion::logical_expr::Operator::Lt |       // < (小于)
+                    datafusion::logical_expr::Operator::Gt |       // > (大于)
+                    datafusion::logical_expr::Operator::LtEq |    // <= (小于等于)
+                    datafusion::logical_expr::Operator::GtEq => {  // >= (大于等于)
+                        supported.push(TableProviderFilterPushDown::Exact)
+                    }
+                    _ => supported.push(TableProviderFilterPushDown::Unsupported),
+                },
+                // 其他表达式类型（如函数调用、LIKE等）暂不支持下推
+                _ => supported.push(TableProviderFilterPushDown::Unsupported),
+            }
+        }
+        Ok(supported)
     }
     
     async fn scan(

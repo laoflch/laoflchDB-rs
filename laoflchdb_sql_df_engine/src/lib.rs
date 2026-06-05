@@ -47,30 +47,55 @@ impl<E: StorageEngine + DataFusionStorageEngine> DataFusionSQLEngine<E> {
             for (j, field) in schema.fields().iter().enumerate() {
                 let array = batch.column(j);
                 
-                let value_bytes = match field.data_type() {
+                let pb_field = match field.data_type() {
                     DataType::Utf8 => {
                         let array = array.as_any().downcast_ref::<StringArray>().unwrap();
                         let value = array.value(i);
-                        value.as_bytes().to_vec()
+                        PbField {
+                            value: Some(Value::StringValue(laoflchdb_engines::field::String {
+                                value: value.to_string(),
+                                special_fields: ::protobuf::SpecialFields::default(),
+                            })),
+                            special_fields: ::protobuf::SpecialFields::default(),
+                        }
                     }
                     DataType::Int64 => {
                         let array = array.as_any().downcast_ref::<Int64Array>().unwrap();
                         let value = array.value(i);
-                        value.to_string().as_bytes().to_vec()
+                        PbField {
+                            value: Some(Value::IntegerValue(laoflchdb_engines::field::Integer {
+                                value,
+                                special_fields: ::protobuf::SpecialFields::default(),
+                            })),
+                            special_fields: ::protobuf::SpecialFields::default(),
+                        }
                     }
                     DataType::Float64 => {
                         let array = array.as_any().downcast_ref::<Float64Array>().unwrap();
                         let value = array.value(i);
-                        value.to_string().as_bytes().to_vec()
+                        PbField {
+                            value: Some(Value::FloatValue(laoflchdb_engines::field::Float {
+                                value,
+                                special_fields: ::protobuf::SpecialFields::default(),
+                            })),
+                            special_fields: ::protobuf::SpecialFields::default(),
+                        }
                     }
                     DataType::Binary => {
                         let array = array.as_any().downcast_ref::<BinaryArray>().unwrap();
                         let value = array.value(i);
-                        value.to_vec()
+                        PbField {
+                            value: Some(Value::BytesValue(laoflchdb_engines::field::Bytes {
+                                value: value.to_vec(),
+                                special_fields: ::protobuf::SpecialFields::default(),
+                            })),
+                            special_fields: ::protobuf::SpecialFields::default(),
+                        }
                     }
-                    _ => Vec::new(),
+                    _ => PbField::default(),
                 };
                 
+                let value_bytes = pb_field.write_to_bytes().unwrap_or_default();
                 row_data.push(value_bytes);
             }
             

@@ -14,15 +14,19 @@
 - **Arrow 数据格式**：采用 Apache Arrow 列式存储
 - **自定义物理执行算子**：直接对接 RocksDB，避免 MemTable 包装
 - **查询下推优化**：
-  - Filter 条件下推
+  - Filter 条件下推（支持 =、!=、<、>、<=、>=）
   - Project 列投影下推
   - Limit 限制条数下推
+- **完整数据类型支持**：INT64、STRING、FLOAT、BYTES
+- **正确的数据类型返回**：SQL 查询返回正确的 JSON 数据类型（整数、字符串、浮点数）
 
 ### 类型支持
-- `Int64`：整数类型
-- `Utf8`：字符串类型
-- `Float64`：浮点类型
-- `Binary`：二进制类型
+| 存储类型 | Arrow 类型 | JSON 返回类型 |
+|----------|-----------|--------------|
+| `INT64` | Int64 | 整数 (Number) |
+| `STRING` | Utf8 | 字符串 (String) |
+| `FLOAT` | Float64 | 浮点数 (Number) |
+| `BYTES` | Binary | 字符串 (String, UTF-8 解码) |
 
 ## 核心结构
 
@@ -73,24 +77,49 @@ DataFusion SQL 解析器
     ↓
 查询计划生成
     ↓
-查询优化
+查询优化（CNF、谓词/投影/Limit下推）
     ↓
-自定义物理执行算子 RocksScanExec
+TableProvider.scan() 生成 RocksScanExec
     ↓
-查询下推到存储引擎
+RocksScanExec 执行（调用 table_to_arrow_with_pushdown）
+    ↓
+存储引擎直接扫描（应用过滤、投影、限制）
     ↓
 Arrow RecordBatch
     ↓
 转换为 QueryResult (protobuf)
+    ↓
+REST API 返回 JSON（正确的数据类型）
 ```
 
 ### 自定义物理执行算子
 
 `RocksScanExec`（在 multi_table_rocksdb 包中实现）替代了 DataFusion 的默认 MemTable，直接与 RocksDB 存储引擎交互，实现了：
-- 列投影下推
-- 过滤条件下推
-- Limit 下推
-- 异步数据流式读取
+- 列投影下推：只扫描需要的列
+- 过滤条件下推：在存储层执行谓词过滤
+- Limit 下推：提前终止扫描，减少数据读取
+- 异步数据流式读取：使用 futures Stream
+
+### 存储格式
+
+数据存储使用 protobuf Field 对象格式：
+
+```protobuf
+message Field {
+    oneof value {
+        StringValue string_value = 1;
+        IntegerValue integer_value = 2;
+        FloatValue float_value = 3;
+        BytesValue bytes_value = 4;
+    }
+}
+
+message Row {
+    RowType row_type = 1;
+    int32 version = 2;
+    repeated bytes data = 3;  // 每个元素是序列化的 Field 对象
+}
+```
 
 ## 使用方法
 
@@ -122,6 +151,52 @@ sql_engine.refresh_tables().await?;
 let result = sql_engine.execute_query("SELECT id, name FROM users WHERE id > 100").await?;
 ```
 
+## REST API 使用示例
+
+### 创建表
+
+```bash
+curl -X POST http://localhost:8080/api/v1/tables \
+  -H "Content-Type: application/json" \
+  -d '{
+    "schema": "sys",
+    "table_name": "users",
+    "columns": [
+      {"name": "id", "column_type": "INT64"},
+      {"name": "name", "column_type": "STRING"},
+      {"name": "age", "column_type": "INT64"}
+    ]
+  }'
+```
+
+### 插入数据
+
+```bash
+curl -X POST http://localhost:8080/api/v1/schemas/sys/tables/users/rows \
+  -H "Content-Type: application/json" \
+  -d '{"row_id": 1, "row": {"row_type": 0, "version": 1, "data": ["1", "Alice", "30"]}}'
+```
+
+### SQL 查询
+
+```bash
+curl -X POST http://localhost:8080/api/v1/sql_query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT id, name, age FROM users WHERE age > 25"}'
+```
+
+### 查询结果
+
+```json
+{
+    "success": true,
+    "data": {
+        "columns": ["id", "name", "age"],
+        "rows": [[1, "Alice", 30], [2, "Bob", 28]]
+    }
+}
+```
+
 ## 依赖配置
 
 ### Cargo.toml
@@ -136,6 +211,8 @@ arrow-array = "58.3.0"
 tokio = { version = "1.0", features = ["rt"] }
 async-trait = "0.1"
 protobuf = "3.7"
+serde = "1.0"
+serde_json = "1.0"
 ```
 
 ## 目录结构
@@ -156,12 +233,14 @@ laoflchdb_sql_df_engine
 ├── 依赖：laoflchdb_engines
 │   ├── SQLEngine Trait
 │   ├── StorageEngine Trait
-│   └── QueryResult (protobuf)
+│   ├── QueryResult (protobuf)
+│   └── Field (protobuf)
 │
 └── 被 multi_table_rocksdb 依赖
     ├── 实现 DataFusionStorageEngine Trait
     ├── 提供 RocksScanExec 自定义物理执行算子
-    └── 实现 projected_columns 列投影下推
+    ├── 实现 table_to_arrow_with_pushdown 方法
+    └── 支持 protobuf Field 对象存储
 ```
 
 ## 性能优化
@@ -171,18 +250,43 @@ laoflchdb_sql_df_engine
 - 良好的 SIMD 支持
 
 ### 2. 查询下推
-- Filter：谓词在存储层执行
-- Project：只读取需要的列
-- Limit：提前终止扫描
+- Filter：谓词在存储层执行，减少数据加载
+- Project：只读取需要的列，减少 IO
+- Limit：提前终止扫描，减少数据传输
 
 ### 3. 异步架构
 - 使用 `tokio::sync::RwLock` 而非 `std::sync::RwLock`
 - 所有查询方法均为异步
 - 支持并发查询
 
+### 4. protobuf 序列化
+- 使用 protobuf 存储 Field 对象
+- 高效的序列化/反序列化
+- 支持多种数据类型
+
+## 测试
+
+项目包含完整的测试套件：
+
+### Rust 测试
+- 单元测试：`tests/*.rs`
+- 集成测试：`tests/integration_tests.rs`
+
+### Python 测试
+- E2E 测试：`tests_python/test_e2e_rest.py`
+- 回归测试：`tests_python/test_sql_query_validation.py`
+
 ## 版本历史
 
-### 0.1.0 (当前)
+### 0.1.1 (当前)
+- 支持存储格式改为 protobuf Field 对象
+- 实现完整的数据类型映射（INT64、STRING、FLOAT、BYTES）
+- SQL 查询返回正确的数据类型（整数、字符串、浮点数）
+- 修复谓词下推的比较逻辑
+- 更新单元测试和集成测试
+- 添加 Python 自动回归测试
+
+### 0.1.0
 - 基于 DataFusion 53.1.0 和 Arrow 58.3.0
 - 实现 SQL 查询引擎核心功能
 - 支持自定义物理执行算子

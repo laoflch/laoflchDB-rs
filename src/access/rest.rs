@@ -148,7 +148,7 @@ pub struct SqlQueryBody {
 #[derive(Serialize)]
 pub struct SqlQueryResponse {
     pub columns: Vec<String>,
-    pub rows: Vec<Vec<String>>,
+    pub rows: Vec<Vec<serde_json::Value>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -263,6 +263,92 @@ fn convert_rest_row_to_db_row(rest_row: &RestRow) -> Result<Row, String> {
         data: rest_row.data.iter()
             .map(|s| decode_hex(s))
             .collect::<Result<Vec<_>, String>>()?,
+        special_fields: SpecialFields::default(),
+    })
+}
+
+fn encode_field(f: &laoflchdb_engines::Field) -> Vec<u8> {
+    use protobuf::CodedOutputStream;
+    use laoflchdb_engines::Message;
+    let mut buf = Vec::new();
+    {
+        let mut os = CodedOutputStream::vec(&mut buf);
+        let mut f_clone = f.clone();
+        f_clone.compute_size();
+        f_clone.write_to_with_cached_sizes(&mut os).unwrap_or_default();
+        os.flush().unwrap_or_default();
+    }
+    buf
+}
+
+fn convert_rest_row_to_db_row_with_columns(rest_row: &RestRow, columns: &[ColumnMeta]) -> Result<Row, String> {
+    use laoflchdb_engines::field::field::Value;
+    use laoflchdb_engines::field::{String, Integer, Float, Bytes};
+    
+    let mut data = Vec::new();
+    
+    for (idx, value) in rest_row.data.iter().enumerate() {
+        let column = columns.get(idx);
+        let col_type = column.map(|c| c.column_type.enum_value_or_default()).unwrap_or(ColumnType::COLUMN_TYPE_STRING);
+        
+        let field = match col_type {
+            ColumnType::COLUMN_TYPE_INT64 => {
+                let val: i64 = value.parse().map_err(|e| format!("Failed to parse int64: {}", e))?;
+                laoflchdb_engines::Field {
+                    value: Some(Value::IntegerValue(Integer {
+                        value: val,
+                        special_fields: SpecialFields::default(),
+                    })),
+                    special_fields: SpecialFields::default(),
+                }
+            }
+            ColumnType::COLUMN_TYPE_FLOAT => {
+                let val: f64 = value.parse().map_err(|e| format!("Failed to parse float: {}", e))?;
+                laoflchdb_engines::Field {
+                    value: Some(Value::FloatValue(Float {
+                        value: val,
+                        special_fields: SpecialFields::default(),
+                    })),
+                    special_fields: SpecialFields::default(),
+                }
+            }
+            ColumnType::COLUMN_TYPE_STRING => {
+                laoflchdb_engines::Field {
+                    value: Some(Value::StringValue(String {
+                        value: value.clone(),
+                        special_fields: SpecialFields::default(),
+                    })),
+                    special_fields: SpecialFields::default(),
+                }
+            }
+            ColumnType::COLUMN_TYPE_BYTES => {
+                let bytes = decode_hex(value)?;
+                laoflchdb_engines::Field {
+                    value: Some(Value::BytesValue(Bytes {
+                        value: bytes,
+                        special_fields: SpecialFields::default(),
+                    })),
+                    special_fields: SpecialFields::default(),
+                }
+            }
+            _ => {
+                laoflchdb_engines::Field {
+                    value: Some(Value::StringValue(String {
+                        value: value.clone(),
+                        special_fields: SpecialFields::default(),
+                    })),
+                    special_fields: SpecialFields::default(),
+                }
+            }
+        };
+        
+        data.push(encode_field(&field));
+    }
+    
+    Ok(Row {
+        row_type: EnumOrUnknown::new(RowType::from_i32(rest_row.row_type).unwrap_or(RowType::ROW_TYPE_NORMAL)),
+        version: rest_row.version,
+        data,
         special_fields: SpecialFields::default(),
     })
 }
@@ -510,7 +596,12 @@ async fn add_row_handler(
         return Err(ApiError { message: "Permission denied".to_string() });
     }
     
-    let db_row = match convert_rest_row_to_db_row(&body.row) {
+    let columns = match service.list_table_cols(&schema, &table).await {
+        Ok(cols) => cols,
+        Err(e) => return Ok(Json(ApiResponse::error(format!("Failed to get columns: {}", e)))),
+    };
+    
+    let db_row = match convert_rest_row_to_db_row_with_columns(&body.row, &columns) {
         Ok(row) => row,
         Err(e) => return Ok(Json(ApiResponse::error(e))),
     };
@@ -658,12 +749,28 @@ async fn sql_query_handler(
                 Vec::new()
             };
             
-            let mut rows: Vec<Vec<String>> = Vec::new();
+            let mut rows: Vec<Vec<serde_json::Value>> = Vec::new();
             for qr in &result.rows {
                 if qr.row.is_some() {
                     let row = qr.row.get_or_default();
-                    let row_values: Vec<String> = row.data.iter()
-                        .map(|d| String::from_utf8_lossy(d).to_string())
+                    let row_values: Vec<serde_json::Value> = row.data.iter()
+                        .map(|d| {
+                            use protobuf::CodedInputStream;
+                            use laoflchdb_engines::Message;
+                            let mut input = CodedInputStream::from_bytes(d);
+                            if let Ok(field) = laoflchdb_engines::Field::parse_from(&mut input) {
+                                use laoflchdb_engines::field::field::Value;
+                                match field.value {
+                                    Some(Value::StringValue(s)) => serde_json::Value::String(s.value),
+                                    Some(Value::IntegerValue(i)) => serde_json::Value::Number(serde_json::Number::from(i.value)),
+                                    Some(Value::FloatValue(f)) => serde_json::Value::Number(serde_json::Number::from_f64(f.value).unwrap_or(serde_json::Number::from(0))),
+                                    Some(Value::BytesValue(b)) => serde_json::Value::String(String::from_utf8_lossy(&b.value).to_string()),
+                                    _ => serde_json::Value::Null,
+                                }
+                            } else {
+                                serde_json::Value::String(String::from_utf8_lossy(d).to_string())
+                            }
+                        })
                         .collect();
                     rows.push(row_values);
                 }

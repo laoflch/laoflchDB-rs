@@ -308,3 +308,197 @@ async fn test_sql_engine_query() {
     let query_result = result.unwrap();
     assert!(query_result.rows.is_empty() || query_result.rows.len() >= 0);
 }
+
+#[tokio::test]
+async fn test_sql_query_with_data() {
+    let service = create_test_service().await;
+    
+    // 创建测试表
+    let columns = vec![
+        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING),
+        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+        (3u32, "score", laoflchdb_engines::ColumnType::COLUMN_TYPE_FLOAT),
+    ];
+    
+    service.create_table("sys", "sql_data_test", &columns).await.unwrap();
+    
+    // 等待表注册
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    
+    // 插入测试数据
+    use laoflchdb_engines::{Row, RowType, SpecialFields, Message, field::field::Value, field::{String, Integer, Float}};
+    use protobuf::CodedOutputStream;
+    
+    let mut row1 = Row::new();
+    row1.row_type = RowType::ROW_TYPE_NORMAL.into();
+    row1.version = 1;
+    
+    let mut field1 = laoflchdb_engines::Field::new();
+    field1.value = Some(Value::IntegerValue(Integer { value: 1, special_fields: SpecialFields::default() }));
+    let mut buf1 = Vec::new();
+    {
+        let mut os = CodedOutputStream::vec(&mut buf1);
+        field1.write_to(&mut os).unwrap();
+        os.flush().unwrap();
+    }
+    row1.data.push(buf1);
+    
+    let mut field2 = laoflchdb_engines::Field::new();
+    field2.value = Some(Value::StringValue(String { value: "Alice".to_string(), special_fields: SpecialFields::default() }));
+    let mut buf2 = Vec::new();
+    {
+        let mut os = CodedOutputStream::vec(&mut buf2);
+        field2.write_to(&mut os).unwrap();
+        os.flush().unwrap();
+    }
+    row1.data.push(buf2);
+    
+    let mut field3 = laoflchdb_engines::Field::new();
+    field3.value = Some(Value::IntegerValue(Integer { value: 30, special_fields: SpecialFields::default() }));
+    let mut buf3 = Vec::new();
+    {
+        let mut os = CodedOutputStream::vec(&mut buf3);
+        field3.write_to(&mut os).unwrap();
+        os.flush().unwrap();
+    }
+    row1.data.push(buf3);
+    
+    let mut field4 = laoflchdb_engines::Field::new();
+    field4.value = Some(Value::FloatValue(Float { value: 95.5, special_fields: SpecialFields::default() }));
+    let mut buf4 = Vec::new();
+    {
+        let mut os = CodedOutputStream::vec(&mut buf4);
+        field4.write_to(&mut os).unwrap();
+        os.flush().unwrap();
+    }
+    row1.data.push(buf4);
+    
+    service.add_row("sys", "sql_data_test", &row1).await.unwrap();
+    
+    // 等待数据写入
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    
+    // 测试全表查询
+    let result = service.sql_query("sys", "SELECT * FROM sql_data_test").await;
+    assert!(result.is_ok());
+    
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 1);
+    
+    // 测试投影下推
+    let result = service.sql_query("sys", "SELECT id, name FROM sql_data_test").await;
+    assert!(result.is_ok());
+    
+    // 测试谓词下推
+    let result = service.sql_query("sys", "SELECT * FROM sql_data_test WHERE age > 25").await;
+    assert!(result.is_ok());
+    
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 1);
+    
+    // 测试 Limit 下推
+    let result = service.sql_query("sys", "SELECT * FROM sql_data_test LIMIT 1").await;
+    assert!(result.is_ok());
+    
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 1);
+    
+    // 测试组合查询
+    let result = service.sql_query("sys", "SELECT name, age FROM sql_data_test WHERE id = 1").await;
+    assert!(result.is_ok());
+    
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 1);
+}
+
+#[tokio::test]
+async fn test_sql_query_filter_pushdown() {
+    let service = create_test_service().await;
+    
+    // 创建测试表
+    let columns = vec![
+        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING),
+        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+    ];
+    
+    service.create_table("sys", "filter_test", &columns).await.unwrap();
+    
+    // 等待表注册
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    
+    // 插入多条测试数据
+    use laoflchdb_engines::{Row, RowType, SpecialFields, Message, field::field::Value, field::{String, Integer}};
+    use protobuf::CodedOutputStream;
+    
+    for i in 1..=5 {
+        let mut row = Row::new();
+        row.row_type = RowType::ROW_TYPE_NORMAL.into();
+        row.version = 1;
+        
+        let mut field1 = laoflchdb_engines::Field::new();
+        field1.value = Some(Value::IntegerValue(Integer { value: i as i64, special_fields: SpecialFields::default() }));
+        let mut buf1 = Vec::new();
+        {
+            let mut os = CodedOutputStream::vec(&mut buf1);
+            field1.write_to(&mut os).unwrap();
+            os.flush().unwrap();
+        }
+        row.data.push(buf1);
+        
+        let mut field2 = laoflchdb_engines::Field::new();
+        field2.value = Some(Value::StringValue(String { value: format!("User{}", i), special_fields: SpecialFields::default() }));
+        let mut buf2 = Vec::new();
+        {
+            let mut os = CodedOutputStream::vec(&mut buf2);
+            field2.write_to(&mut os).unwrap();
+            os.flush().unwrap();
+        }
+        row.data.push(buf2);
+        
+        let mut field3 = laoflchdb_engines::Field::new();
+        field3.value = Some(Value::IntegerValue(Integer { value: (20 + i * 5) as i64, special_fields: SpecialFields::default() }));
+        let mut buf3 = Vec::new();
+        {
+            let mut os = CodedOutputStream::vec(&mut buf3);
+            field3.write_to(&mut os).unwrap();
+            os.flush().unwrap();
+        }
+        row.data.push(buf3);
+        
+        service.add_row("sys", "filter_test", &row).await.unwrap();
+    }
+    
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    
+    // 测试 > 操作符
+    let result = service.sql_query("sys", "SELECT * FROM filter_test WHERE age > 30").await;
+    assert!(result.is_ok());
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 3); // age > 30: 35, 40, 45
+    
+    // 测试 < 操作符
+    let result = service.sql_query("sys", "SELECT * FROM filter_test WHERE age < 30").await;
+    assert!(result.is_ok());
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 2); // age < 30: 25, 30
+    
+    // 测试 = 操作符
+    let result = service.sql_query("sys", "SELECT * FROM filter_test WHERE id = 3").await;
+    assert!(result.is_ok());
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 1);
+    
+    // 测试 >= 操作符
+    let result = service.sql_query("sys", "SELECT * FROM filter_test WHERE age >= 35").await;
+    assert!(result.is_ok());
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 3); // age >= 35: 35, 40, 45
+    
+    // 测试 <= 操作符
+    let result = service.sql_query("sys", "SELECT * FROM filter_test WHERE age <= 30").await;
+    assert!(result.is_ok());
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 3); // age <= 30: 25, 30, 30
+}

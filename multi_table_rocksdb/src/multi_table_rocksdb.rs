@@ -806,7 +806,7 @@ impl MultiTableRocksDBEngine {
     ) -> bool {
         use laoflchdb_engines::field::field::Value;
         
-        let row_field = match laoflchdb_engines::Field::parse_from_bytes(field_bytes) {
+        let row_field = match self.parse_field_from_bytes(field_bytes) {
             Ok(f) => f,
             Err(_) => return false,
         };
@@ -832,7 +832,7 @@ impl MultiTableRocksDBEngine {
     ) -> bool {
         use laoflchdb_engines::field::field::Value;
         
-        let row_field = match laoflchdb_engines::Field::parse_from_bytes(field_bytes) {
+        let row_field = match self.parse_field_from_bytes(field_bytes) {
             Ok(f) => f,
             Err(_) => return false,
         };
@@ -842,6 +842,30 @@ impl MultiTableRocksDBEngine {
                 (Value::StringValue(s1), Value::StringValue(s2)) => s1.value > s2.value,
                 (Value::IntegerValue(i1), Value::IntegerValue(i2)) => i1.value > i2.value,
                 (Value::FloatValue(f1), Value::FloatValue(f2)) => f1.value > f2.value,
+                (Value::IntegerValue(i1), Value::StringValue(s2)) => {
+                    match s2.value.parse::<i64>() {
+                        Ok(val) => i1.value > val,
+                        Err(_) => false,
+                    }
+                }
+                (Value::StringValue(s1), Value::IntegerValue(i2)) => {
+                    match s1.value.parse::<i64>() {
+                        Ok(val) => val > i2.value,
+                        Err(_) => false,
+                    }
+                }
+                (Value::FloatValue(f1), Value::StringValue(s2)) => {
+                    match s2.value.parse::<f64>() {
+                        Ok(val) => f1.value > val,
+                        Err(_) => false,
+                    }
+                }
+                (Value::StringValue(s1), Value::FloatValue(f2)) => {
+                    match s1.value.parse::<f64>() {
+                        Ok(val) => val > f2.value,
+                        Err(_) => false,
+                    }
+                }
                 _ => false,
             }
         } else {
@@ -857,7 +881,7 @@ impl MultiTableRocksDBEngine {
     ) -> bool {
         use laoflchdb_engines::field::field::Value;
         
-        let row_field = match laoflchdb_engines::Field::parse_from_bytes(field_bytes) {
+        let row_field = match self.parse_field_from_bytes(field_bytes) {
             Ok(f) => f,
             Err(_) => return false,
         };
@@ -867,6 +891,30 @@ impl MultiTableRocksDBEngine {
                 (Value::StringValue(s1), Value::StringValue(s2)) => s1.value < s2.value,
                 (Value::IntegerValue(i1), Value::IntegerValue(i2)) => i1.value < i2.value,
                 (Value::FloatValue(f1), Value::FloatValue(f2)) => f1.value < f2.value,
+                (Value::IntegerValue(i1), Value::StringValue(s2)) => {
+                    match s2.value.parse::<i64>() {
+                        Ok(val) => i1.value < val,
+                        Err(_) => false,
+                    }
+                }
+                (Value::StringValue(s1), Value::IntegerValue(i2)) => {
+                    match s1.value.parse::<i64>() {
+                        Ok(val) => val < i2.value,
+                        Err(_) => false,
+                    }
+                }
+                (Value::FloatValue(f1), Value::StringValue(s2)) => {
+                    match s2.value.parse::<f64>() {
+                        Ok(val) => f1.value < val,
+                        Err(_) => false,
+                    }
+                }
+                (Value::StringValue(s1), Value::FloatValue(f2)) => {
+                    match s1.value.parse::<f64>() {
+                        Ok(val) => val < f2.value,
+                        Err(_) => false,
+                    }
+                }
                 _ => false,
             }
         } else {
@@ -948,6 +996,8 @@ impl MultiTableRocksDBEngine {
         
         for qr in &result.rows {
             if let Some(row) = qr.row.as_ref() {
+                let mut row_arrays: Vec<Option<ArrayRef>> = vec![None; projected_columns.len()];
+                
                 for (arr_idx, col) in projected_columns.iter().enumerate() {
                     if let Some(&orig_idx) = column_name_to_idx.get(&col.column_name) {
                         if orig_idx >= row.data.len() {
@@ -956,41 +1006,46 @@ impl MultiTableRocksDBEngine {
                         
                         let field_bytes = &row.data[orig_idx];
                         
-                        let col_type = col.column_type.enum_value_or_default();
-                        let array = match col_type {
-                            ColumnType::COLUMN_TYPE_INT64 => {
-                                let value = if field_bytes.len() >= 8 {
-                                    let mut bytes = [0u8; 8];
-                                    bytes.copy_from_slice(&field_bytes[..8]);
-                                    i64::from_be_bytes(bytes)
-                                } else if !field_bytes.is_empty() {
-                                    field_bytes[0] as i64
-                                } else {
-                                    0
-                                };
-                                Arc::new(Int64Array::from(vec![value])) as ArrayRef
+                        let pb_field = match self.parse_field_from_bytes(field_bytes) {
+                            Ok(f) => f,
+                            Err(_) => continue,
+                        };
+                        
+                        use laoflchdb_engines::field::field::Value;
+                        let array = match pb_field.value {
+                            Some(Value::StringValue(s)) => {
+                                Arc::new(StringArray::from(vec![s.value.clone()])) as ArrayRef
                             }
-                            ColumnType::COLUMN_TYPE_STRING => {
-                                let value = String::from_utf8_lossy(field_bytes).to_string();
-                                Arc::new(StringArray::from(vec![value])) as ArrayRef
+                            Some(Value::IntegerValue(i)) => {
+                                Arc::new(Int64Array::from(vec![i.value])) as ArrayRef
                             }
-                            ColumnType::COLUMN_TYPE_BYTES => {
-                                Arc::new(BinaryArray::from(vec![field_bytes.as_slice()])) as ArrayRef
+                            Some(Value::FloatValue(f)) => {
+                                Arc::new(Float64Array::from(vec![f.value])) as ArrayRef
                             }
-                            ColumnType::COLUMN_TYPE_FLOAT => {
-                                let value = if field_bytes.len() >= 8 {
-                                    let mut bytes = [0u8; 8];
-                                    bytes.copy_from_slice(&field_bytes[..8]);
-                                    f64::from_be_bytes(bytes)
-                                } else {
-                                    0.0
-                                };
-                                Arc::new(Float64Array::from(vec![value])) as ArrayRef
+                            Some(Value::BytesValue(b)) => {
+                                Arc::new(BinaryArray::from(vec![b.value.as_slice()])) as ArrayRef
                             }
                             _ => Arc::new(StringArray::from(vec![""])) as ArrayRef,
                         };
-                        arrow_arrays[arr_idx].push(array);
+                        row_arrays[arr_idx] = Some(array);
                     }
+                }
+                
+                for (arr_idx, arr) in row_arrays.iter().enumerate() {
+                    let array = match arr {
+                        Some(a) => a.clone(),
+                        None => {
+                            let (col_type, _) = &column_infos[arr_idx];
+                            match *col_type {
+                                0 => Arc::new(StringArray::from(vec![""])) as ArrayRef,
+                                1 => Arc::new(Int64Array::from(vec![0])) as ArrayRef,
+                                3 => Arc::new(Float64Array::from(vec![0.0])) as ArrayRef,
+                                2 => Arc::new(BinaryArray::from(vec![&[][..]])) as ArrayRef,
+                                _ => Arc::new(StringArray::from(vec![""])) as ArrayRef,
+                            }
+                        }
+                    };
+                    arrow_arrays[arr_idx].push(array);
                 }
             }
         }
