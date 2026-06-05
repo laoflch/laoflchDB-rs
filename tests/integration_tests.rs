@@ -482,7 +482,7 @@ async fn test_sql_query_filter_pushdown() {
     let result = service.sql_query("sys", "SELECT * FROM filter_test WHERE age < 30").await;
     assert!(result.is_ok());
     let query_result = result.unwrap();
-    assert_eq!(query_result.rows.len(), 2); // age < 30: 25, 30
+    assert_eq!(query_result.rows.len(), 1); // age < 30: 25
     
     // 测试 = 操作符
     let result = service.sql_query("sys", "SELECT * FROM filter_test WHERE id = 3").await;
@@ -500,5 +500,5 @@ async fn test_sql_query_filter_pushdown() {
     let result = service.sql_query("sys", "SELECT * FROM filter_test WHERE age <= 30").await;
     assert!(result.is_ok());
     let query_result = result.unwrap();
-    assert_eq!(query_result.rows.len(), 3); // age <= 30: 25, 30, 30
+    assert_eq!(query_result.rows.len(), 2); // age <= 30: 25, 30
 }

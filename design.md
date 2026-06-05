@@ -72,14 +72,15 @@ laoflchDB-rust/
 │   │   ├── query.rs
 │   │   └── row.rs
 │   └── Cargo.toml
-├── laoflchdb_sql_df_engine/  # SQL 引擎 crate
+├── laoflchdb_sql_df_engine/  # SQL 引擎 crate - DataFusion 集成
 │   ├── src/lib.rs
-│   └── Cargo.toml
+│   ├── Cargo.toml
+│   └── README.md
 ├── multi_table_rocksdb/  # 独立的 RocksDB 引擎实现 crate
 │   ├── src/
 │   │   ├── lib.rs
 │   │   ├── multi_table_rocksdb.rs
-│   │   └── rocksdb_table.rs
+│   │   └── rocksdb_table.rs    # RocksDBTable + RocksScanExec 物理算子
 │   └── Cargo.toml
 ├── tests/               # Rust 单元测试和集成测试
 │   ├── basic_uuid_tests.rs
@@ -90,7 +91,9 @@ laoflchDB-rust/
 │   └── integration_tests.rs
 ├── tests_python/        # Python 自动化 E2E 测试
 │   ├── test_e2e_grpc.py
-│   └── test_e2e_rest.py
+│   ├── test_e2e_rest.py
+│   ├── test_sql_query_validation.py
+│   └── test_grpc_sql_query.py
 ├── xtask/              # 构建和测试任务
 │   ├── src/main.rs
 │   └── Cargo.toml
@@ -194,6 +197,7 @@ pub const MAX_TABLE_ID_LENGTH: usize = 20;
 │  │  │  - SQL 解析 (DataFusion)                         │ │  │
 │  │  │  - 查询规划与优化                                 │ │  │
 │  │  │  - Arrow 列式数据转换                            │ │  │
+│  │  │  - 查询下推优化 (Filter/Project/Limit)           │ │  │
 │  │  └─────────────────────────────────────────────────┘ │  │
 │  └───────────────────────┬──────────────────────────────┘  │
 │                          ↓                                   │
@@ -297,7 +301,7 @@ pub trait DBEngine: Send + Sync + 'static {
     
     async fn get_table_meta(&self, table: &str) -> Result<Option<TableMeta>, ...>;
     
-    // Query 接口 - 支持 CNF 查询
+    // Query 接口 - 支持 CNF 查询和列投影下推
     async fn query(&self, query: &Query) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>;
     
     fn get_schema_name(&self) -> &str;
@@ -518,7 +522,46 @@ SQL 查询 → DataFusion 优化器 → TableProvider.scan()
 - SQL 的 filter、project、limit 直接下推到存储引擎层
 - 自定义物理算子直接对接 RocksDB
 
-### 8.3 projected_columns 列投影下推
+### 8.3 谓词下推支持 (supports_filters_pushdown)
+
+**位置**: [multi_table_rocksdb/src/rocksdb_table.rs](multi_table_rocksdb/src/rocksdb_table.rs)
+
+支持以下下推类型：
+
+| 下推类型 | 说明 | 支持的操作符 |
+|---------|------|-------------|
+| `Exact` | 过滤器可以精确下推到存储层执行 | `=`, `!=`, `<`, `>`, `<=`, `>=` |
+| `Exact` | 逻辑操作符支持 | `AND`, `OR` (所有子表达式都支持时) |
+| `Unsupported` | 不支持下推的表达式 | 其他类型 |
+
+**实现逻辑**:
+
+```rust
+fn supports_filters_pushdown(
+    &self,
+    filters: &[&datafusion::logical_expr::Expr],
+) -> datafusion::error::Result<Vec<datafusion_expr::TableProviderFilterPushDown>> {
+    // 判断单个表达式是否支持下推
+    fn is_supported(expr: &datafusion::logical_expr::Expr) -> bool {
+        match expr {
+            Expr::BinaryExpr(BinaryExpr { op, left, right }) => match op {
+                // AND 表达式：两个子表达式都支持才支持
+                Operator::And => is_supported(left) && is_supported(right),
+                // OR 表达式：两个子表达式都支持才支持
+                Operator::Or => is_supported(left) && is_supported(right),
+                // 支持的比较操作符
+                Operator::Eq | Operator::NotEq | Operator::Lt | 
+                Operator::Gt | Operator::LtEq | Operator::GtEq => true,
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+    // ...
+}
+```
+
+### 8.4 projected_columns 列投影下推
 
 `Query` 结构体新增 `projected_columns` 字段，支持在查询时指定需要返回的列，实现列级别的数据过滤，减少不必要的数据加载。
 
@@ -533,19 +576,6 @@ message Query {
 }
 ```
 
-**使用方式**:
-
-```rust
-// 在存储引擎中使用 projected_columns
-let projected_columns: Vec<ColumnMeta> = match projection {
-    Some(p) => p.iter()
-        .filter(|&&idx| idx < columns.len())
-        .map(|&idx| columns[idx].clone())
-        .collect(),
-    None => columns.clone(),
-};
-```
-
 **性能优势**:
 
 | 优化点 | 说明 |
@@ -554,7 +584,7 @@ let projected_columns: Vec<ColumnMeta> = match projection {
 | 减少内存 | 只存储需要的列数据 |
 | 加速处理 | 减少数据传输和处理时间 |
 
-### 8.4 SQLEngine Trait 定义
+### 8.5 SQLEngine Trait 定义
 
 **位置**: [laoflchdb_engines/src/lib.rs](laoflchdb_engines/src/lib.rs)
 
@@ -619,6 +649,7 @@ enum FilterOperator {
 
 message QueryResult {
     repeated QueryRow rows = 1;
+    repeated string columns = 2;  // 返回的列名列表
 }
 
 message QueryRow {
@@ -638,7 +669,41 @@ TableFilter = (ColumnFilter_1 AND ColumnFilter_2 AND ...)
 ColumnFilter = (Condition_1 OR Condition_2 OR ...)
 ```
 
-### 9.3 DBEngine Query 方法
+### 9.3 存储层过滤逻辑
+
+**位置**: [multi_table_rocksdb/src/multi_table_rocksdb.rs](multi_table_rocksdb/src/multi_table_rocksdb.rs)
+
+```rust
+fn check_table_filters(
+    &self, 
+    row: &Row, 
+    column_filters: &[ColumnFilter], 
+    columns: &std::collections::HashMap<String, (u64, ColumnType)>
+) -> bool {
+    for column_filter in column_filters {
+        if !self.check_column_filter(row, column_filter, columns) {
+            return false;  // 不同列之间是 AND 关系
+        }
+    }
+    true
+}
+
+fn check_column_filter(
+    &self, 
+    row: &Row, 
+    column_filter: &ColumnFilter, 
+    columns: &std::collections::HashMap<String, (u64, ColumnType)>
+) -> bool {
+    for condition in &column_filter.conditions {
+        if self.check_column_condition(row, column_filter, condition, columns) {
+            return true;  // 同一列的多个条件之间是 OR 关系
+        }
+    }
+    false
+}
+```
+
+### 9.4 DBEngine Query 方法
 
 ```rust
 #[async_trait::async_trait]
@@ -648,17 +713,6 @@ pub trait DBEngine: Send + Sync + 'static {
     // ... 其他方法
 }
 ```
-
-### 9.4 实现逻辑
-
-**位置**: [multi_table_rocksdb/src/multi_table_rocksdb.rs](multi_table_rocksdb/src/multi_table_rocksdb.rs)
-
-查询实现流程：
-
-1. **表扫描**：遍历指定表的所有行（使用 RocksDB 迭代器）
-2. **列过滤**：对每一行检查是否满足所有 ColumnFilter 条件
-3. **条件比较**：支持 Int64、String、Float 等类型的比较操作
-4. **结果组装**：将符合条件的行封装为 QueryResult 返回
 
 ---
 
@@ -727,28 +781,11 @@ Service 层 (DatabaseService.sql_query)
 SQLEngine 层 (DataFusionSQLEngine)
     ↓ .await (异步执行)
 DataFusion SessionContext
-    ↓ 读取已注册的内存表
-RecordBatch 结果
-    ↓
-转换为 QueryResult
-```
-
-### 10.5 初始化同步与异步分离
-
-MultiTableRocksDBEngine 的 `new()` 方法是同步的，用于初始化。在初始化完成后，所有操作都是异步的：
-
-```rust
-impl MultiTableRocksDBEngine {
-    // 同步初始化 - 在 new() 中调用
-    fn init_default_user_table(&mut self) -> Result<(), ...> {
-        // 同步创建默认表
-    }
-    
-    // 异步操作 - 通过 trait 接口调用
-    async fn create_table(&mut self, table: &str, columns: &[...]) -> Result<u64, ...> {
-        // 异步创建表逻辑
-    }
-}
+    ↓ TableProvider.scan()
+    ↓ RocksScanExec.execute()
+    ↓ table_to_arrow_with_pushdown()
+    ↓ RecordBatch 结果
+    ↓ 转换为 QueryResult
 ```
 
 ---
@@ -856,7 +893,16 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 ## 14. 版本历史
 
-### 0.1.1 (当前)
+### 0.1.2 (当前)
+- **SQL 查询下推优化**: 支持 Filter、Project、Limit 下推到存储层
+- **自定义物理执行算子**: `RocksScanExec` 直接对接 RocksDB，替代 MemTable
+- **逻辑表达式支持**: AND/OR 条件下推
+- **数据类型正确返回**: INT64、STRING、FLOAT、BYTES
+- **代码重构**: `RocksDBTable` 拆分为独立文件 `rocksdb_table.rs`
+- **文档更新**: 更新 README.md 和 design.md
+- **测试完善**: 新增 SQL 查询验证测试和 gRPC SQL 查询测试
+
+### 0.1.1
 - 支持存储格式改为 protobuf Field 对象
 - 实现完整的数据类型映射（INT64、STRING、FLOAT、BYTES）
 - SQL 查询返回正确的数据类型（整数、字符串、浮点数）
@@ -874,6 +920,6 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 ---
 
-**文档版本**: v0.1.1  
+**文档版本**: v0.1.2  
 **最后更新**: 2026-06-05  
 **项目**: laoflchDB-rust

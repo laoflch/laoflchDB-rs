@@ -20,8 +20,8 @@ laoflchDB 采用 **模块化分层架构设计**，核心实体为 `LaoflchDBSer
 | **Server 层** | [src/server/mod.rs](src/server/mod.rs) | LaoflchDBServer 总入口，支持多协议启动 |
 | **Access 层** | [src/access/mod.rs](src/access/mod.rs) | 接入服务层，负责协议接入和路由 |
 | **Service 层** | [src/service/mod.rs](src/service/mod.rs) | 数据库基础服务能力 + SchemaManager |
-| **SQL 引擎** | [laoflchdb_db_engine/src/sql_engine.rs](laoflchdb_db_engine/src/sql_engine.rs) | DataFusion SQL 解析和执行引擎 |
-| **DBEngine 接口** | [laoflchdb_db_engine/](laoflchdb_db_engine/) | 独立的数据库引擎接口定义 crate |
+| **SQL 引擎** | [laoflchdb_sql_df_engine/src/lib.rs](laoflchdb_sql_df_engine/src/lib.rs) | DataFusion SQL 解析和执行引擎 |
+| **DBEngine 接口** | [laoflchdb_engines/](laoflchdb_engines/) | 独立的数据库引擎接口定义 crate |
 | **RocksDB 引擎** | [multi_table_rocksdb/](multi_table_rocksdb/) | 独立的 RocksDB 引擎实现 crate |
 | CLI 命令行 | [src/cli/mod.rs](src/cli/mod.rs) | clap 命令行参数解析 |
 | 配置模块 | [src/config/](src/config/) | YAML 配置文件解析 |
@@ -47,21 +47,43 @@ laoflchDB-rust/
 │   │   └── mod.rs
 │   ├── lib.rs           # 库模块 + proto 导出
 │   └── main.rs          # 二进制入口
-├── laoflchdb_db_engine/  # 独立的 DBEngine 接口定义 crate
-│   ├── src/lib.rs
+├── laoflchdb_engines/   # 独立的 DBEngine 接口定义 crate
+│   ├── proto/
+│   │   ├── field.proto
+│   │   ├── metadata.proto
+│   │   ├── query.proto
+│   │   └── row.proto
+│   ├── src/
+│   │   ├── field.rs
+│   │   ├── lib.rs
+│   │   ├── metadata.rs
+│   │   ├── mod.rs
+│   │   ├── query.rs
+│   │   └── row.rs
 │   └── Cargo.toml
+├── laoflchdb_sql_df_engine/  # SQL 引擎 crate - DataFusion 集成
+│   ├── src/lib.rs
+│   ├── Cargo.toml
+│   └── README.md
 ├── multi_table_rocksdb/  # 独立的 RocksDB 引擎实现 crate
-│   ├── src/multi_table_rocksdb.rs
-│   ├── build.rs         # 编译 RocksDB ldb 工具
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── multi_table_rocksdb.rs
+│   │   └── rocksdb_table.rs    # RocksDBTable + RocksScanExec 物理算子
 │   └── Cargo.toml
 ├── tests/               # Rust 单元测试和集成测试
 │   ├── basic_uuid_tests.rs
 │   ├── protobuf_tests.rs
 │   ├── rest_tests.rs
+│   ├── permission_tests.rs
+│   ├── prefix_filter_tests.rs
 │   └── integration_tests.rs
 ├── tests_python/        # Python 自动化 E2E 测试
 │   ├── test_e2e_grpc.py
-│   └── test_e2e_rest.py
+│   ├── test_e2e_rest.py
+│   ├── test_sql_query_validation.py    # SQL 查询验证测试
+│   ├── test_grpc_sql_query.py          # gRPC SQL 查询测试
+│   └── test_final.py
 ├── xtask/              # 构建和测试任务
 │   ├── src/main.rs
 │   └── Cargo.toml
@@ -70,9 +92,55 @@ laoflchDB-rust/
 ├── verify_tests.sh     # 快速验证测试
 ├── laoflchdb.yaml      # 配置文件示例
 ├── README.md
+├── design.md           # 详细设计文档
 ├── TESTING.md          # 测试指南
 ├── TEST_COVERAGE.md    # 测试覆盖报告
 └── Cargo.toml
+```
+
+---
+
+## 新增：SQL 查询优化（Filter/Project/Limit 下推）
+
+### 核心特性
+
+| 优化类型 | 说明 | 支持的操作符 |
+|---------|------|-------------|
+| **Filter 下推** | 将谓词过滤下推到存储层 | `=`, `!=`, `<`, `>`, `<=`, `>=`, `AND`, `OR` |
+| **Project 下推** | 只扫描需要的列 | 任意列组合 |
+| **Limit 下推** | 提前终止扫描 | `LIMIT n` |
+
+### 自定义物理执行算子
+
+`RocksScanExec` 替代了 DataFusion 默认的 MemTable，直接对接 RocksDB：
+
+```
+SQL 查询 → DataFusion 优化器 → TableProvider.scan()
+    → RocksScanExec (自定义物理算子)
+    → table_to_arrow_with_pushdown()
+    → 存储引擎直接扫描
+```
+
+### 逻辑表达式下推支持
+
+- **AND 条件**：不同列之间的条件为 AND 关系
+- **OR 条件**：同一列的多个条件为 OR 关系
+- **组合表达式**：支持 `(age > 25 AND age < 40) OR score > 92`
+
+### SQL 查询示例
+
+```bash
+# 谓词下推
+SELECT name, age FROM users WHERE age > 30
+
+# 列投影下推（只扫描 name 和 age 列）
+SELECT name, age FROM users
+
+# Limit 下推（最多返回 10 条）
+SELECT * FROM users LIMIT 10
+
+# 组合条件
+SELECT * FROM users WHERE (age > 25 AND score > 90) OR name = 'Alice'
 ```
 
 ---
@@ -163,6 +231,7 @@ pub const MAX_TABLE_ID_LENGTH: usize = 20;
 │  │  │  - SQL 解析 (DataFusion)                         │ │  │
 │  │  │  - 查询规划与优化                                 │ │  │
 │  │  │  - Arrow 列式数据转换                            │ │  │
+│  │  │  - 查询下推优化 (Filter/Project/Limit)           │ │  │
 │  │  └─────────────────────────────────────────────────┘ │  │
 │  └───────────────────────┬──────────────────────────────┘  │
 │                          ↓                                   │
@@ -247,9 +316,9 @@ impl SchemaManager {
 
 ## 4. DBEngine 接口和实现 (独立 crate)
 
-### DBEngine Trait (laoflchdb_db_engine crate)
+### DBEngine Trait (laoflchdb_engines crate)
 
-**位置**: [laoflchdb_db_engine/src/lib.rs](laoflchdb_db_engine/src/lib.rs)
+**位置**: [laoflchdb_engines/src/lib.rs](laoflchdb_engines/src/lib.rs)
 
 **所有方法均为异步，使用 `#[async_trait]` 宏实现**：
 
@@ -266,7 +335,7 @@ pub trait DBEngine: Send + Sync + 'static {
     
     async fn get_table_meta(&self, table: &str) -> Result<Option<TableMeta>, ...>;
     
-    // Query 接口 - 支持 CNF 查询
+    // Query 接口 - 支持 CNF 查询和列投影下推
     async fn query(&self, query: &Query) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>;
     
     fn get_schema_name(&self) -> &str;
@@ -341,6 +410,7 @@ pub trait DatabaseService: Send + Sync + 'static {
     async fn create_table(&self, schema: &str, table: &str, columns: &[...]) -> Result<u64, ...>;
     async fn list_tables(&self, schema: &str) -> Result<Vec<String>, ...>;
     async fn get_table_meta(&self, schema: &str, table: &str) -> Result<Option<TableMeta>, ...>;
+    async fn sql_query(&self, schema: &str, sql: &str) -> Result<QueryResult, ...>;
 }
 ```
 
@@ -349,6 +419,7 @@ pub trait DatabaseService: Send + Sync + 'static {
 ```rust
 pub struct DatabaseServiceImpl {
     schema_manager: Arc<SchemaManager>,
+    sql_engine: Arc<tokio::sync::RwLock<DataFusionSQLEngine<MultiTableRocksDBEngine>>>,
     default_schema: String,
 }
 
@@ -357,6 +428,7 @@ impl DatabaseServiceImpl {
         let schema_manager = SchemaManager::new(base_path).await;
         Self { 
             schema_manager: Arc::new(schema_manager),
+            sql_engine: Arc::new(tokio::sync::RwLock::new(DataFusionSQLEngine::new())),
             default_schema: "sys".to_string(),
         }
     }
@@ -454,6 +526,7 @@ service LaoflchDb {
     rpc CreateTable (CreateTableRequest) returns (CreateTableResponse);
     rpc ListTables (ListTablesRequest) returns (ListTablesResponse);
     rpc GetTableMeta (GetTableMetaRequest) returns (GetTableMetaResponse);
+    rpc SqlQuery (SqlQueryRequest) returns (SqlQueryResponse);
 }
 ```
 
@@ -470,6 +543,7 @@ service LaoflchDb {
 | `/api/v1/put` | POST | 插入数据 |
 | `/api/v1/get` | GET | 读取数据 |
 | `/api/v1/delete` | POST | 删除数据 |
+| `/api/v1/sql_query` | POST | SQL 查询 |
 
 ---
 
@@ -517,6 +591,7 @@ permissions:
       - get_schema_info
       - get_table_meta
       - query
+      - sql_query
 
   - service_id: rest_admin
     default_policy: allow
@@ -536,6 +611,7 @@ permissions:
       - get_schema_info
       - get_table_meta
       - query
+      - sql_query
 ```
 
 ---
@@ -564,6 +640,9 @@ cargo build --release
 
 # 启动服务 (使用配置文件)
 ./target/release/laoflchDB-rust -c laoflchdb.yaml start
+
+# 启动服务 (指定参数)
+./target/release/laoflchDB-rust start --db-path ./data
 ```
 
 ---
@@ -599,6 +678,7 @@ cargo all          # 编译所有 (Rust + ldb)
 |------|------|
 | `cargo ldb` | 仅编译 ldb 工具 |
 | `cargo all` | 编译所有 (Rust + ldb) |
+| `cargo auto-test` | 运行自动回归测试 |
 
 ---
 
@@ -622,6 +702,7 @@ cargo all          # 编译所有 (Rust + ldb)
 | arrow-schema | 58.3.0 | Arrow Schema 定义 |
 | arrow-array | 58.3.0 | Arrow Array 实现 |
 | futures | 0.3 | 异步流处理 |
+| snowflake_me | 0.5 | Snowflake ID 生成 |
 
 ---
 
@@ -650,7 +731,34 @@ cargo build --release
 - **gRPC 服务**: http://127.0.0.1:19777
 - **REST API**: http://127.0.0.1:8080
 
-### 4. 作为库使用
+### 4. 测试 SQL 查询
+
+```bash
+# 创建测试表
+curl -X POST http://localhost:8080/api/v1/tables \
+  -H "Content-Type: application/json" \
+  -d '{
+    "schema": "sys",
+    "table_name": "test_users",
+    "columns": [
+      {"name": "id", "column_type": "INT64"},
+      {"name": "name", "column_type": "STRING"},
+      {"name": "age", "column_type": "INT64"}
+    ]
+  }'
+
+# 插入数据
+curl -X POST http://localhost:8080/api/v1/schemas/sys/tables/test_users/rows \
+  -H "Content-Type: application/json" \
+  -d '{"row": {"row_type": 0, "version": 1, "data": ["1", "Alice", "30"]}}'
+
+# SQL 查询
+curl -X POST http://localhost:8080/api/v1/sql_query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT id, name, age FROM test_users WHERE age > 25"}'
+```
+
+### 5. 作为库使用
 
 如果你想将 laoflchDB 作为 Rust 库使用：
 
@@ -678,604 +786,26 @@ async fn main() {
     let table_id = service.create_table("sys", "my_table", &columns).await.unwrap();
     println!("Created table with id: {}", table_id);
 
-    // 4. 插入数据 (异步调用)
-    let key = b"key_001";
-    let value = b"value_001";
-    service.put("sys", "my_table", key, value).await.unwrap();
-
-    // 5. 读取数据 (异步调用)
-    let result = service.get("sys", "my_table", key).await.unwrap();
-    println!("Read: {:?}", result);
-
-    // 6. 删除数据 (异步调用)
-    service.delete("sys", "my_table", key).await.unwrap();
+    // 4. SQL 查询 (异步调用)
+    let result = service.sql_query("sys", "SELECT * FROM my_table").await.unwrap();
+    println!("Query result: {:?}", result);
 }
-```
-
-### 5. 测试 API
-
-#### 使用 gRPC 客户端
-
-```bash
-python3 tests_python/test_e2e_grpc.py
-```
-
-#### 使用 REST API
-
-```bash
-# 健康检查
-curl http://127.0.0.1:8080/health
-
-# 运行完整 REST 测试
-python3 tests_python/test_e2e_rest.py
 ```
 
 ---
 
-## 14. 异步改造记录
+## 14. 测试
 
-### 主要变更
+### 测试套件
 
-项目已从同步调用架构完全改造为异步调用架构：
-
-1. **DBEngine Trait** ([laoflchdb_db_engine/src/lib.rs](file:///workspace/rust_space/laoflchDB-rust/laoflchdb_db_engine/src/lib.rs))：
-   - 所有方法改为 `async fn`
-   - 添加 `#[async_trait::async_trait]` 宏
-
-2. **SQLEngine Trait** ([laoflchdb_db_engine/src/lib.rs](file:///workspace/rust_space/laoflchDB-rust/laoflchdb_db_engine/src/lib.rs))：
-   - 所有方法改为 `async fn`
-   - 使用 `tokio::sync::RwLock` 替代 `std::sync::RwLock`
-   - 添加 `#[async_trait::async_trait]` 宏
-
-3. **DataFusionSQLEngine** ([laoflchdb_db_engine/src/sql_engine.rs](file:///workspace/rust_space/laoflchDB-rust/laoflchdb_db_engine/src/sql_engine.rs))：
-   - 实现 SQLEngine Trait
-   - 使用 `tokio::sync::RwLock` 保护 StorageEngine
-   - 直接使用 async/await 语法，移除 `block_on` 调用
-
-4. **MultiTableRocksDBEngine** ([multi_table_rocksdb/src/multi_table_rocksdb.rs](file:///workspace/rust_space/laoflchDB-rust/multi_table_rocksdb/src/multi_table_rocksdb.rs))：
-   - 实现异步 DBEngine Trait
-   - 保持 `new()` 方法同步用于初始化
-   - 新增同步内部方法用于初始化
-
-5. **Service 层** ([src/service/mod.rs](file:///workspace/rust_space/laoflchDB-rust/src/service/mod.rs))：
-   - DatabaseService Trait 全部异步化
-   - SchemaManager 使用 `tokio::sync::Mutex` 替代 `std::sync::Mutex`
-   - DatabaseServiceImpl 支持异步构造
-   - 集成 SQLEngine，提供 `sql_query` 方法
-
-6. **Server 层** ([src/server/mod.rs](file:///workspace/rust_space/laoflchDB-rust/src/server/mod.rs))：
-   - 启动和初始化方法改为异步
-   - 使用 `tokio::spawn` 并发启动服务
-   - 持有 SQLEngine 实例
-
-### 解决的核心问题
-
-| 问题 | 解决方案 |
-|------|---------|
-| `std::sync::Mutex` 不能跨 await 点 | 使用 `tokio::sync::Mutex` |
-| `std::sync::RwLock` 不能跨 await 点 | 使用 `tokio::sync::RwLock` |
-| 同步上下文中启动异步运行时冲突 | 将整个架构改为完全异步 |
-| `block_on` 性能和死锁风险 | 移除所有 `block_on`，直接使用 async/await |
-| SQL 引擎嵌套运行时冲突 | SQLEngine Trait 改为异步方法，移除 `block_on` |
-| `RwLockReadGuard` 不是 `Send` | 使用 `tokio::sync::RwLock` 替代 `std::sync::RwLock` |
-
-### 验证结果
-
-- ✅ 所有 Rust 单元测试通过
-- ✅ 所有 Rust 集成测试通过
-- ✅ Python REST E2E 测试 10 项全部通过
-- ✅ Python gRPC E2E 测试全部通过
-- ✅ SQL 引擎集成测试通过
-- ✅ 权限测试 21 项全部通过
-- ✅ Protobuf 测试全部通过
-- ✅ 前缀过滤测试 16 项全部通过---
-
-## 15. SQL 引擎设计
-
-### 15.1 架构概述
-
-SQL 引擎基于 **DataFusion + Arrow + RocksDB** 实现，提供 SQL 查询能力。架构采用双层接口设计：
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         LaoflchDBServer                              │
-│                                      │                               │
-│                                      ▼                               │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │                      SQLEngine (SQL 查询接口)                   │  │
-│  │  ┌────────────────────────────────────────────────────────────┐ │  │
-│  │  │            DataFusionSQLEngine<E>                        │ │  │
-│  │  │  ┌──────────────────────────────────────────────────────┐│ │  │
-│  │  │  │  DataFusion SessionContext                         ││ │  │
-│  │  │  │  - SQL 解析 / 查询规划 / 查询优化                   ││ │  │
-│  │  │  └──────────────────────────────────────────────────────┘│ │  │
-│  │  │                          │                             │ │  │
-│  │  │          ┌───────────────┴───────────────┐             │ │  │
-│  │  │          ▼                               ▼             │ │  │
-│  │  │  ┌─────────────────┐           ┌─────────────────────┐ │ │  │
-│  │  │  │  StorageEngine  │           │DataFusionStorageEngine│ │ │  │
-│  │  │  │  (通用存储接口) │           │  (SQL专用接口)      │ │ │  │
-│  │  │  └────────┬────────┘           └───────────┬─────────┘ │ │  │
-│  │  │           │                                  │         │ │  │
-│  │  │           └─────────────────┬────────────────┘         │ │  │
-│  │  │                             ▼                         │ │  │
-│  │  │           ┌─────────────────────────────┐             │ │  │
-│  │  │           │   MultiTableRocksDBEngine   │             │ │  │
-│  │  │           │  (实现两个接口)              │             │ │  │
-│  │  │           └─────────────────────────────┘             │ │  │
-│  │  └────────────────────────────────────────────────────────┘ │  │
-│  └──────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────────┘
-```
-
-### 15.2 SQLEngine Trait 定义
-
-**位置**: [laoflchdb_engines/src/lib.rs](file:///workspace/rust_space/laoflchDB-rust/laoflchdb_engines/src/lib.rs)
-
-```rust
-#[async_trait::async_trait]
-pub trait SQLEngine: Send + Sync + 'static {
-    async fn execute_query(&self, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>;
-    
-    async fn register_table(&mut self, table_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-    
-    async fn refresh_tables(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-}
-```
-
-**方法说明**：
-
-| 方法 | 说明 |
-|------|------|
-| `execute_query` | 执行 SQL 查询，返回 QueryResult |
-| `register_table` | 将表注册到 DataFusion 上下文 |
-| `refresh_tables` | 刷新所有表到 DataFusion 上下文 |
-
-### 15.3 DataFusionSQLEngine 实现
-
-**位置**: [laoflchdb_db_engine/src/sql_engine.rs](laoflchdb_db_engine/src/sql_engine.rs)
-
-```rust
-pub struct DataFusionSQLEngine<E: StorageEngine> {
-    storage_engine: Arc<tokio::sync::RwLock<E>>,
-    ctx: SessionContext,
-}
-```
-
-**核心组件**：
-
-| 组件 | 类型 | 说明 |
-|------|------|------|
-| `storage_engine` | `Arc<tokio::sync::RwLock<E>>` | 存储引擎引用 |
-| `ctx` | `SessionContext` | DataFusion 会话上下文 |
-
-### 15.4 数据转换流程
-
-#### 15.4.1 存储层到 Arrow 格式
-
-```
-RocksDB 存储                Arrow 格式
-─────────────────────────────────────────
-Row {                       RecordBatch
-  data: Vec<Vec<u8>>   ──►   Schema + Arrays
-}                            │
-                             ▼
-每个 Field bytes ──► 解析 ──► Arrow Array
-```
-
-**类型映射**：
-
-| ColumnType | Arrow DataType |
-|------------|----------------|
-| COLUMN_TYPE_STRING | Utf8 |
-| COLUMN_TYPE_INT64 | Int64 |
-| COLUMN_TYPE_FLOAT | Float64 |
-| COLUMN_TYPE_BYTES | Binary |
-
-#### 15.4.2 Arrow 格式到查询结果
-
-```rust
-fn arrow_to_query_result(&self, schema: &Schema, batch: &RecordBatch) -> QueryResult {
-    // 遍历 RecordBatch 的每一行
-    for i in 0..batch.num_rows() {
-        // 遍历每一列
-        for (j, field) in schema.fields().iter().enumerate() {
-            // 根据 Arrow 类型转换为 protobuf Field
-            match field.data_type() {
-                DataType::Utf8 => { /* String */ }
-                DataType::Int64 => { /* Integer */ }
-                DataType::Float64 => { /* Float */ }
-                DataType::Binary => { /* Bytes */ }
-            }
-        }
-    }
-}
-```
-
-### 15.5 表注册流程
-
-```rust
-async fn register_table(&mut self, table_name: &str) -> Result<(), ...> {
-    // 1. 从存储引擎获取表数据
-    let engine = self.storage_engine.read().await;
-    let columns = engine.list_table_cols(table_name).await?;
-    let rows = engine.scan_table(table_name, None).await?;
-    
-    // 2. 转换为 Arrow 格式
-    let schema = Schema::new(arrow_fields);
-    let batch = RecordBatch::try_new(Arc::new(schema), merged_arrays)?;
-    
-    // 3. 创建内存表并注册到 DataFusion
-    let table = MemTable::try_new(batch.schema().clone(), vec![vec![batch]])?;
-    self.ctx.register_table(TableReference::bare(table_name), Arc::new(table))?;
-    
-    Ok(())
-}
-```
-
-### 15.7 SQL 查询执行流程
-
-```
-SQL 字符串
-    │
-    ▼
-┌─────────────────────┐
-│ DataFusion SQL 解析  │
-└─────────────────────┘
-    │
-    ▼
-┌─────────────────────┐
-│ 查询计划生成         │
-└─────────────────────┘
-    │
-    ▼
-┌─────────────────────┐
-│ 查询优化             │
-└─────────────────────┘
-    │
-    ▼
-┌─────────────────────┐
-│ 执行查询             │
-└─────────────────────┘
-    │
-    ▼
-┌─────────────────────┐
-│ RecordBatch 结果     │
-└─────────────────────┘
-    │
-    ▼
-┌─────────────────────┐
-│ 转换为 QueryResult   │
-└─────────────────────┘
-```
-
-### 15.8 异步设计要点
-
-**使用 `tokio::sync::RwLock` 而非 `std::sync::RwLock`**：
-
-```rust
-// 正确：异步锁，可以跨 await 点
-let engine = self.storage_engine.read().await;
-let columns = engine.list_table_cols(table_name).await?;
-
-// 错误：同步锁，不能跨 await 点
-let engine = self.storage_engine.read().unwrap();  // std::sync::RwLock
-let columns = engine.list_table_cols(table_name).await?;  // 编译错误！
-```
-
-**原因**：
-- `std::sync::RwLockReadGuard` 不是 `Send`，不能跨 await 点
-- `tokio::sync::RwLock` 的锁是异步的，可以安全跨 await 点
-
-### 15.9 与 Server 的集成
-
-**位置**: [src/server/mod.rs](file:///workspace/rust_space/laoflchDB-rust/src/server/mod.rs)
-
-```rust
-pub struct LaoflchDBServer {
-    schema_manager: Arc<SchemaManager>,
-    sql_engine: Arc<tokio::sync::RwLock<DataFusionSQLEngine<MultiTableRocksDBEngine>>>,
-    service: Arc<dyn DatabaseService>,
-    // ...
-}
-```
-
-**位置**: [src/service/mod.rs](file:///workspace/rust_space/laoflchDB-rust/src/service/mod.rs)
-
-```rust
-pub struct DatabaseServiceImpl {
-    schema_manager: Arc<SchemaManager>,
-    sql_engine: Arc<tokio::sync::RwLock<DataFusionSQLEngine<MultiTableRocksDBEngine>>>,
-    default_schema: String,
-}
-
-#[async_trait::async_trait]
-impl DatabaseService for DatabaseServiceImpl {
-    async fn sql_query(&self, schema: &str, sql: &str) -> Result<QueryResult, ...> {
-        let sql_engine = self.sql_engine.read().await;
-        sql_engine.execute_query(sql).await
-    }
-    
-    async fn create_table(&self, schema: &str, table: &str, columns: &[...]) -> Result<u64, ...> {
-        // 创建表后自动注册到 SQL 引擎
-        let table_id = engine.create_table(&table, &columns).await?;
-        
-        if schema == "sys" {
-            let mut sql_engine = self.sql_engine.write().await;
-            sql_engine.register_table(&table).await?;
-        }
-        
-        Ok(table_id)
-    }
-}
-```
-
-### 15.10 依赖配置
-
-**位置**: [laoflchdb_db_engine/Cargo.toml](file:///workspace/rust_space/laoflchDB-rust/laoflchdb_db_engine/Cargo.toml)
-
-```toml
-[dependencies]
-datafusion = "53.1.0"
-arrow = "58.3.0"
-arrow-schema = "58.3.0"
-arrow-array = "58.3.0"
-tokio = { version = "1.0", features = ["rt"] }
-async-trait = "0.1"
-protobuf = "3.7"
-```
-
-**位置**: [multi_table_rocksdb/Cargo.toml](file:///workspace/rust_space/laoflchDB-rust/multi_table_rocksdb/Cargo.toml)
-
-```toml
-[dependencies]
-datafusion = "53.1.0"
-arrow = "58.3.0"
-arrow-schema = "58.3.0"
-arrow-array = "58.3.0"
-```
-
-### 15.11 性能考虑
-
-| 优化点 | 说明 |
-|--------|------|
-| 内存表 | DataFusion MemTable 将数据加载到内存，查询时无需磁盘 IO |
-| Arrow 列式存储 | 向量化计算，SIMD 优化 |
-| 查询优化 | DataFusion 内置查询优化器 |
-| 异步锁 | `tokio::sync::RwLock` 允许并发读取 |
-| 接口分离 | `DataFusionStorageEngine` 只包含 SQL 引擎所需方法，避免不必要的依赖 |
-
----
-
-## 16. Query 接口设计
-
-### 16.1 接口定义
-
-`Query` 接口定义了服务层提交到 DBEngine 的数据查询信息，支持 **CNF (Conjunctive Normal Form) 表达式** 查询。
-
-**位置**: [laoflchdb_db_engine/proto/query.proto](laoflchdb_db_engine/proto/query.proto)
-
-```protobuf
-message Query {
-    repeated TableFilter table_filters = 1;  // 多个表过滤器，AND 关系 (CNF)
-    optional uint32 limit = 2;               // 返回结果数量限制
-    optional uint32 offset = 3;              // 跳过的结果数量
-}
-
-message TableFilter {
-    string table_name = 1;                    // 表名
-    repeated ColumnFilter column_filters = 2; // 多个列过滤器，AND 关系
-}
-
-message ColumnFilter {
-    string column_name = 1;                     // 列名
-    repeated ColumnFilterCondition conditions = 2; // 多个条件，OR 关系
-}
-
-message ColumnFilterCondition {
-    FilterOperator op = 1;       // 操作符
-    optional Field value = 2;    // 单值条件
-    repeated Field values = 3;   // 多值条件 (用于 IN/NOT_IN)
-}
-
-enum FilterOperator {
-    FILTER_OPERATOR_UNSPECIFIED = 0;
-    FILTER_OPERATOR_EQ = 1;      // 等于
-    FILTER_OPERATOR_NEQ = 2;     // 不等于
-    FILTER_OPERATOR_GT = 3;      // 大于
-    FILTER_OPERATOR_GTE = 4;     // 大于等于
-    FILTER_OPERATOR_LT = 5;      // 小于
-    FILTER_OPERATOR_LTE = 6;     // 小于等于
-    FILTER_OPERATOR_IN = 7;      // IN 列表
-    FILTER_OPERATOR_NOT_IN = 8;  // NOT IN 列表
-    FILTER_OPERATOR_IS_NULL = 9; // 为空
-    FILTER_OPERATOR_IS_NOT_NULL = 10; // 不为空
-}
-
-message QueryResult {
-    repeated QueryRow rows = 1;
-}
-
-message QueryRow {
-    string table_name = 1;
-    uint64 row_id = 2;
-    optional Row row = 3;
-}
-```
-
-### 16.2 CNF 表达式结构
-
-Query 接口的逻辑关系符合 **CNF (Conjunctive Normal Form)** 表达式：
-
-```
-Query = (TableFilter_1 AND TableFilter_2 AND ...)
-TableFilter = (ColumnFilter_1 AND ColumnFilter_2 AND ...)
-ColumnFilter = (Condition_1 OR Condition_2 OR ...)
-```
-
-### 16.3 DBEngine Query 方法
-
-```rust
-#[async_trait::async_trait]
-pub trait DBEngine: Send + Sync + 'static {
-    // Query 接口 - 支持 CNF 查询
-    async fn query(&self, query: &Query) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>;
-    // ... 其他方法
-}
-```
-
-### 16.4 实现逻辑
-
-**位置**: [multi_table_rocksdb/src/multi_table_rocksdb.rs](multi_table_rocksdb/src/multi_table_rocksdb.rs)
-
-查询实现流程：
-
-1. **表扫描**：遍历指定表的所有行（使用 RocksDB 迭代器）
-2. **列过滤**：对每一行检查是否满足所有 ColumnFilter 条件
-3. **条件比较**：支持 Int64、String、Float 等类型的比较操作
-4. **结果组装**：将符合条件的行封装为 QueryResult 返回
-
----
-
-## 17. 前缀过滤与 Snowflake ID 设计
-
-### 17.1 Row ID 生成规则
-
-multi_table 的 `row_id` 生成规则为：
-
-1. **Snowflake 算法生成唯一 ID**
-2. **转换为大端字节序 (Big Endian) 存储**
-
-**核心优势**：
-- **RocksDB 保序**：大端字节序确保 ID 在 RocksDB 中按时间顺序排序
-- **前缀过滤**：时间戳作为 ID 的高位前缀，支持高效的时间范围扫描
-
-### 17.2 Snowflake ID 结构
-
-Snowflake ID 是一个 64 位整数，结构如下：
-
-| 位范围 | 位数 | 说明 |
-|--------|------|------|
-| 0-11 | 12 | 序列号 (0-4095) |
-| 12-21 | 10 | 机器 ID |
-| 22-23 | 2 | 数据中心 ID |
-| 24-63 | 40 | 时间戳 (毫秒级) |
-
-### 17.3 Big Endian 转换
-
-```rust
-fn row_id_to_key(&self, row_id: u64) -> Vec<u8> {
-    row_id.to_be_bytes().to_vec()
-}
-
-fn key_to_row_id(&self, key: &[u8]) -> Result<u64, ...> {
-    if key.len() != 8 {
-        return Err("Invalid row key length".into());
-    }
-    let mut bytes = [0u8; 8];
-    bytes.copy_from_slice(key);
-    Ok(u64::from_be_bytes(bytes))
-}
-```
-
-### 17.4 前缀过滤优势
-
-由于使用大端字节序存储，具有以下优势：
-
-1. **时间范围扫描**：相同时间戳前缀的行在 RocksDB 中连续存储
-2. **范围查询优化**：可以利用 RocksDB 的前缀迭代器进行高效扫描
-3. **ID 单调性保证**：Snowflake ID 保证单调递增，写入顺序即存储顺序
-
-### 17.5 依赖配置
-
-**位置**: [multi_table_rocksdb/Cargo.toml](multi_table_rocksdb/Cargo.toml)
-
-```toml
-snowflake_me = { version = "0.5", features = ["ip-fallback"] }
-```
-
----
-
-## 18. 数据初始化模块
-
-### 18.1 Init 子命令
-
-数据初始化模块用于初始化数据库运行必要数据和样例数据：
-
-```bash
-# 初始化数据库
-./target/release/laoflchDB-rust init
-
-# 初始化并创建示例数据
-./target/release/laoflchDB-rust init --example
-```
-
-### 18.2 幂等性设计
-
-`init --example` 支持幂等执行：
-
-1. **检查 Schema 是否存在**：已存在则跳过创建
-2. **检查表是否存在**：已存在则跳过创建
-3. **检查数据是否已插入**：已存在则跳过插入
-
-**位置**: [src/cli/mod.rs](src/cli/mod.rs)
-
-### 18.3 示例数据
-
-执行 `init --example` 后会创建：
-
-- **example Schema**：示例数据库
-- **products 表**：产品信息表（id, name, price, stock）
-- **样例数据**：5 条产品记录
-
----
-
-## 19. 测试
-
-### 19.1 测试套件
-
-项目包含完整的测试套件，覆盖单元测试、集成测试和端到端测试：
+项目包含完整的测试套件：
 
 | 测试类型 | 位置 | 说明 |
 |---------|------|------|
 | Rust 单元测试 | [tests/](tests/) | 基础功能和 API 测试 |
-| 前缀过滤测试 | [tests/prefix_filter_tests.rs](tests/prefix_filter_tests.rs) | 前缀过滤、Snowflake ID、Big Endian 测试 |
-| Python E2E 测试 | [tests_python/](tests_python/) | gRPC 和 REST 端到端测试 |
-
-### 19.2 前缀过滤测试覆盖
-
-| 测试名称 | 测试内容 |
-|---------|---------|
-| `test_row_id_to_key_big_endian` | 测试 row_id 到大端字节序键的转换 |
-| `test_row_id_to_key_roundtrip` | 测试 row_id 的往返转换 |
-| `test_big_endian_ordering_in_rocksdb` | 测试 RocksDB 中的大端字节序排序 |
-| `test_row_id_monotonic_increasing` | 测试 row_id 的单调递增性 |
-| `test_snowflake_id_distribution` | 测试 Snowflake ID 的唯一性分布 |
-| `test_prefix_comparison_across_boundaries` | 测试边界处的前缀比较 |
-| `test_query_with_cnf_filters` | 测试带 CNF 过滤器的查询功能 |
-| `test_scan_rows_in_key_range` | 测试键范围内的行扫描 |
-
-### 19.3 运行测试
-
-```bash
-# 运行所有 Rust 测试
-./run_tests.sh
-
-# 运行完整测试套件 (Rust + Python)
-./run_all_tests.sh
-
-# 快速验证
-./verify_tests.sh
-
-# 仅运行前缀过滤测试
-cargo test --test prefix_filter_tests -- --test-threads=1
-```
-
-### 19.4 测试文档
-
-- [TESTING.md](TESTING.md) - 测试指南和使用说明
-- [TEST_COVERAGE.md](TEST_COVERAGE.md) - 测试覆盖报告
-- [TEST_REPORT.md](TEST_REPORT.md) - 详细测试报告
+| 集成测试 | [tests/integration_tests.rs](tests/integration_tests.rs) | SQL 查询下推测试 |
+| REST API 测试 | [tests_python/test_sql_query_validation.py](tests_python/test_sql_query_validation.py) | SQL 查询验证 |
+| gRPC API 测试 | [tests_python/test_grpc_sql_query.py](tests_python/test_grpc_sql_query.py) | gRPC SQL 查询测试 |
 
 ### 运行测试
 
@@ -1288,297 +818,61 @@ cargo test --test prefix_filter_tests -- --test-threads=1
 
 # 快速验证
 ./verify_tests.sh
-```
 
-### 测试文档
-
-- [TESTING.md](TESTING.md) - 测试指南和使用说明
-- [TEST_COVERAGE.md](TEST_COVERAGE.md) - 测试覆盖报告
-- [TEST_REPORT.md](TEST_REPORT.md) - 详细测试报告
-
----
-
-## 17. 异步调用设计
-
-laoflchDB 分层架构之间通过 **async/await** 和 **tokio** 运行时实现完全异步调用。
-
-### 核心技术
-
-| 技术 | 说明 |
-|------|------|
-| `#[async_trait]` | 为 trait 提供 async fn 支持 |
-| `#[tonic::async_trait]` | 为 gRPC 服务提供 async fn 支持 |
-| `tokio::sync::Mutex` | 异步上下文中的线程安全锁 |
-| `Arc<dyn Trait>` | 线程安全的共享所有权 |
-| `Box<dyn Error + Send + Sync>` | 跨线程的错误传递 |
-| `tokio` | 异步运行时 |
-| `tokio::spawn` | 异步任务并发执行 |
-
-### 异步 Mutex 锁设计
-
-**关键设计**：使用 `tokio::sync::Mutex` 而非 `std::sync::Mutex`
-
-- **问题**：`std::sync::Mutex` 在持有锁期间不能跨 await 点
-- **解决方案**：使用 `tokio::sync::Mutex`，其 `.lock().await` 返回 `MutexGuard` 可以安全跨 await
-
-```rust
-use tokio::sync::Mutex;
-
-pub struct SchemaManager {
-    // 使用 tokio::sync::Mutex
-    engines: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<MultiTableRocksDBEngine>>>>,
-}
-
-impl SchemaManager {
-    pub async fn get_schema_engine(&self, schema: &str) -> Result<...> {
-        // 获取锁 - await 释放控制权
-        let engine = self.engines.lock().await;
-        // 持有锁期间可以 await 多次
-        engine.create_table(&table, &columns).await
-    }
-}
-```
-
-### 异步调用链路
-
-```
-gRPC/REST 请求
-    ↓
-Access 层 (GrpcService/RestService)
-    ↓ .await (异步调用)
-Service 层 (DatabaseService + SchemaManager)
-    ↓ .lock().await (异步锁)
-StorageEngine 层 (MultiTableRocksDBEngine)
-    ↓ .await (异步方法调用)
-RocksDB 存储
-```
-
-### SQL 查询调用链路
-
-```
-SQL 查询请求
-    ↓
-Service 层 (DatabaseService.sql_query)
-    ↓ .read().await (异步读锁)
-SQLEngine 层 (DataFusionSQLEngine)
-    ↓ .await (异步执行)
-DataFusion SessionContext
-    ↓ 读取已注册的内存表
-RecordBatch 结果
-    ↓
-转换为 QueryResult
-```
-
-### 初始化同步与异步分离
-
-MultiTableRocksDBEngine 的 `new()` 方法是同步的，用于初始化。在初始化完成后，所有操作都是异步的：
-
-```rust
-impl MultiTableRocksDBEngine {
-    // 同步初始化 - 在 new() 中调用
-    fn init_default_user_table(&mut self) -> Result<(), ...> {
-        // 同步创建默认表
-    }
-    
-    // 异步操作 - 通过 trait 接口调用
-    async fn create_table(&mut self, table: &str, columns: &[...]) -> Result<u64, ...> {
-        // 异步创建表逻辑
-    }
-}
+# 运行 Python SQL 查询验证测试
+python3 tests_python/test_sql_query_validation.py
 ```
 
 ---
 
-## 可扩展性设计
+## 15. 架构升级说明
 
-- **接入层**：可以添加新的协议实现
-- **引擎层**：可以添加新的存储引擎实现 (LevelDB、Memory DB 等)
-- **服务层**：可以添加新的服务能力 (事务、索引等)
-- **Schema 层**：可以轻松扩展新的 Schema，每个 Schema 独立管理
+### SQL 引擎重构
 
----
+**DataFusionStorageEngine** 已从 `laoflchdb_engines` 迁移到 `laoflchdb_sql_df_engine`：
 
-## 关注点分离
-
-- **Access 层**：只负责协议接入，不关心业务逻辑
-- **Service 层**：只关心业务逻辑，管理 Schema 生命周期
-- **SchemaManager**：管理多个 Schema 的引擎实例
-- **DBEngine 层**：只关心单个 Schema 的存储操作，不关心业务逻辑
-
----
-
-## 架构升级说明
-
-### 从单 crate 到多 crate
-
-为了更好的代码组织和复用，项目已重构为多 crate 架构：
-
-1. **laoflchdb_db_engine** - 独立的接口定义 crate
-   - 定义 DBEngine trait
-   - 定义 EngineOptions 结构体
-   - 可以被多个引擎实现 crate 依赖
-
-2. **multi_table_rocksdb** - 独立的 RocksDB 实现 crate
-   - 实现 MultiTableRocksDBEngine
-   - 包含 build.rs 用于编译 ldb 工具
-   - 依赖 laoflchdb_db_engine crate
-
-这种架构允许：
-- 接口和实现分离
-- 可以方便地添加新的引擎实现
-- 更好的代码组织和复用
-
----
-
----
-
-## 20. Docker 容器部署
-
-### 20.1 生产环境部署
-
-**配置文件**: [config/prod.yaml](config/prod.yaml)
-
-| 服务 | 端口 |
-|------|------|
-| gRPC | 29777 |
-| REST | 38080 |
-
-### 20.2 部署命令
-
-```bash
-# 构建项目
-cargo build --release
-
-# 构建 Docker 镜像
-cargo docker build
-
-# 启动容器
-cargo docker start
-
-# 完整部署（构建 + 镜像 + 启动）
-cargo docker deploy
-```
-
-### 20.3 Dockerfile
-
-**生产镜像**: [Dockerfile.prod](Dockerfile.prod)
-
-- 基于 Ubuntu 24.04
-- 配置文件打包到镜像内部
-- 数据目录挂载到宿主机
-
-### 20.4 数据持久化
-
-数据目录: `laoflch_db_data_prod/`
-
-```bash
-# 启动时挂载
-docker run -d --name laoflchdb \
-    -p 29777:29777 \
-    -p 38080:38080 \
-    -v $(pwd)/laoflch_db_data_prod:/app/data \
-    laoflchdb-rust:prod
-```
-
----
-
-## 21. 自动回归测试
-
-### 21.1 测试命令
-
-```bash
-# 测试本地环境（端口从 laoflchdb.yaml 读取）
-cargo auto-test local
-
-# 测试生产环境（端口从 config/prod.yaml 读取）
-cargo auto-test prod
-```
-
-### 21.2 测试覆盖
-
-| 测试类型 | 测试文件 | 用例数 |
-|---------|---------|--------|
-| REST API | [tests_python/test_e2e_rest.py](tests_python/test_e2e_rest.py) | 10 |
-| gRPC API | [tests_python/test_final.py](tests_python/test_final.py) | 10 |
-
-### 21.3 REST API 测试覆盖
-
-| 测试项 | 说明 |
+| 变更项 | 说明 |
 |--------|------|
-| 健康检查 | 验证服务可用性 |
-| 创建表 | CreateTable API |
-| 列出表 | ListTables API |
-| 获取表元数据 | GetTableMeta API |
-| 插入数据 | Put API |
-| 读取数据 | Get API |
-| 更新数据 | Put (更新) API |
-| 删除数据 | Delete API |
-| 验证删除 | 确认数据已删除 |
-| 错误处理 | 异常场景处理 |
+| `DataFusionStorageEngine` Trait | 定义在 `laoflchdb_sql_df_engine` 中 |
+| `RocksDBTable` | 拆分为独立文件 `rocksdb_table.rs` |
+| `RocksScanExec` | 自定义物理执行算子，替代 MemTable |
+| 查询下推 | 支持 Filter/Project/Limit 下推到存储层 |
+| 逻辑表达式 | 支持 AND/OR 条件下推 |
 
-### 21.4 gRPC API 测试覆盖
+### 依赖关系
 
-| 测试项 | 说明 |
-|--------|------|
-| 创建表 | CreateTable RPC |
-| 列出表 | ListTables RPC |
-| 获取表元数据 | GetTableMeta RPC |
-| 插入数据 | Put RPC |
-| 读取数据 | Get RPC |
-| 更新数据 | Put (更新) RPC |
-| 查询数据 | Query RPC (CNF 表达式) |
-| 删除数据 | Delete RPC |
-| 验证删除 | 确认数据已删除 |
-| 错误处理 | 异常场景处理 |
+```
+laoflchdb_sql_df_engine
+    ├── laoflchdb_engines (SQLEngine, StorageEngine, QueryResult)
+    └── datafusion (SQL 解析和优化)
+
+multi_table_rocksdb
+    ├── laoflchdb_engines (DBEngine, ColumnType)
+    ├── laoflchdb_sql_df_engine (DataFusionStorageEngine)
+    └── datafusion (TableProvider, ExecutionPlan)
+```
 
 ---
 
-## 22. API 文档
+## 16. 版本历史
 
-| 文档 | 说明 |
-|------|------|
-| [REST_API.md](REST_API.md) | REST API 完整文档 |
-| [gRPC_API.md](gRPC_API.md) | gRPC API 完整文档 |
+### 0.1.2 (当前)
+- **SQL 查询下推优化**: 支持 Filter、Project、Limit 下推
+- **自定义物理执行算子**: `RocksScanExec` 直接对接 RocksDB
+- **逻辑表达式支持**: AND/OR 条件下推
+- **数据类型正确返回**: INT64、STRING、FLOAT、BYTES
+- **代码重构**: `RocksDBTable` 拆分为独立文件
+- **文档更新**: 更新 README 和 design.md
 
-### 22.1 REST API 端点
+### 0.1.1
+- 支持存储格式改为 protobuf Field 对象
+- 实现完整的数据类型映射
+- SQL 查询返回正确的数据类型
+- 修复谓词下推的比较逻辑
+- 添加 Python 自动回归测试
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/health` | GET | 健康检查 |
-| `/api/v1/tables` | POST | 创建表 |
-| `/api/v1/schemas/{schema}/tables` | GET | 列出表 |
-| `/api/v1/schemas/{schema}/tables/{table}` | GET/DELETE | 获取/删除表 |
-| `/api/v1/put` | POST | 插入数据 |
-| `/api/v1/get` | GET | 读取数据 |
-| `/api/v1/delete` | POST | 删除数据 |
-| `/api/v1/query` | POST | CNF 查询 |
-
-### 22.2 gRPC 服务
-
-| 方法 | 说明 |
-|------|------|
-| Get/Put/Delete | KV 操作 |
-| CreateTable/DropTable/ListTables | 表管理 |
-| AddRow/GetRow/UpdateRow/DeleteRow | 行操作 |
-| Query | CNF 表达式查询 |
-
----
-
-## 23. xtask 工具命令
-
-| 命令 | 说明 |
-|------|------|
-| `cargo build` | 构建项目 (debug) |
-| `cargo build --release` | 构建项目 (release) |
-| `cargo docker build` | 构建 Docker 镜像 |
-| `cargo docker deploy` | 完整部署 |
-| `cargo docker start` | 启动容器 |
-| `cargo auto-test local` | 本地环境测试 |
-| `cargo auto-test prod` | 生产环境测试 |
-| `cargo init` | 初始化数据库 |
-| `cargo ldb` | 构建 ldb 工具 |
-| `cargo all` | 构建所有 |
-
----
-
-Copyright: laoflchDB-rust Project
+### 0.1.0
+- 实现基础 SQL 查询引擎
+- 添加 filter、project、limit 下推优化
+- 实现自定义物理执行算子 RocksScanExec
+- 完善异步架构设计

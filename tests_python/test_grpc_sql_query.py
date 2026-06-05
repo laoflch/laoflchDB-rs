@@ -60,6 +60,16 @@ def run_grpc_test():
         print("    ✓ gRPC channel 已连接")
 
         print("\n[5/6] 创建测试表...")
+        try:
+            drop_req = rpc_pb2.DropTableRequest(
+                schema="sys",
+                table_name="test_grpc_sql"
+            )
+            stub.DropTable(drop_req)
+            print("    - 已删除旧表")
+        except:
+            pass
+        
         create_req = rpc_pb2.CreateTableRequest(
             schema="sys",
             table_name="test_grpc_sql",
@@ -86,7 +96,6 @@ def run_grpc_test():
             add_req = rpc_pb2.AddRowRequest(
                 schema="sys",
                 table_name="test_grpc_sql",
-                row_id=row_id,
                 row=rpc_pb2.Row(
                     row_type=0,
                     version=1,

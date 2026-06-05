@@ -1,10 +1,14 @@
 # laoflchdb_sql_df_engine
 
-基于 DataFusion 的 SQL 查询引擎包，为 laoflchDB 提供 SQL 查询能力。
+基于 **Apache DataFusion** 的 SQL 查询引擎包，为 laoflchDB 提供高效的 SQL 查询能力。
+
+---
 
 ## 概述
 
-`laoflchdb_sql_df_engine` 是 laoflchDB 的 SQL 查询引擎，基于 Apache DataFusion 构建，支持将标准 SQL 转换为查询计划并执行，最终通过自定义物理执行算子直接访问 RocksDB 存储引擎。
+`laoflchdb_sql_df_engine` 是 laoflchDB 的 SQL 查询引擎，基于 **DataFusion 53.1.0** 和 **Arrow 58.3.0** 构建，支持将标准 SQL 转换为查询计划并执行，最终通过自定义物理执行算子直接访问 RocksDB 存储引擎。
+
+---
 
 ## 功能特性
 
@@ -12,11 +16,11 @@
 - **SQL 解析与执行**：支持标准 SQL 查询
 - **查询规划与优化**：使用 DataFusion 的优化器
 - **Arrow 数据格式**：采用 Apache Arrow 列式存储
-- **自定义物理执行算子**：直接对接 RocksDB，避免 MemTable 包装
+- **自定义物理执行算子**：`RocksScanExec` 直接对接 RocksDB，避免 MemTable 包装
 - **查询下推优化**：
-  - Filter 条件下推（支持 =、!=、<、>、<=、>=）
-  - Project 列投影下推
-  - Limit 限制条数下推
+  - **Filter 条件下推**（支持 `=`, `!=`, `<`, `>`, `<=`, `>=`, `AND`, `OR`）
+  - **Project 列投影下推**（只扫描需要的列）
+  - **Limit 限制条数下推**（提前终止扫描）
 - **完整数据类型支持**：INT64、STRING、FLOAT、BYTES
 - **正确的数据类型返回**：SQL 查询返回正确的 JSON 数据类型（整数、字符串、浮点数）
 
@@ -27,6 +31,8 @@
 | `STRING` | Utf8 | 字符串 (String) |
 | `FLOAT` | Float64 | 浮点数 (Number) |
 | `BYTES` | Binary | 字符串 (String, UTF-8 解码) |
+
+---
 
 ## 核心结构
 
@@ -66,6 +72,8 @@ impl<E: StorageEngine + DataFusionStorageEngine + 'static> SQLEngine for DataFus
 }
 ```
 
+---
+
 ## 架构设计
 
 ### 查询执行流程
@@ -94,11 +102,23 @@ REST API 返回 JSON（正确的数据类型）
 
 ### 自定义物理执行算子
 
-`RocksScanExec`（在 multi_table_rocksdb 包中实现）替代了 DataFusion 的默认 MemTable，直接与 RocksDB 存储引擎交互，实现了：
-- 列投影下推：只扫描需要的列
-- 过滤条件下推：在存储层执行谓词过滤
-- Limit 下推：提前终止扫描，减少数据读取
-- 异步数据流式读取：使用 futures Stream
+`RocksScanExec`（在 `multi_table_rocksdb` 包中实现）替代了 DataFusion 的默认 MemTable，直接与 RocksDB 存储引擎交互：
+
+| 优化项 | 说明 |
+|--------|------|
+| 列投影下推 | 只扫描需要的列，减少 IO |
+| 过滤条件下推 | 在存储层执行谓词过滤，减少数据加载 |
+| Limit 下推 | 提前终止扫描，减少数据传输 |
+| 异步流式读取 | 使用 futures Stream 处理大数据集 |
+
+### 谓词下推支持
+
+`supports_filters_pushdown` 方法支持以下操作符的下推：
+
+| 操作符类型 | 支持的操作符 |
+|-----------|-------------|
+| 比较操作符 | `=`, `!=`, `<`, `>`, `<=`, `>=` |
+| 逻辑操作符 | `AND`, `OR`（所有子表达式都支持时） |
 
 ### 存储格式
 
@@ -120,6 +140,8 @@ message Row {
     repeated bytes data = 3;  // 每个元素是序列化的 Field 对象
 }
 ```
+
+---
 
 ## 使用方法
 
@@ -151,6 +173,8 @@ sql_engine.refresh_tables().await?;
 let result = sql_engine.execute_query("SELECT id, name FROM users WHERE id > 100").await?;
 ```
 
+---
+
 ## REST API 使用示例
 
 ### 创建表
@@ -174,7 +198,7 @@ curl -X POST http://localhost:8080/api/v1/tables \
 ```bash
 curl -X POST http://localhost:8080/api/v1/schemas/sys/tables/users/rows \
   -H "Content-Type: application/json" \
-  -d '{"row_id": 1, "row": {"row_type": 0, "version": 1, "data": ["1", "Alice", "30"]}}'
+  -d '{"row": {"row_type": 0, "version": 1, "data": ["1", "Alice", "30"]}}'
 ```
 
 ### SQL 查询
@@ -197,11 +221,18 @@ curl -X POST http://localhost:8080/api/v1/sql_query \
 }
 ```
 
+---
+
 ## 依赖配置
 
 ### Cargo.toml
 
 ```toml
+[package]
+name = "laoflchdb_sql_df_engine"
+version = "0.1.2"
+edition = "2021"
+
 [dependencies]
 laoflchdb_engines = { path = "../laoflchdb_engines" }
 datafusion = "53.1.0"
@@ -213,7 +244,10 @@ async-trait = "0.1"
 protobuf = "3.7"
 serde = "1.0"
 serde_json = "1.0"
+futures = "0.3"
 ```
+
+---
 
 ## 目录结构
 
@@ -224,6 +258,8 @@ laoflchdb_sql_df_engine/
 ├── Cargo.toml              # 依赖配置
 └── README.md               # 本文档
 ```
+
+---
 
 ## 与其他包的关系
 
@@ -243,6 +279,8 @@ laoflchdb_sql_df_engine
     └── 支持 protobuf Field 对象存储
 ```
 
+---
+
 ## 性能优化
 
 ### 1. Arrow 列式存储
@@ -250,9 +288,9 @@ laoflchdb_sql_df_engine
 - 良好的 SIMD 支持
 
 ### 2. 查询下推
-- Filter：谓词在存储层执行，减少数据加载
-- Project：只读取需要的列，减少 IO
-- Limit：提前终止扫描，减少数据传输
+- **Filter**：谓词在存储层执行，减少数据加载
+- **Project**：只读取需要的列，减少 IO
+- **Limit**：提前终止扫描，减少数据传输
 
 ### 3. 异步架构
 - 使用 `tokio::sync::RwLock` 而非 `std::sync::RwLock`
@@ -263,6 +301,8 @@ laoflchdb_sql_df_engine
 - 使用 protobuf 存储 Field 对象
 - 高效的序列化/反序列化
 - 支持多种数据类型
+
+---
 
 ## 测试
 
@@ -275,16 +315,25 @@ laoflchdb_sql_df_engine
 ### Python 测试
 - E2E 测试：`tests_python/test_e2e_rest.py`
 - 回归测试：`tests_python/test_sql_query_validation.py`
+- gRPC 测试：`tests_python/test_grpc_sql_query.py`
+
+---
 
 ## 版本历史
 
-### 0.1.1 (当前)
+### 0.1.2 (当前)
+- **SQL 查询下推优化**: 支持 Filter、Project、Limit 下推到存储层
+- **自定义物理执行算子**: `RocksScanExec` 直接对接 RocksDB
+- **逻辑表达式支持**: AND/OR 条件下推
+- **数据类型正确返回**: INT64、STRING、FLOAT、BYTES
+- **代码重构**: `RocksDBTable` 拆分为独立文件
+- **文档更新**: 更新 README.md
+
+### 0.1.1
 - 支持存储格式改为 protobuf Field 对象
 - 实现完整的数据类型映射（INT64、STRING、FLOAT、BYTES）
 - SQL 查询返回正确的数据类型（整数、字符串、浮点数）
 - 修复谓词下推的比较逻辑
-- 更新单元测试和集成测试
-- 添加 Python 自动回归测试
 
 ### 0.1.0
 - 基于 DataFusion 53.1.0 和 Arrow 58.3.0
@@ -292,6 +341,8 @@ laoflchdb_sql_df_engine
 - 支持自定义物理执行算子
 - 实现查询下推优化
 - 支持 Async/Await 异步架构
+
+---
 
 ## License
 
