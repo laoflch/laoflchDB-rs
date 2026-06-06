@@ -21,31 +21,53 @@ enum FilterOperator {
     FILTER_OPERATOR_IS_NOT_NULL = 11;// 不为空
 }
 
-// 列过滤器 - 单个列的多个条件，逻辑关系：OR (同一个列的多个条件是 OR 关系
-message ColumnFilter {
-    string column_name = 1;          // 列名
-    repeated ColumnFilterCondition conditions = 2;  // 多个条件，OR 关系
+// 逻辑关系
+enum FilterRelation {
+    FILTER_RELATION_UNSPECIFIED = 0;
+    FILTER_RELATION_AND = 1;        // AND 关系
+    FILTER_RELATION_OR = 2;         // OR 关系
 }
 
 // 单个列过滤条件
 message ColumnFilterCondition {
     FilterOperator op = 1;           // 操作符
-    Field value = 2; // 比较值（除了 IN/NOT_IN 操作符外使用）
-    repeated Field values = 3; // 多个值（用于 IN/NOT_IN）
+    Field value = 2;                 // 比较值
+    repeated Field values = 3;       // 多个值（用于 IN/NOT_IN）
 }
 
-// 表过滤器 - 单个表的多个列过滤器，逻辑关系：AND (CNF 中的一个 clause
+// 列过滤器 - 单个列的多个条件，逻辑关系：OR
+message ColumnFilter {
+    string column_name = 1;          // 列名
+    repeated ColumnFilterCondition conditions = 2;  // 多个条件，OR 关系
+}
+
+// 过滤器项
+message FilterItem {
+    oneof item {
+        ColumnFilter column_filter = 1;   // 列过滤器
+        FilterGroup group = 2;           // 嵌套过滤器组
+    }
+}
+
+// 过滤器组：指定组内关系，支持任意嵌套
+message FilterGroup {
+    FilterRelation relation = 1;       // AND 或 OR
+    repeated FilterItem items = 2;      // 组内项
+}
+
+// 表过滤器 - 支持任意 AND/OR 嵌套结构
 message TableFilter {
     string table_name = 1;           // 表名
-    repeated ColumnFilter column_filters = 2;  // 多个列过滤器，AND 关系
+    FilterGroup root_group = 2;       // 根过滤器组
 }
 
-// 查询请求 - 完整的 CNF 表达式：(表1 AND 列1) AND (表2 AND 列2) ...
+// 查询请求
 message Query {
-    repeated TableFilter table_filters = 1;  // 多个表过滤器，AND 关系 (CNF)
+    repeated TableFilter table_filters = 1;  // 多个表过滤器，AND 关系
     optional uint32 limit = 2;               // 返回结果数量限制
     optional uint32 offset = 3;              // 跳过的结果数量
-    repeated string projected_columns = 4;    // 需要返回的列名列表，为空则返回所有列
+    repeated string projected_columns = 4;    // 需要返回的列名列表
+    optional bool negate_result = 5;         // 是否对结果取反
 }
 
 // 查询结果

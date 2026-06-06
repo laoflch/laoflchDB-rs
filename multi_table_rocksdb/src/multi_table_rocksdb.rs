@@ -1,3 +1,4 @@
+use log::warn;
 use rocksdb::{DB, Options, ColumnFamilyDescriptor};
 use protobuf::{Message, Enum};
 use snowflake_me::Snowflake;
@@ -16,7 +17,7 @@ use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
 use datafusion::physical_plan::ExecutionPlan;
 
-use crate::rocksdb_table::RocksDBTable;
+use crate::rocksdb_table::{RocksDBTable, FilterGroup, FilterItem, FilterRelation};
 
 fn write_proto_to_vec<T: Message>(msg: &T) -> Vec<u8> {
     let mut v = Vec::new();
@@ -678,6 +679,45 @@ impl MultiTableRocksDBEngine {
         Ok(())
     }
 
+    fn query_table_negated(&self, table_filter: &TableFilter, result_rows: &mut Vec<QueryRow>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let table_name = &table_filter.table_name;
+        let cf_name = self.get_table_cf(table_name);
+        let db = self.db.read().unwrap();
+        let cf_handle = match db.cf_handle(&cf_name) {
+            Some(handle) => handle,
+            None => return Ok(()),
+        };
+
+        let columns = self.get_table_columns(table_name)?;
+
+        let iter = db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item?;
+
+            let row_id = match self.key_to_row_id(key.as_ref()) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+
+            let row = match Row::parse_from_bytes(&value[..]) {
+                Ok(row) => row,
+                Err(_) => continue,
+            };
+
+            // 取反模式：获取不满足过滤器条件的行
+            if !self.check_table_filters(&row, &table_filter.column_filters, &columns) {
+                result_rows.push(QueryRow {
+                    table_name: table_name.to_string(),
+                    row_id,
+                    row: ::protobuf::MessageField::some(row),
+                    special_fields: ::protobuf::SpecialFields::default(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     fn check_table_filters(
         &self, 
         row: &Row, 
@@ -947,7 +987,8 @@ impl MultiTableRocksDBEngine {
         table_name: &str,
         projection: Option<&Vec<usize>>,
         filters: &[ColumnFilter],
-        limit: Option<usize>
+        limit: Option<usize>,
+        negate_result: bool
     ) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
         let columns = StorageEngine::list_table_cols(self, table_name).await?;
         
@@ -1050,29 +1091,528 @@ impl MultiTableRocksDBEngine {
             }
         }
         
+        let total_rows = arrow_arrays.iter().map(|a| a.len()).max().unwrap_or(0);
+        
         let merged_arrays: Vec<ArrayRef> = arrow_arrays.into_iter()
             .enumerate()
             .map(|(idx, arrays)| {
                 if arrays.is_empty() {
                     let (col_type, _) = &column_infos[idx];
                     match *col_type {
-                        0 => Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
-                        1 => Arc::new(Int64Array::from(Vec::<i64>::new())) as ArrayRef,
-                        3 => Arc::new(Float64Array::from(Vec::<f64>::new())) as ArrayRef,
-                        2 => Arc::new(BinaryArray::from(Vec::<&[u8]>::new())) as ArrayRef,
-                        _ => Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
+                        0 => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                        1 => Arc::new(Int64Array::from(vec![0i64; total_rows])) as ArrayRef,
+                        3 => Arc::new(Float64Array::from(vec![0.0f64; total_rows])) as ArrayRef,
+                        2 => Arc::new(BinaryArray::from(vec![&[][..]; total_rows])) as ArrayRef,
+                        _ => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
                     }
                 } else if arrays.len() == 1 {
                     arrays[0].clone()
                 } else {
                     let refs: Vec<&dyn datafusion::arrow::array::Array> = arrays.iter().map(|a| a.as_ref()).collect();
-                    datafusion::arrow::compute::concat(refs.as_slice()).unwrap()
+                    match datafusion::arrow::compute::concat(refs.as_slice()) {
+                        Ok(arr) => arr,
+                        Err(e) => {
+                            log::warn!("Failed to concatenate arrays for column {}: {}", idx, e);
+                            let (col_type, _) = &column_infos[idx];
+                            match *col_type {
+                                0 => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                                1 => Arc::new(Int64Array::from(vec![0i64; total_rows])) as ArrayRef,
+                                3 => Arc::new(Float64Array::from(vec![0.0f64; total_rows])) as ArrayRef,
+                                2 => Arc::new(BinaryArray::from(vec![&[][..]; total_rows])) as ArrayRef,
+                                _ => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                            }
+                        }
+                    }
                 }
             })
             .collect();
         
         let schema = Schema::new(arrow_fields);
         Ok((schema, merged_arrays, column_infos))
+    }
+    
+    /// 使用 FilterGroup 进行过滤
+    pub async fn table_to_arrow_with_filter_group(
+        &self, 
+        table_name: &str,
+        projection: Option<&Vec<usize>>,
+        filter_group: &FilterGroup,
+        limit: Option<usize>,
+        negate_result: bool
+    ) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
+        let columns = StorageEngine::list_table_cols(self, table_name).await?;
+        let column_types = self.get_column_types(table_name).await?;
+        
+        let projected_columns: Vec<ColumnMeta> = match projection {
+            Some(p) => p.iter()
+                .filter(|&&idx| idx < columns.len())
+                .map(|&idx| columns[idx].clone())
+                .collect(),
+            None => columns.clone(),
+        };
+        
+        // 使用 FilterGroup 进行过滤
+        let rows = self.query_table_with_filter_group(
+            table_name, 
+            filter_group, 
+            negate_result
+        ).await?;
+        
+        let mut column_infos: Vec<(i32, String)> = Vec::new();
+        let mut arrow_fields = Vec::new();
+        let mut arrow_arrays: Vec<Vec<ArrayRef>> = Vec::new();
+        
+        for col in &projected_columns {
+            let col_type = col.column_type.enum_value_or_default();
+            let data_type = self.column_type_to_arrow_type(&col_type);
+            column_infos.push((self.get_enum_value(&col_type), col.column_name.clone()));
+            arrow_fields.push(ArrowField::new(&col.column_name, data_type, true));
+            arrow_arrays.push(Vec::new());
+        }
+        
+        let column_name_to_idx: std::collections::HashMap<String, usize> = columns.iter()
+            .enumerate()
+            .map(|(idx, col)| (col.column_name.clone(), idx))
+            .collect();
+        
+        // 应用 limit
+        let limited_rows: Vec<_> = if let Some(l) = limit {
+            rows.into_iter().take(l).collect()
+        } else {
+            rows
+        };
+        
+        for (row_id, row) in limited_rows {
+            let mut row_arrays: Vec<Option<ArrayRef>> = vec![None; projected_columns.len()];
+            
+            for (arr_idx, col) in projected_columns.iter().enumerate() {
+                if let Some(&orig_idx) = column_name_to_idx.get(&col.column_name) {
+                    if orig_idx >= row.data.len() {
+                        continue;
+                    }
+                    
+                    let field_bytes = &row.data[orig_idx];
+                    
+                    let pb_field = match self.parse_field_from_bytes(field_bytes) {
+                        Ok(f) => f,
+                        Err(_) => continue,
+                    };
+                    
+                    use laoflchdb_engines::field::field::Value;
+                    let array = match pb_field.value {
+                        Some(Value::StringValue(s)) => {
+                            Arc::new(StringArray::from(vec![s.value.clone()])) as ArrayRef
+                        }
+                        Some(Value::IntegerValue(i)) => {
+                            Arc::new(Int64Array::from(vec![i.value])) as ArrayRef
+                        }
+                        Some(Value::FloatValue(f)) => {
+                            Arc::new(Float64Array::from(vec![f.value])) as ArrayRef
+                        }
+                        Some(Value::BytesValue(b)) => {
+                            Arc::new(BinaryArray::from(vec![b.value.as_slice()])) as ArrayRef
+                        }
+                        _ => Arc::new(StringArray::from(vec![""])) as ArrayRef,
+                    };
+                    row_arrays[arr_idx] = Some(array);
+                }
+            }
+            
+            for (arr_idx, arr) in row_arrays.iter().enumerate() {
+                let array = match arr {
+                    Some(a) => a.clone(),
+                    None => {
+                        let (col_type, _) = &column_infos[arr_idx];
+                        match *col_type {
+                            0 => Arc::new(StringArray::from(vec![""])) as ArrayRef,
+                            1 => Arc::new(Int64Array::from(vec![0])) as ArrayRef,
+                            3 => Arc::new(Float64Array::from(vec![0.0])) as ArrayRef,
+                            2 => Arc::new(BinaryArray::from(vec![&[][..]])) as ArrayRef,
+                            _ => Arc::new(StringArray::from(vec![""])) as ArrayRef,
+                        }
+                    }
+                };
+                arrow_arrays[arr_idx].push(array);
+            }
+        }
+        
+        let total_rows = arrow_arrays.iter().map(|a| a.len()).max().unwrap_or(0);
+        
+        let merged_arrays: Vec<ArrayRef> = arrow_arrays.into_iter()
+            .enumerate()
+            .map(|(idx, arrays)| {
+                if arrays.is_empty() {
+                    let (col_type, _) = &column_infos[idx];
+                    match *col_type {
+                        0 => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                        1 => Arc::new(Int64Array::from(vec![0i64; total_rows])) as ArrayRef,
+                        3 => Arc::new(Float64Array::from(vec![0.0f64; total_rows])) as ArrayRef,
+                        2 => Arc::new(BinaryArray::from(vec![&[][..]; total_rows])) as ArrayRef,
+                        _ => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                    }
+                } else if arrays.len() == 1 {
+                    arrays[0].clone()
+                } else {
+                    let refs: Vec<&dyn datafusion::arrow::array::Array> = arrays.iter().map(|a| a.as_ref()).collect();
+                    match datafusion::arrow::compute::concat(refs.as_slice()) {
+                        Ok(arr) => arr,
+                        Err(e) => {
+                            log::warn!("Failed to concatenate arrays for column {}: {}", idx, e);
+                            let (col_type, _) = &column_infos[idx];
+                            match *col_type {
+                                0 => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                                1 => Arc::new(Int64Array::from(vec![0i64; total_rows])) as ArrayRef,
+                                3 => Arc::new(Float64Array::from(vec![0.0f64; total_rows])) as ArrayRef,
+                                2 => Arc::new(BinaryArray::from(vec![&[][..]; total_rows])) as ArrayRef,
+                                _ => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                            }
+                        }
+                    }
+                }
+            })
+            .collect();
+        
+        let schema = Schema::new(arrow_fields);
+        Ok((schema, merged_arrays, column_infos))
+    }
+    
+    /// 同步版本：列出表的列
+    fn list_table_cols_sync(&self, table: &str) -> Result<Vec<ColumnMeta>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut cols = Vec::new();
+        
+        let table_prefix = format!("{}:{}:", META_TABLE_PREFIX, table);
+        let table_entries = self.scan_meta_prefix_internal(table_prefix.as_bytes())?;
+        
+        let mut table_id = None;
+        for (_, value) in table_entries {
+            if let Ok(table_meta) = TableMeta::parse_from_bytes(value.as_slice()) {
+                table_id = Some(table_meta.table_id);
+                break;
+            }
+        }
+        
+        if let Some(tid) = table_id {
+            let col_prefix = format!("{}:{}:", META_COLUMN_PREFIX, self.format_table_id(tid));
+            let col_entries = self.scan_meta_prefix_internal(col_prefix.as_bytes())?;
+            
+            for (_, value) in col_entries {
+                if let Ok(col_meta) = ColumnMeta::parse_from_bytes(value.as_slice()) {
+                    cols.push(col_meta);
+                }
+            }
+        }
+        
+        cols.sort_by_key(|c| c.column_id);
+        Ok(cols)
+    }
+    
+    /// 同步版本：获取列类型
+    fn get_column_types_sync(&self, table_name: &str) -> Result<std::collections::HashMap<String, ColumnType>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut column_types = std::collections::HashMap::new();
+        
+        let cols = self.list_table_cols_sync(table_name)?;
+        for col in cols {
+            column_types.insert(col.column_name.clone(), col.column_type.enum_value_or_default());
+        }
+        
+        Ok(column_types)
+    }
+    
+    /// 同步版本：使用 FilterGroup 查询表
+    fn query_table_with_filter_group_sync(
+        &self, 
+        table_name: &str, 
+        filter_group: &FilterGroup,
+        negate_result: bool
+    ) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>> {
+        let cf_name = self.get_table_cf(table_name);
+        let db = self.db.read().unwrap();
+        let cf_handle = match db.cf_handle(&cf_name) {
+            Some(handle) => handle,
+            None => return Ok(Vec::new()),
+        };
+        
+        let columns = self.get_table_columns(table_name)?;
+        
+        let mut result_rows = Vec::new();
+        
+        let iter = db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item?;
+            
+            let row_id = match self.key_to_row_id(key.as_ref()) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+            
+            let row = match Row::parse_from_bytes(&value[..]) {
+                Ok(row) => row,
+                Err(_) => continue,
+            };
+            
+            // 使用 FilterGroup 检查过滤条件
+            let matches = self.check_filter_group(&row, filter_group, &columns);
+            
+            if negate_result {
+                // 取反：返回不满足条件的行
+                if !matches {
+                    result_rows.push((row_id, row));
+                }
+            } else {
+                // 正常：返回满足条件的行
+                if matches {
+                    result_rows.push((row_id, row));
+                }
+            }
+        }
+        
+        Ok(result_rows)
+    }
+    
+    /// 同步版本：使用 FilterGroup 进行过滤
+    pub fn table_to_arrow_with_filter_group_sync(
+        &self, 
+        table_name: &str,
+        projection: Option<&Vec<usize>>,
+        filter_group: &FilterGroup,
+        limit: Option<usize>,
+        negate_result: bool
+    ) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
+        let columns = self.list_table_cols_sync(table_name)?;
+        let column_types = self.get_column_types_sync(table_name)?;
+        
+        let projected_columns: Vec<ColumnMeta> = match projection {
+            Some(p) => p.iter()
+                .filter(|&&idx| idx < columns.len())
+                .map(|&idx| columns[idx].clone())
+                .collect(),
+            None => columns.clone(),
+        };
+        
+        // 使用 FilterGroup 进行过滤
+        let rows = self.query_table_with_filter_group_sync(
+            table_name, 
+            filter_group, 
+            negate_result
+        )?;
+        
+        let mut column_infos: Vec<(i32, String)> = Vec::new();
+        let mut arrow_fields = Vec::new();
+        let mut arrow_arrays: Vec<Vec<ArrayRef>> = Vec::new();
+        
+        for col in &projected_columns {
+            let col_type = col.column_type.enum_value_or_default();
+            let data_type = self.column_type_to_arrow_type(&col_type);
+            column_infos.push((self.get_enum_value(&col_type), col.column_name.clone()));
+            arrow_fields.push(ArrowField::new(&col.column_name, data_type, true));
+            arrow_arrays.push(Vec::new());
+        }
+        
+        let column_name_to_idx: std::collections::HashMap<String, usize> = columns.iter()
+            .enumerate()
+            .map(|(idx, col)| (col.column_name.clone(), idx))
+            .collect();
+        
+        // 应用 limit
+        let limited_rows: Vec<_> = if let Some(l) = limit {
+            rows.into_iter().take(l).collect()
+        } else {
+            rows
+        };
+        
+        for (row_id, row) in limited_rows {
+            let mut row_arrays: Vec<Option<ArrayRef>> = vec![None; projected_columns.len()];
+            
+            for (arr_idx, col) in projected_columns.iter().enumerate() {
+                if let Some(&orig_idx) = column_name_to_idx.get(&col.column_name) {
+                    if orig_idx >= row.data.len() {
+                        continue;
+                    }
+                    
+                    let field_bytes = &row.data[orig_idx];
+                    
+                    let pb_field = match self.parse_field_from_bytes(field_bytes) {
+                        Ok(f) => f,
+                        Err(_) => continue,
+                    };
+                    
+                    use laoflchdb_engines::field::field::Value;
+                    let array = match pb_field.value {
+                        Some(Value::StringValue(s)) => {
+                            Arc::new(StringArray::from(vec![s.value.clone()])) as ArrayRef
+                        }
+                        Some(Value::IntegerValue(i)) => {
+                            Arc::new(Int64Array::from(vec![i.value])) as ArrayRef
+                        }
+                        Some(Value::FloatValue(f)) => {
+                            Arc::new(Float64Array::from(vec![f.value])) as ArrayRef
+                        }
+                        Some(Value::BytesValue(b)) => {
+                            Arc::new(BinaryArray::from(vec![b.value.as_slice()])) as ArrayRef
+                        }
+                        _ => Arc::new(StringArray::from(vec![""])) as ArrayRef,
+                    };
+                    row_arrays[arr_idx] = Some(array);
+                }
+            }
+            
+            for (arr_idx, arr) in row_arrays.iter().enumerate() {
+                let array = match arr {
+                    Some(a) => a.clone(),
+                    None => {
+                        let (col_type, _) = &column_infos[arr_idx];
+                        match *col_type {
+                            0 => Arc::new(StringArray::from(vec![""])) as ArrayRef,
+                            1 => Arc::new(Int64Array::from(vec![0])) as ArrayRef,
+                            3 => Arc::new(Float64Array::from(vec![0.0])) as ArrayRef,
+                            2 => Arc::new(BinaryArray::from(vec![&[][..]])) as ArrayRef,
+                            _ => Arc::new(StringArray::from(vec![""])) as ArrayRef,
+                        }
+                    }
+                };
+                arrow_arrays[arr_idx].push(array);
+            }
+        }
+        
+        let total_rows = arrow_arrays.iter().map(|a| a.len()).max().unwrap_or(0);
+        
+        let merged_arrays: Vec<ArrayRef> = arrow_arrays.into_iter()
+            .enumerate()
+            .map(|(idx, arrays)| {
+                if arrays.is_empty() {
+                    let (col_type, _) = &column_infos[idx];
+                    match *col_type {
+                        0 => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                        1 => Arc::new(Int64Array::from(vec![0i64; total_rows])) as ArrayRef,
+                        3 => Arc::new(Float64Array::from(vec![0.0f64; total_rows])) as ArrayRef,
+                        2 => Arc::new(BinaryArray::from(vec![&[][..]; total_rows])) as ArrayRef,
+                        _ => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                    }
+                } else if arrays.len() == 1 {
+                    arrays[0].clone()
+                } else {
+                    let refs: Vec<&dyn datafusion::arrow::array::Array> = arrays.iter().map(|a| a.as_ref()).collect();
+                    match datafusion::arrow::compute::concat(refs.as_slice()) {
+                        Ok(arr) => arr,
+                        Err(e) => {
+                            log::warn!("Failed to concatenate arrays for column {}: {}", idx, e);
+                            let (col_type, _) = &column_infos[idx];
+                            match *col_type {
+                                0 => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                                1 => Arc::new(Int64Array::from(vec![0i64; total_rows])) as ArrayRef,
+                                3 => Arc::new(Float64Array::from(vec![0.0f64; total_rows])) as ArrayRef,
+                                2 => Arc::new(BinaryArray::from(vec![&[][..]; total_rows])) as ArrayRef,
+                                _ => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                            }
+                        }
+                    }
+                }
+            })
+            .collect();
+        
+        let schema = Schema::new(arrow_fields);
+        Ok((schema, merged_arrays, column_infos))
+    }
+    
+    /// 使用 FilterGroup 查询表
+    async fn query_table_with_filter_group(
+        &self, 
+        table_name: &str, 
+        filter_group: &FilterGroup,
+        negate_result: bool
+    ) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>> {
+        let cf_name = self.get_table_cf(table_name);
+        let db = self.db.read().unwrap();
+        let cf_handle = match db.cf_handle(&cf_name) {
+            Some(handle) => handle,
+            None => return Ok(Vec::new()),
+        };
+        
+        let columns = self.get_table_columns(table_name)?;
+        
+        let mut result_rows = Vec::new();
+        
+        let iter = db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, value) = item?;
+            
+            let row_id = match self.key_to_row_id(key.as_ref()) {
+                Ok(id) => id,
+                Err(_) => continue,
+            };
+            
+            let row = match Row::parse_from_bytes(&value[..]) {
+                Ok(row) => row,
+                Err(_) => continue,
+            };
+            
+            // 使用 FilterGroup 检查过滤条件
+            let matches = self.check_filter_group(&row, filter_group, &columns);
+            
+            if negate_result {
+                // 取反：返回不满足条件的行
+                if !matches {
+                    result_rows.push((row_id, row));
+                }
+            } else {
+                // 正常：返回满足条件的行
+                if matches {
+                    result_rows.push((row_id, row));
+                }
+            }
+        }
+        
+        Ok(result_rows)
+    }
+    
+    /// 检查行是否满足 FilterGroup 的条件
+    fn check_filter_group(
+        &self, 
+        row: &Row, 
+        filter_group: &FilterGroup,
+        columns: &std::collections::HashMap<String, (u64, ColumnType)>
+    ) -> bool {
+        if filter_group.items.is_empty() {
+            return true; // 空过滤器组，返回 true
+        }
+        
+        match filter_group.relation {
+            FilterRelation::And => {
+                // AND 关系：所有项都要满足
+                for item in &filter_group.items {
+                    if !self.check_filter_item(row, item, columns) {
+                        return false;
+                    }
+                }
+                true
+            }
+            FilterRelation::Or => {
+                // OR 关系：任一项满足即可
+                for item in &filter_group.items {
+                    if self.check_filter_item(row, item, columns) {
+                        return true;
+                    }
+                }
+                false
+            }
+        }
+    }
+    
+    /// 检查行是否满足 FilterItem 的条件
+    fn check_filter_item(
+        &self, 
+        row: &Row, 
+        filter_item: &FilterItem,
+        columns: &std::collections::HashMap<String, (u64, ColumnType)>
+    ) -> bool {
+        match filter_item {
+            FilterItem::ColumnFilter(filter) => {
+                self.check_column_filter(row, filter, columns)
+            }
+            FilterItem::Group(group) => {
+                self.check_filter_group(row, group, columns)
+            }
+        }
     }
     
     pub async fn table_to_arrow(&self, table_name: &str) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
@@ -1122,23 +1662,38 @@ impl MultiTableRocksDBEngine {
             }
         }
         
+        let total_rows = arrow_arrays.iter().map(|a| a.len()).max().unwrap_or(0);
+        
         let merged_arrays: Vec<ArrayRef> = arrow_arrays.into_iter()
             .enumerate()
             .map(|(idx, arrays)| {
                 if arrays.is_empty() {
                     let (col_type, _) = &column_infos[idx];
                     match *col_type {
-                        0 => Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
-                        1 => Arc::new(Int64Array::from(Vec::<i64>::new())) as ArrayRef,
-                        3 => Arc::new(Float64Array::from(Vec::<f64>::new())) as ArrayRef,
-                        2 => Arc::new(BinaryArray::from(Vec::<&[u8]>::new())) as ArrayRef,
-                        _ => Arc::new(StringArray::from(Vec::<String>::new())) as ArrayRef,
+                        0 => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                        1 => Arc::new(Int64Array::from(vec![0i64; total_rows])) as ArrayRef,
+                        3 => Arc::new(Float64Array::from(vec![0.0f64; total_rows])) as ArrayRef,
+                        2 => Arc::new(BinaryArray::from(vec![&[][..]; total_rows])) as ArrayRef,
+                        _ => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
                     }
                 } else if arrays.len() == 1 {
                     arrays[0].clone()
                 } else {
                     let refs: Vec<&dyn datafusion::arrow::array::Array> = arrays.iter().map(|a| a.as_ref()).collect();
-                    datafusion::arrow::compute::concat(refs.as_slice()).unwrap()
+                    match datafusion::arrow::compute::concat(refs.as_slice()) {
+                        Ok(arr) => arr,
+                        Err(e) => {
+                            log::warn!("Failed to concatenate arrays for column {}: {}", idx, e);
+                            let (col_type, _) = &column_infos[idx];
+                            match *col_type {
+                                0 => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                                1 => Arc::new(Int64Array::from(vec![0i64; total_rows])) as ArrayRef,
+                                3 => Arc::new(Float64Array::from(vec![0.0f64; total_rows])) as ArrayRef,
+                                2 => Arc::new(BinaryArray::from(vec![&[][..]; total_rows])) as ArrayRef,
+                                _ => Arc::new(StringArray::from(vec![""; total_rows])) as ArrayRef,
+                            }
+                        }
+                    }
                 }
             })
             .collect();
@@ -1151,7 +1706,7 @@ impl MultiTableRocksDBEngine {
         use std::thread;
         use std::sync::mpsc;
         
-        let engine = Arc::new(TokioRwLock::new(self.clone()));
+        let engine = Arc::new(self.clone());
         let table_name_clone = table_name.to_string();
         
         let (tx, rx) = mpsc::channel();
@@ -1178,7 +1733,7 @@ impl DataFusionStorageEngine for MultiTableRocksDBEngine {
         use std::thread;
         use std::sync::mpsc;
         
-        let engine = Arc::new(TokioRwLock::new(self.clone()));
+        let engine = Arc::new(self.clone());
         let table_name_clone = table_name.to_string();
         
         let (tx, rx) = mpsc::channel();

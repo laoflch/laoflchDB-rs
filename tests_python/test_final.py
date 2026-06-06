@@ -7,6 +7,20 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rpc_pb2
 import rpc_pb2_grpc
+import field_pb2
+
+def encode_field(value, field_type):
+    """将值编码为 protobuf Field 对象"""
+    field = field_pb2.Field()
+    if field_type == 0:  # STRING
+        field.string_value.value = value
+    elif field_type == 1:  # INT64
+        field.integer_value.value = int(value)
+    elif field_type == 3:  # FLOAT
+        field.float_value.value = float(value)
+    elif field_type == 2:  # BYTES
+        field.bytes_value.value = value if isinstance(value, bytes) else value.encode()
+    return field.SerializeToString()
 
 SCHEMA = "sys"
 TABLE_NAME = "test_grpc_api"
@@ -177,9 +191,9 @@ def test_create_sql_table(stub):
         table_name=SQL_TABLE_NAME,
         columns=[
             rpc_pb2.ColumnDef(name="id", column_type=1),      # INT64
-            rpc_pb2.ColumnDef(name="name", column_type=2),    # STRING
+            rpc_pb2.ColumnDef(name="name", column_type=0),    # STRING
             rpc_pb2.ColumnDef(name="age", column_type=1),     # INT64
-            rpc_pb2.ColumnDef(name="score", column_type=4),   # FLOAT
+            rpc_pb2.ColumnDef(name="score", column_type=3),   # FLOAT
         ]
     ))
     if not resp.success:
@@ -206,10 +220,10 @@ def test_add_sql_data(stub):
                 row_type=0,
                 version=1,
                 data=[
-                    str(row["id"]).encode(),
-                    row["name"].encode(),
-                    str(row["age"]).encode(),
-                    str(row["score"]).encode(),
+                    encode_field(row["id"], 1),      # id: INT64
+                    encode_field(row["name"], 0),    # name: STRING
+                    encode_field(row["age"], 1),     # age: INT64
+                    encode_field(row["score"], 3),   # score: FLOAT
                 ]
             )
         ))

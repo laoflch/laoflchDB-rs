@@ -502,3 +502,123 @@ async fn test_sql_query_filter_pushdown() {
     let query_result = result.unwrap();
     assert_eq!(query_result.rows.len(), 2); // age <= 30: 25, 30
 }
+
+/// 测试跨列 OR 的 FilterGroup 下推
+#[tokio::test]
+async fn test_sql_query_cross_column_or() {
+    let service = create_test_service().await;
+    
+    // 创建测试表
+    let columns = vec![
+        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING),
+        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+        (3u32, "score", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+    ];
+    
+    service.create_table("sys", "or_filter_test", &columns).await.unwrap();
+    
+    // 等待表注册
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+    
+    // 插入多条测试数据
+    use laoflchdb_engines::{Row, RowType, SpecialFields, Message, field::field::Value, field::{String, Integer}};
+    use protobuf::CodedOutputStream;
+    
+    let test_data = vec![
+        (1, "Alice", 30, 95),
+        (2, "Bob", 25, 88),
+        (3, "Charlie", 35, 92),
+        (4, "David", 28, 90),
+        (5, "Eve", 40, 85),
+    ];
+    
+    for (id, name, age, score) in &test_data {
+        let mut row = Row::new();
+        row.row_type = RowType::ROW_TYPE_NORMAL.into();
+        row.version = 1;
+        
+        // id
+        let mut f = laoflchdb_engines::Field::new();
+        f.value = Some(Value::IntegerValue(Integer { value: *id as i64, special_fields: SpecialFields::default() }));
+        let mut buf = Vec::new();
+        { let mut os = CodedOutputStream::vec(&mut buf); f.write_to(&mut os).unwrap(); os.flush().unwrap(); }
+        row.data.push(buf);
+        
+        // name
+        let mut f = laoflchdb_engines::Field::new();
+        f.value = Some(Value::StringValue(String { value: name.to_string(), special_fields: SpecialFields::default() }));
+        let mut buf = Vec::new();
+        { let mut os = CodedOutputStream::vec(&mut buf); f.write_to(&mut os).unwrap(); os.flush().unwrap(); }
+        row.data.push(buf);
+        
+        // age
+        let mut f = laoflchdb_engines::Field::new();
+        f.value = Some(Value::IntegerValue(Integer { value: *age as i64, special_fields: SpecialFields::default() }));
+        let mut buf = Vec::new();
+        { let mut os = CodedOutputStream::vec(&mut buf); f.write_to(&mut os).unwrap(); os.flush().unwrap(); }
+        row.data.push(buf);
+        
+        // score
+        let mut f = laoflchdb_engines::Field::new();
+        f.value = Some(Value::IntegerValue(Integer { value: *score as i64, special_fields: SpecialFields::default() }));
+        let mut buf = Vec::new();
+        { let mut os = CodedOutputStream::vec(&mut buf); f.write_to(&mut os).unwrap(); os.flush().unwrap(); }
+        row.data.push(buf);
+        
+        service.add_row("sys", "or_filter_test", &row).await.unwrap();
+    }
+    
+    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    
+    // 测试 1: 同一列的 OR (age > 30 OR age < 28)
+    // 预期结果: Alice(30), Charlie(35), David(28), Eve(40) -> age > 30 或 age < 28
+    // 实际应该是: age > 30 -> Alice(30), Charlie(35), Eve(40) | age < 28 -> David(28)
+    let result = service.sql_query("sys", "SELECT * FROM or_filter_test WHERE age > 30 OR age < 28").await;
+    assert!(result.is_ok());
+    let query_result = result.unwrap();
+    // age > 30: Alice(30? no), Charlie(35), Eve(40) -> 不包括30
+    // age < 28: David(28? no) -> 不包括28
+    // 实际: age > 30 -> 35, 40; age < 28 -> 无
+    // 修正: age > 30 -> 35, 40; age < 28 -> 无
+    // 由于存储层 age > 30 不包括 30，age < 28 不包括 28，所以结果应该是 3,5 (Charlie, Eve)
+    assert_eq!(query_result.rows.len(), 3, "同一列 OR 测试失败");
+    
+    // 测试 2: 跨列 OR (age = 30 OR name = 'Bob')
+    // 预期: Alice(id=1) + Bob(id=2)
+    let result = service.sql_query("sys", "SELECT * FROM or_filter_test WHERE age = 30 OR name = 'Bob'").await;
+    assert!(result.is_ok());
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 2, "跨列 OR 测试失败: 预期 2 行，实际 {} 行", query_result.rows.len());
+    
+    // 测试 3: 跨列 AND (age > 25 AND score > 90)
+    // 预期: Alice(score=95), David(score=90? no, 90不>90), Charlie(score=92)
+    let result = service.sql_query("sys", "SELECT * FROM or_filter_test WHERE age > 25 AND score > 90").await;
+    assert!(result.is_ok());
+    let query_result = result.unwrap();
+    // age > 25: 除 Bob 外所有; score > 90: Alice, Charlie
+    // AND 结果: Alice, Charlie
+    assert_eq!(query_result.rows.len(), 2, "跨列 AND 测试失败");
+    
+    // 测试 4: 复杂组合 (age > 30 OR score < 90) AND id > 2
+    // 先算 age > 30 OR score < 90:
+    //   age > 30: Charlie(35), Eve(40)
+    //   score < 90: Bob(88), Eve(85)
+    //   OR 结果: Bob, Charlie, Eve
+    // 再 AND id > 2:
+    //   Charlie(id=3), Eve(id=5)
+    // 预期: 2 行
+    let result = service.sql_query("sys", "SELECT * FROM or_filter_test WHERE (age > 30 OR score < 90) AND id > 2").await;
+    assert!(result.is_ok());
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 2, "复杂组合测试失败");
+    
+    // 测试 5: 纯跨列 OR (age = 35 OR score = 88)
+    // 预期: Charlie(id=3) + Bob(id=2)
+    let result = service.sql_query("sys", "SELECT * FROM or_filter_test WHERE age = 35 OR score = 88").await;
+    assert!(result.is_ok());
+    let query_result = result.unwrap();
+    assert_eq!(query_result.rows.len(), 2, "纯跨列 OR 测试失败");
+    
+    println!("跨列 OR FilterGroup 测试全部通过!");
+}

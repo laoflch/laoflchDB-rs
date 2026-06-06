@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+log = "0.4"
 laoflchdb_engines = { path = "../laoflchdb_engines" }
 laoflchdb_sql_df_engine = { path = "../laoflchdb_sql_df_engine" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}

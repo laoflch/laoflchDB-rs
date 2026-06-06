@@ -228,7 +228,14 @@ impl DatabaseService for DatabaseServiceImpl {
         let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
         let table = table.to_string();
         let mut engine = engine.write().await;
-        engine.as_mut().drop_table(&table).await
+        engine.as_mut().drop_table(&table).await?;
+        
+        if schema == "sys" {
+            let mut sql_engine = self.sql_engine.write().await;
+            sql_engine.deregister_table(&table).await?;
+        }
+        
+        Ok(())
     }
 
     async fn list_tables(&self, schema: &str) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {

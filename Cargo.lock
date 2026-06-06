@@ -2725,6 +2725,7 @@ dependencies = [
  "futures",
  "laoflchdb_engines",
  "laoflchdb_sql_df_engine",
+ "log",
  "protobuf",
  "protobuf-codegen",
  "rust-rocksdb",

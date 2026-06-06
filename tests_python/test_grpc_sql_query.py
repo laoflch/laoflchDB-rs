@@ -13,11 +13,24 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import rpc_pb2
 import rpc_pb2_grpc
+import field_pb2
+
+def encode_field(value, field_type):
+    """将值编码为 protobuf Field 对象"""
+    field = field_pb2.Field()
+    if field_type == 0:  # STRING
+        field.string_value.value = value
+    elif field_type == 1:  # INT64
+        field.integer_value.value = int(value)
+    elif field_type == 3:  # FLOAT
+        field.float_value.value = float(value)
+    elif field_type == 2:  # BYTES
+        field.bytes_value.value = value if isinstance(value, bytes) else value.encode()
+    return field.SerializeToString()
 
 TEST_DB = "./laoflch_db_grpc_test"
-TEST_ADDR = "127.0.0.1:19777"
+TEST_ADDR = "127.0.0.1:19777"# 服务二进制路径
 SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchDB-rust")
-
 def run_grpc_test():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
@@ -48,17 +61,27 @@ def run_grpc_test():
         cwd="..",
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        preexec_fn=os.setsid
+        text=True
     )
     time.sleep(4)
     print(f"    ✓ 服务已启动 PID={server_proc.pid} 监听 {TEST_ADDR}")
 
     try:
-        print("\n[4/6] 连接 gRPC 客户端...")
-        channel = grpc.insecure_channel(TEST_ADDR)
-        stub = rpc_pb2_grpc.LaoflchDbStub(channel)
-        print("    ✓ gRPC channel 已连接")
-
+        print("\n[4/6] 等待服务就绪...")
+        max_retries = 10
+        for i in range(max_retries):
+            try:
+                channel = grpc.insecure_channel(TEST_ADDR)
+                stub = rpc_pb2_grpc.LaoflchDbStub(channel)
+                # 尝试调用 ListTables 来检查服务是否就绪
+                stub.ListTables(rpc_pb2.ListTablesRequest(schema="sys"))
+                print(f"    ✓ 服务已就绪 (尝试 {i+1}/{max_retries})")
+                break
+            except grpc.RpcError as e:
+                print(f"    服务尚未就绪 (尝试 {i+1}/{max_retries}): {e.code()}")
+                time.sleep(1)
+                continue
+        
         print("\n[5/6] 创建测试表...")
         try:
             drop_req = rpc_pb2.DropTableRequest(
@@ -67,15 +90,20 @@ def run_grpc_test():
             )
             stub.DropTable(drop_req)
             print("    - 已删除旧表")
-        except:
-            pass
+        except grpc.RpcError as e:
+            if e.code() == grpc.StatusCode.NOT_FOUND:
+                print("    - 表不存在，跳过删除")
+            else:
+                print(f"    - 删除表时出错: {e}")
+        except Exception as e:
+            print(f"    - 删除表时发生未知错误: {e}")
         
         create_req = rpc_pb2.CreateTableRequest(
             schema="sys",
             table_name="test_grpc_sql",
             columns=[
                 rpc_pb2.ColumnDef(name="id", column_type=1),      # INT64
-                rpc_pb2.ColumnDef(name="name", column_type=4),    # STRING
+                rpc_pb2.ColumnDef(name="name", column_type=0),    # STRING
                 rpc_pb2.ColumnDef(name="age", column_type=1),     # INT64
                 rpc_pb2.ColumnDef(name="score", column_type=3),   # FLOAT
             ]
@@ -83,7 +111,11 @@ def run_grpc_test():
         create_resp = stub.CreateTable(create_req)
         assert create_resp.success == True, "创建表失败"
         print("    ✓ 创建表成功")
-
+        
+        # 增加等待时间，确保表注册到 SQL 引擎
+        print("    等待表注册到 SQL 引擎...")
+        time.sleep(3)
+        
         print("\n[6/6] 插入测试数据...")
         # 使用 AddRow 插入数据
         row_data = [
@@ -100,18 +132,28 @@ def run_grpc_test():
                     row_type=0,
                     version=1,
                     data=[
-                        str(row_id).encode('utf-8'),
-                        name.encode('utf-8'),
-                        str(age).encode('utf-8'),
-                        str(score).encode('utf-8'),
+                        encode_field(row_id, 1),      # id: INT64
+                        encode_field(name, 0),        # name: STRING
+                        encode_field(age, 1),         # age: INT64
+                        encode_field(score, 3),       # score: FLOAT
                     ]
                 )
             )
             add_resp = stub.AddRow(add_req)
             assert add_resp.success == True, f"插入行 {row_id} 失败"
             print(f"    ✓ 插入行 {row_id} 成功")
+        
+        time.sleep(0.5)
 
         print("\n[7/6] 测试 SQL 查询...")
+        
+        # 在 SQL 查询前先列出表，确保表已注册到 SQL 引擎
+        print("    检查表注册状态...")
+        list_resp = stub.ListTables(rpc_pb2.ListTablesRequest(schema="sys"))
+        print(f"    当前表列表: {list_resp.tables}")
+        
+        # 添加额外等待时间
+        time.sleep(2)
         
         # 测试全表查询
         print("\n    测试全表查询:")
@@ -145,7 +187,7 @@ def run_grpc_test():
         )
         sql_resp = stub.SqlQuery(sql_req)
         assert sql_resp.success == True, "SQL 查询失败"
-        assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
+        assert len(sql_resp.rows) == 1, f"应返回 1 行 (Charlie, age=35)，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
 
         # 测试数据类型验证
@@ -226,6 +268,58 @@ def run_grpc_test():
             sql="SELECT * FROM test_grpc_sql LIMIT 2"
         )
         sql_resp = stub.SqlQuery(sql_req)
+        assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
+        print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
+
+        # 测试跨列 OR (FilterGroup)
+        print("\n    测试跨列 OR (age = 30 OR score = 88.0):")
+        sql_req = rpc_pb2.SqlQueryRequest(
+            schema="sys",
+            sql="SELECT name, age, score FROM test_grpc_sql WHERE age = 30 OR score = 88.0"
+        )
+        sql_resp = stub.SqlQuery(sql_req)
+        assert sql_resp.success == True, "SQL 查询失败"
+        assert len(sql_resp.rows) == 2, f"应返回 2 行 (Alice 和 Bob)，实际返回 {len(sql_resp.rows)} 行"
+        names = sorted([row.values[0].string_value for row in sql_resp.rows])
+        assert names == ["Alice", "Bob"], f"name 应为 [Alice, Bob]，实际为 {names}"
+        print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
+
+        # 测试复杂组合 (age > 25 AND score > 90) OR name = 'Bob'
+        print("\n    测试复杂组合 (age > 25 AND score > 90) OR name = 'Bob':")
+        sql_req = rpc_pb2.SqlQueryRequest(
+            schema="sys",
+            sql="SELECT name, age, score FROM test_grpc_sql WHERE (age > 25 AND score > 90) OR name = 'Bob'"
+        )
+        sql_resp = stub.SqlQuery(sql_req)
+        assert sql_resp.success == True, "SQL 查询失败"
+        # age > 25 AND score > 90: Alice(30,95.5), Charlie(35,92.5)
+        # name = 'Bob': Bob(25,88.0)
+        # OR 结果: Alice, Bob, Charlie
+        assert len(sql_resp.rows) == 3, f"应返回 3 行，实际返回 {len(sql_resp.rows)} 行"
+        print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
+
+        # 测试纯跨列 OR (age = 35 OR name = 'Alice')
+        print("\n    测试纯跨列 OR (age = 35 OR name = 'Alice'):")
+        sql_req = rpc_pb2.SqlQueryRequest(
+            schema="sys",
+            sql="SELECT name, age FROM test_grpc_sql WHERE age = 35 OR name = 'Alice'"
+        )
+        sql_resp = stub.SqlQuery(sql_req)
+        assert sql_resp.success == True, "SQL 查询失败"
+        assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
+        names = sorted([row.values[0].string_value for row in sql_resp.rows])
+        assert names == ["Alice", "Charlie"], f"name 应为 [Alice, Charlie]，实际为 {names}"
+        print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
+
+        # 测试 NOT 表达式 (NOT age = 25)
+        print("\n    测试 NOT 表达式:")
+        sql_req = rpc_pb2.SqlQueryRequest(
+            schema="sys",
+            sql="SELECT name, age FROM test_grpc_sql WHERE NOT age = 25"
+        )
+        sql_resp = stub.SqlQuery(sql_req)
+        assert sql_resp.success == True, "SQL 查询失败"
+        # NOT age = 25: 排除 Bob(25)，返回 Alice 和 Charlie
         assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
 

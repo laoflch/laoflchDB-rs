@@ -187,4 +187,9 @@ impl<E: StorageEngine + DataFusionStorageEngine + 'static> SQLEngine for DataFus
         
         Ok(())
     }
+    
+    async fn deregister_table(&mut self, table_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.ctx.deregister_table(TableReference::bare(table_name))?;
+        Ok(())
+    }
 }

@@ -2,8 +2,6 @@ use std::sync::Arc;
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use std::thread;
-use std::sync::mpsc;
 
 use datafusion::arrow::datatypes::{Field as ArrowField, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -17,34 +15,72 @@ use datafusion_physical_expr::EquivalenceProperties;
 use futures::Stream;
 use tokio::sync::RwLock as TokioRwLock;
 
-use laoflchdb_engines::{StorageEngine, ColumnFilter, ColumnFilterCondition, FilterOperator};
+use laoflchdb_engines::{StorageEngine, ColumnFilter, ColumnFilterCondition, FilterOperator, Row};
+
+/// 过滤器项
+#[derive(Debug, Clone)]
+pub enum FilterItem {
+    /// 列过滤器
+    ColumnFilter(ColumnFilter),
+    /// 嵌套过滤器组
+    Group(FilterGroup),
+}
+
+/// 过滤器组：支持任意 AND/OR 嵌套结构
+#[derive(Debug, Clone)]
+pub struct FilterGroup {
+    /// 组内关系
+    pub relation: FilterRelation,
+    /// 组内项
+    pub items: Vec<FilterItem>,
+}
+
+/// 逻辑关系
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterRelation {
+    And,
+    Or,
+}
+
+/// 检查过滤器组是否为空
+impl FilterGroup {
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
+
+impl Default for FilterGroup {
+    fn default() -> Self {
+        Self {
+            relation: FilterRelation::And,
+            items: Vec::new(),
+        }
+    }
+}
 
 use crate::MultiTableRocksDBEngine;
 
 #[derive(Debug)]
 pub struct RocksDBTable {
-    engine: Arc<TokioRwLock<MultiTableRocksDBEngine>>,
+    engine: Arc<MultiTableRocksDBEngine>,
     table_name: String,
     schema: Arc<Schema>,
 }
 
 impl RocksDBTable {
-    pub async fn new(engine: Arc<TokioRwLock<MultiTableRocksDBEngine>>, table_name: &str) -> Self {
-        let schema = {
-            let engine_guard = engine.read().await;
-            match StorageEngine::list_table_cols(&*engine_guard, table_name).await {
-                Ok(columns) => {
-                    let arrow_fields: Vec<datafusion::arrow::datatypes::Field> = columns.into_iter()
-                        .map(|col| {
-                            let col_type = col.column_type.enum_value_or_default();
-                            let data_type = engine_guard.column_type_to_arrow_type(&col_type);
-                            ArrowField::new(&col.column_name, data_type, true)
-                        })
-                        .collect();
-                    Arc::new(Schema::new(arrow_fields))
-                }
-                Err(_) => Arc::new(Schema::new(Vec::<datafusion::arrow::datatypes::Field>::new())),
+    pub async fn new(engine: Arc<MultiTableRocksDBEngine>, table_name: &str) -> Self {
+        let schema = match StorageEngine::list_table_cols(&*engine, table_name).await {
+            Ok(columns) => {
+                let arrow_fields: Vec<datafusion::arrow::datatypes::Field> = columns.into_iter()
+                    .map(|col| {
+                        let col_type = col.column_type.enum_value_or_default();
+                        let data_type = engine.column_type_to_arrow_type(&col_type);
+                        ArrowField::new(&col.column_name, data_type, true)
+                    })
+                    .collect();
+                Arc::new(Schema::new(arrow_fields))
             }
+            Err(_) => Arc::new(Schema::new(Vec::<datafusion::arrow::datatypes::Field>::new())),
         };
         Self {
             engine,
@@ -53,129 +89,308 @@ impl RocksDBTable {
         }
     }
     
-    fn parse_filters(&self, filters: &[Expr]) -> Vec<ColumnFilter> {
-        let mut column_filters = Vec::new();
+    /// 解析过滤器表达式，构建 FilterGroup 树
+    /// 
+    /// 返回：(FilterGroup, 是否需要对结果取反)
+    fn parse_filters(&self, filters: &[Expr]) -> (FilterGroup, bool) {
+        let mut root = FilterGroup {
+            relation: FilterRelation::And,
+            items: Vec::new(),
+        };
+        let mut negate_result = false;
         
         for filter in filters {
-            self.parse_filter_expr(filter, &mut column_filters);
+            let (item, needs_negate) = self.parse_filter_expr(filter, false);
+            if let Some(item) = item {
+                root.items.push(item);
+            }
+            if needs_negate {
+                negate_result = !negate_result;
+            }
         }
         
-        column_filters
+        (root, negate_result)
     }
     
-    fn parse_filter_expr(&self, expr: &Expr, column_filters: &mut Vec<ColumnFilter>) {
+    /// 解析单个表达式，返回 FilterItem
+    fn parse_filter_expr(&self, expr: &Expr, negate: bool) -> (Option<FilterItem>, bool) {
         match expr {
             Expr::BinaryExpr(BinaryExpr { left, op, right }) => {
                 match op {
-                    // AND 表达式：递归解析左右两边
                     Operator::And => {
-                        self.parse_filter_expr(left, column_filters);
-                        self.parse_filter_expr(right, column_filters);
-                        return;
+                        if negate {
+                            // NOT (A AND B) = NOT A OR NOT B
+                            let (left_item, _) = self.parse_filter_expr(left, true);
+                            let (right_item, _) = self.parse_filter_expr(right, true);
+                            
+                            // 构建 OR 组
+                            let mut items = Vec::new();
+                            if let Some(item) = left_item {
+                                items.push(item);
+                            }
+                            if let Some(item) = right_item {
+                                items.push(item);
+                            }
+                            
+                            if items.is_empty() {
+                                return (None, false);
+                            }
+                            
+                            let group = FilterGroup {
+                                relation: FilterRelation::Or,
+                                items,
+                            };
+                            return (Some(FilterItem::Group(group)), true);
+                        } else {
+                            // A AND B：构建 AND 组
+                            let (left_item, _) = self.parse_filter_expr(left, false);
+                            let (right_item, _) = self.parse_filter_expr(right, false);
+                            
+                            let mut items = Vec::new();
+                            if let Some(item) = left_item {
+                                items.push(item);
+                            }
+                            if let Some(item) = right_item {
+                                items.push(item);
+                            }
+                            
+                            if items.is_empty() {
+                                return (None, false);
+                            }
+                            
+                            if items.len() == 1 {
+                                return (Some(items.remove(0)), false);
+                            }
+                            
+                            let group = FilterGroup {
+                                relation: FilterRelation::And,
+                                items,
+                            };
+                            return (Some(FilterItem::Group(group)), false);
+                        }
                     }
-                    // OR 表达式：递归解析左右两边
                     Operator::Or => {
-                        self.parse_filter_expr(left, column_filters);
-                        self.parse_filter_expr(right, column_filters);
-                        return;
+                        if negate {
+                            // NOT (A OR B) = NOT A AND NOT B
+                            let (left_item, _) = self.parse_filter_expr(left, true);
+                            let (right_item, _) = self.parse_filter_expr(right, true);
+                            
+                            let mut items = Vec::new();
+                            if let Some(item) = left_item {
+                                items.push(item);
+                            }
+                            if let Some(item) = right_item {
+                                items.push(item);
+                            }
+                            
+                            if items.is_empty() {
+                                return (None, false);
+                            }
+                            
+                            if items.len() == 1 {
+                                return (Some(items.remove(0)), false);
+                            }
+                            
+                            let group = FilterGroup {
+                                relation: FilterRelation::And,
+                                items,
+                            };
+                            return (Some(FilterItem::Group(group)), false);
+                        } else {
+                            // A OR B：构建 OR 组
+                            let (left_item, _) = self.parse_filter_expr(left, false);
+                            let (right_item, _) = self.parse_filter_expr(right, false);
+                            
+                            let mut items = Vec::new();
+                            if let Some(item) = left_item {
+                                items.push(item);
+                            }
+                            if let Some(item) = right_item {
+                                items.push(item);
+                            }
+                            
+                            if items.is_empty() {
+                                return (None, false);
+                            }
+                            
+                            if items.len() == 1 {
+                                return (Some(items.remove(0)), false);
+                            }
+                            
+                            let group = FilterGroup {
+                                relation: FilterRelation::Or,
+                                items,
+                            };
+                            return (Some(FilterItem::Group(group)), false);
+                        }
                     }
                     _ => {}
                 }
                 
-                if let Expr::Column(c) = left.as_ref() {
-                    let column_name = c.name.clone();
-                    
-                    let pb_field = match right.as_ref() {
-                        Expr::Literal(lit, _) => {
-                            use datafusion::scalar::ScalarValue;
-                            let mut field = laoflchdb_engines::Field::new();
-                            match lit {
-                                ScalarValue::Int64(Some(v)) => {
-                                    field.value = Some(laoflchdb_engines::field::field::Value::IntegerValue(laoflchdb_engines::field::Integer {
-                                        value: *v,
-                                        special_fields: ::protobuf::SpecialFields::default(),
-                                    }));
-                                }
-                                ScalarValue::Float64(Some(v)) => {
-                                    field.value = Some(laoflchdb_engines::field::field::Value::FloatValue(laoflchdb_engines::field::Float {
-                                        value: *v,
-                                        special_fields: ::protobuf::SpecialFields::default(),
-                                    }));
-                                }
-                                ScalarValue::Utf8(Some(v)) | ScalarValue::LargeUtf8(Some(v)) => {
-                                    field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
-                                        value: v.clone(),
-                                        special_fields: ::protobuf::SpecialFields::default(),
-                                    }));
-                                }
-                                ScalarValue::Binary(Some(v)) | ScalarValue::LargeBinary(Some(v)) => {
-                                    field.value = Some(laoflchdb_engines::field::field::Value::BytesValue(laoflchdb_engines::field::Bytes {
-                                        value: v.clone(),
-                                        special_fields: ::protobuf::SpecialFields::default(),
-                                    }));
-                                }
-                                _ => {
-                                    field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
-                                        value: lit.to_string(),
-                                        special_fields: ::protobuf::SpecialFields::default(),
-                                    }));
-                                }
-                            }
-                            field
-                        }
-                        _ => {
-                            let mut field = laoflchdb_engines::Field::new();
-                            field.value = Some(laoflchdb_engines::field::field::Value::StringValue(laoflchdb_engines::field::String {
-                                value: right.to_string(),
-                                special_fields: ::protobuf::SpecialFields::default(),
-                            }));
-                            field
-                        }
-                    };
-                    
-                    let filter_op = match op {
-                        Operator::Eq => FilterOperator::FILTER_OPERATOR_EQ,
-                        Operator::NotEq => FilterOperator::FILTER_OPERATOR_NEQ,
-                        Operator::Lt => FilterOperator::FILTER_OPERATOR_LT,
-                        Operator::Gt => FilterOperator::FILTER_OPERATOR_GT,
-                        Operator::LtEq => FilterOperator::FILTER_OPERATOR_LTE,
-                        Operator::GtEq => FilterOperator::FILTER_OPERATOR_GTE,
-                        _ => return,
-                    };
-                    
-                    // 检查是否已经有该列的过滤器，如果有则添加条件
-                    if let Some(existing_filter) = column_filters.iter_mut().find(|cf| cf.column_name == column_name) {
-                        existing_filter.conditions.push(ColumnFilterCondition {
-                            op: filter_op.into(),
-                            value: Some(pb_field).into(),
-                            values: Vec::new(),
-                            special_fields: ::protobuf::SpecialFields::default(),
-                        });
-                    } else {
-                        column_filters.push(ColumnFilter {
-                            column_name,
-                            conditions: vec![ColumnFilterCondition {
-                                op: filter_op.into(),
-                                value: Some(pb_field).into(),
-                                values: Vec::new(),
-                                special_fields: ::protobuf::SpecialFields::default(),
-                            }],
-                            special_fields: ::protobuf::SpecialFields::default(),
-                        });
-                    }
+                // 处理比较操作符
+                if let Some(filter) = self.handle_comparison_op(left, op, right, negate) {
+                    return (Some(FilterItem::ColumnFilter(filter)), false);
                 }
             }
+            // 处理 NOT 表达式
+            Expr::Not(inner) => {
+                return self.parse_filter_expr(inner, !negate);
+            }
             _ => {}
+        }
+        
+        (None, false)
+    }
+    
+    /// 处理比较操作符，negate 为 true 时使用反向操作符
+    fn handle_comparison_op(
+        &self,
+        left: &Box<Expr>,
+        op: &Operator,
+        right: &Box<Expr>,
+        negate: bool,
+    ) -> Option<ColumnFilter> {
+        // 获取左边的列名
+        let column_name = match left.as_ref() {
+            Expr::Column(c) => c.name.clone(),
+            _ => return None,
+        };
+        
+        let pb_field = match right.as_ref() {
+            Expr::Literal(lit, _) => {
+                self.literal_to_field(lit)
+            }
+            _ => {
+                let mut field = laoflchdb_engines::Field::new();
+                field.value = Some(laoflchdb_engines::field::field::Value::StringValue(
+                    laoflchdb_engines::field::String {
+                        value: right.to_string(),
+                        special_fields: ::protobuf::SpecialFields::default(),
+                    }
+                ));
+                field
+            }
+        };
+        
+        // 根据是否取反，选择对应的操作符
+        let filter_op = match (op, negate) {
+            // negate = false: 原始操作符
+            (Operator::Eq, false) => FilterOperator::FILTER_OPERATOR_EQ,
+            (Operator::NotEq, false) => FilterOperator::FILTER_OPERATOR_NEQ,
+            (Operator::Lt, false) => FilterOperator::FILTER_OPERATOR_LT,
+            (Operator::Gt, false) => FilterOperator::FILTER_OPERATOR_GT,
+            (Operator::LtEq, false) => FilterOperator::FILTER_OPERATOR_LTE,
+            (Operator::GtEq, false) => FilterOperator::FILTER_OPERATOR_GTE,
+            // negate = true: 反向操作符 (德摩根定律)
+            (Operator::Eq, true) => FilterOperator::FILTER_OPERATOR_NEQ,  // NOT (a = b) = a != b
+            (Operator::NotEq, true) => FilterOperator::FILTER_OPERATOR_EQ, // NOT (a != b) = a = b
+            (Operator::Lt, true) => FilterOperator::FILTER_OPERATOR_GTE,  // NOT (a < b) = a >= b
+            (Operator::Gt, true) => FilterOperator::FILTER_OPERATOR_LTE,  // NOT (a > b) = a <= b
+            (Operator::LtEq, true) => FilterOperator::FILTER_OPERATOR_GT, // NOT (a <= b) = a > b
+            (Operator::GtEq, true) => FilterOperator::FILTER_OPERATOR_LT, // NOT (a >= b) = a < b
+            _ => return None,
+        };
+        
+        Some(ColumnFilter {
+            column_name,
+            conditions: vec![ColumnFilterCondition {
+                op: filter_op.into(),
+                value: Some(pb_field).into(),
+                values: Vec::new(),
+                special_fields: ::protobuf::SpecialFields::default(),
+            }],
+            special_fields: ::protobuf::SpecialFields::default(),
+        })
+    }
+    
+    /// 将 ScalarValue 转换为 Field
+    fn literal_to_field(&self, lit: &datafusion::scalar::ScalarValue) -> laoflchdb_engines::Field {
+        use datafusion::scalar::ScalarValue;
+        let mut field = laoflchdb_engines::Field::new();
+        
+        match lit {
+            ScalarValue::Int64(Some(v)) => {
+                field.value = Some(laoflchdb_engines::field::field::Value::IntegerValue(
+                    laoflchdb_engines::field::Integer {
+                        value: *v,
+                        special_fields: ::protobuf::SpecialFields::default(),
+                    }
+                ));
+            }
+            ScalarValue::Float64(Some(v)) => {
+                field.value = Some(laoflchdb_engines::field::field::Value::FloatValue(
+                    laoflchdb_engines::field::Float {
+                        value: *v,
+                        special_fields: ::protobuf::SpecialFields::default(),
+                    }
+                ));
+            }
+            ScalarValue::Utf8(Some(v)) | ScalarValue::LargeUtf8(Some(v)) => {
+                field.value = Some(laoflchdb_engines::field::field::Value::StringValue(
+                    laoflchdb_engines::field::String {
+                        value: v.clone(),
+                        special_fields: ::protobuf::SpecialFields::default(),
+                    }
+                ));
+            }
+            ScalarValue::Binary(Some(v)) | ScalarValue::LargeBinary(Some(v)) => {
+                field.value = Some(laoflchdb_engines::field::field::Value::BytesValue(
+                    laoflchdb_engines::field::Bytes {
+                        value: v.clone(),
+                        special_fields: ::protobuf::SpecialFields::default(),
+                    }
+                ));
+            }
+            _ => {
+                field.value = Some(laoflchdb_engines::field::field::Value::StringValue(
+                    laoflchdb_engines::field::String {
+                        value: lit.to_string(),
+                        special_fields: ::protobuf::SpecialFields::default(),
+                    }
+                ));
+            }
+        }
+        field
+    }
+    
+    /// 添加列过滤器
+    fn add_column_filter(
+        &self,
+        column_filters: &mut Vec<ColumnFilter>,
+        column_name: String,
+        op: FilterOperator,
+        field: laoflchdb_engines::Field,
+    ) {
+        // 检查是否已经有该列的过滤器，如果有则添加条件
+        if let Some(existing_filter) = column_filters.iter_mut().find(|cf| cf.column_name == column_name) {
+            existing_filter.conditions.push(ColumnFilterCondition {
+                op: op.into(),
+                value: Some(field).into(),
+                values: Vec::new(),
+                special_fields: ::protobuf::SpecialFields::default(),
+            });
+        } else {
+            column_filters.push(ColumnFilter {
+                column_name,
+                conditions: vec![ColumnFilterCondition {
+                    op: op.into(),
+                    value: Some(field).into(),
+                    values: Vec::new(),
+                    special_fields: ::protobuf::SpecialFields::default(),
+                }],
+                special_fields: ::protobuf::SpecialFields::default(),
+            });
         }
     }
 }
 
 #[derive(Debug, Clone)]
 struct RocksScanExec {
-    engine: Arc<TokioRwLock<MultiTableRocksDBEngine>>,
+    engine: Arc<MultiTableRocksDBEngine>,
     table_name: String,
     projection: Option<Vec<usize>>,
-    filters: Vec<ColumnFilter>,
+    filter_group: FilterGroup,        // 使用 FilterGroup 支持任意 AND/OR 嵌套
+    negate_result: bool,              // 是否对结果取反
     limit: Option<usize>,
     schema: Arc<Schema>,
     properties: Arc<PlanProperties>,
@@ -223,35 +438,25 @@ impl ExecutionPlan for RocksScanExec {
         let engine = self.engine.clone();
         let table_name = self.table_name.clone();
         let projection = self.projection.clone();
-        let filters = self.filters.clone();
+        let filter_group = self.filter_group.clone();
+        let negate_result = self.negate_result;
         let limit = self.limit;
+        let schema = self.schema.clone();
         
-        let (tx, rx) = mpsc::channel();
-        
-        thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-            let result = rt.block_on(async {
-                let engine_guard = engine.read().await;
-                engine_guard.table_to_arrow_with_pushdown(
-                    &table_name,
-                    projection.as_ref(),
-                    &filters,
-                    limit
-                ).await
-            });
-            
-            let _ = tx.send(result);
-        });
-        
-        let result = rx.recv().map_err(|e| {
-            datafusion::error::DataFusionError::Execution(format!("Thread communication error: {}", e))
-        })?;
-        
-        let (_, arrays, _) = result.map_err(|e| {
+        // 直接执行同步操作，因为 DataFusion 会在适当的上下文中调用 execute
+        let result = engine.table_to_arrow_with_filter_group_sync(
+            &table_name,
+            projection.as_ref(),
+            &filter_group,
+            limit,
+            negate_result
+        ).map_err(|e| {
             datafusion::error::DataFusionError::Execution(e.to_string())
         })?;
         
-        let batch = RecordBatch::try_new(self.schema.clone(), arrays)?;
+        let (_, arrays, _) = result;
+        
+        let batch = RecordBatch::try_new(schema, arrays)?;
         
         Ok(Box::pin(RocksBatchStream::new(vec![batch])))
     }
@@ -369,7 +574,7 @@ impl TableProvider for RocksDBTable {
         filters: &[datafusion::logical_expr::Expr],
         limit: Option<usize>,
     ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        let column_filters = self.parse_filters(filters);
+        let (filter_group, negate_result) = self.parse_filters(filters);
         
         let projected_schema = match projection {
             Some(p) => {
@@ -393,7 +598,8 @@ impl TableProvider for RocksDBTable {
             engine: self.engine.clone(),
             table_name: self.table_name.clone(),
             projection: projection.cloned(),
-            filters: column_filters,
+            filter_group,
+            negate_result,
             limit,
             schema: projected_schema,
             properties,
