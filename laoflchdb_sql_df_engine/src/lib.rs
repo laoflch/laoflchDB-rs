@@ -134,27 +134,50 @@ impl<E: StorageEngine + DataFusionStorageEngine> DataFusionSQLEngine<E> {
 #[async_trait::async_trait]
 impl<E: StorageEngine + DataFusionStorageEngine + 'static> SQLEngine for DataFusionSQLEngine<E> {
     async fn execute_query(&self, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
+        use std::time::Instant;
+        
+        let start_total = Instant::now();
+        log::info!("[SQL] 开始执行查询: {}", sql);
+        
         let ctx = self.ctx.clone();
         let sql = sql.to_string();
         
-        let df = ctx.sql(sql.as_str()).await.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
+        // 步骤1: SQL 解析
+        let start = Instant::now();
+        let df = ctx.sql(sql.as_str()).await.map_err(|e| {
+            log::error!("[SQL] SQL 解析失败: {}", e);
+            Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+        })?;
+        log::info!("[SQL] 步骤1 - SQL 解析完成，耗时: {:?}", start.elapsed());
         
-        println!("\n===== Logical Plan =====");
-        println!("{}", df.logical_plan());
+        // 步骤2: 生成逻辑计划
+        let start = Instant::now();
+        let logical_plan = df.logical_plan();
+        log::info!("[SQL] 步骤2 - 逻辑计划生成完成，耗时: {:?}", start.elapsed());
+        log::debug!("[SQL] 逻辑计划:\n{}", logical_plan);
         
-        let physical_plan = df.clone().create_physical_plan().await.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-        println!("\n===== Physical Plan =====");
-        println!("{:?}", physical_plan);
+        // 步骤3: 生成物理计划
+        let start = Instant::now();
+        let physical_plan = df.clone().create_physical_plan().await.map_err(|e| {
+            log::error!("[SQL] 物理计划生成失败: {}", e);
+            Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+        })?;
+        log::info!("[SQL] 步骤3 - 物理计划生成完成，耗时: {:?}", start.elapsed());
+        log::debug!("[SQL] 物理计划:\n{:?}", physical_plan);
         
-        println!("\n===== Optimization Tips =====");
-        println!("1. Filter pushdown: Check if WHERE conditions are pushed to storage");
-        println!("2. Projection pushdown: Check if only needed columns are scanned");
-        println!("3. Limit pushdown: Check if LIMIT is applied early");
-        println!("4. Join optimization: Check join order and type");
+        // 步骤4: 执行查询
+        let start = Instant::now();
+        log::info!("[SQL] 步骤4 - 开始执行查询...");
+        let batches = df.collect().await.map_err(|e| {
+            log::error!("[SQL] 查询执行失败: {}", e);
+            Box::new(e) as Box<dyn std::error::Error + Send + Sync>
+        })?;
+        log::info!("[SQL] 步骤4 - 查询执行完成，耗时: {:?}, 返回 {} 个批次", start.elapsed(), batches.len());
         
-        let batches = df.collect().await.map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
-        
+        // 步骤5: 结果转换
+        let start = Instant::now();
         if batches.is_empty() {
+            log::info!("[SQL] 查询结果为空，总耗时: {:?}", start_total.elapsed());
             return Ok(QueryResult {
                 rows: Vec::new(),
                 columns: Vec::new(),
@@ -163,7 +186,13 @@ impl<E: StorageEngine + DataFusionStorageEngine + 'static> SQLEngine for DataFus
         }
         
         let schema = batches[0].schema();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        log::info!("[SQL] 步骤5 - 结果转换: {} 个批次, 共 {} 行, schema: {:?}", batches.len(), total_rows, schema);
+        
         let result = self.arrow_to_query_result(&schema, &batches[0], &[]);
+        log::info!("[SQL] 步骤5 - 结果转换完成，耗时: {:?}", start.elapsed());
+        log::info!("[SQL] 查询执行完成，总耗时: {:?}", start_total.elapsed());
+        
         Ok(result)
     }
     

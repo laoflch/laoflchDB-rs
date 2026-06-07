@@ -56,10 +56,11 @@ def run_grpc_test():
         "--addr", TEST_ADDR,
         "--db-path", TEST_DB
     ]
+    log_file = open("/tmp/laoflchdb_test.log", "w")
     server_proc = subprocess.Popen(
         cmd,
         cwd="..",
-        stdout=subprocess.PIPE,
+        stdout=log_file,
         stderr=subprocess.STDOUT,
         text=True
     )
@@ -334,6 +335,15 @@ def run_grpc_test():
         print(f"\n    ✗ 测试失败: {type(e).__name__}: {e}")
         import traceback
         traceback.print_exc()
+        
+        # 输出服务端日志
+        print("\n=== 服务端日志 ===")
+        try:
+            with open("/tmp/laoflchdb_test.log", "r") as f:
+                print(f.read())
+        except:
+            print("无法读取日志文件")
+        
         return 1
     finally:
         print("\n--- 终止服务进程 ---")
@@ -345,7 +355,7 @@ def run_grpc_test():
                 server_proc.kill()
             except:
                 pass
-        # 不删除数据
+        log_file.close()
         print(f"数据保留在: {TEST_DB}")
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ service LaoflchDb {
   // 元数据查询
   rpc GetAllMeta(GetAllMetaRequest) returns (GetAllMetaResponse);
   rpc GetSchemaInfo(GetSchemaInfoRequest) returns (GetSchemaInfoResponse);
+  rpc ListSchemas(ListSchemasRequest) returns (ListSchemasResponse);
   
   // 旧方法（保留兼容）
   rpc GetTableMeta(GetTableMetaRequest) returns (GetTableMetaResponse);
@@ -32,6 +33,19 @@ service LaoflchDb {
   
   // SQL 查询操作
   rpc SqlQuery(SqlQueryRequest) returns (SqlQueryResponse);
+  
+  // 刷新 SQL 引擎中的表注册
+  rpc RefreshTables(RefreshTablesRequest) returns (RefreshTablesResponse);
+}
+
+message RefreshTablesRequest {
+  string schema = 1;  // 可选，不填则刷新所有可用的表
+}
+
+message RefreshTablesResponse {
+  bool success = 1;
+  repeated string tables = 2;  // 刷新的表列表
+  string message = 3;
 }
 
 message GetRequest {
@@ -195,6 +209,15 @@ message GetSchemaInfoRequest {
 message GetSchemaInfoResponse {
   bool success = 1;
   string info_json = 2;
+  string message = 3;
+}
+
+message ListSchemasRequest {
+}
+
+message ListSchemasResponse {
+  bool success = 1;
+  repeated string schemas = 2;
   string message = 3;
 }
 

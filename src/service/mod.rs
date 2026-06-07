@@ -132,6 +132,8 @@ pub trait DatabaseService: Send + Sync + 'static {
     async fn delete(&self, schema: &str, table: &str, key: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     
     async fn sql_query(&self, schema: &str, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>;
+    
+    async fn refresh_tables(&self, schema: &str) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>;
 }
 
 pub struct DatabaseServiceImpl {
@@ -331,8 +333,20 @@ impl DatabaseService for DatabaseServiceImpl {
         engine.as_mut().query(query).await
     }
     
-    async fn sql_query(&self, schema: &str, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
+    async fn sql_query(&self, _schema: &str, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
         let sql_engine = self.sql_engine.read().await;
         sql_engine.execute_query(sql).await
+    }
+    
+    async fn refresh_tables(&self, _schema: &str) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
+        let mut sql_engine = self.sql_engine.write().await;
+        sql_engine.refresh_tables().await?;
+        
+        // 获取当前所有表列表（从 sys schema 中获取）
+        let sys_engine = self.schema_manager.as_ref().get_schema_engine("sys").await?;
+        let sys_engine = sys_engine.read().await;
+        let tables = sys_engine.as_ref().list_tables().await?;
+        
+        Ok(tables)
     }
 }

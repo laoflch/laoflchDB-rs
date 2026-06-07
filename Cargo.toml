@@ -3,6 +3,14 @@ name = "laoflchDB-rust"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "laoflchdb"
+path = "src/main.rs"
+
+[[bin]]
+name = "lsql"
+path = "lsql/main.rs"
+
 [workspace]
 members = [
     ".",
@@ -30,6 +38,7 @@ serde_yaml = "0.9"
 serde_json = "1.0"
 async-trait = "0.1"
 axum = "0.7"
+rustyline = "12.0"
 
 [build-dependencies]
 prost-build = "0.12"
@@ -39,3 +48,4 @@ tonic-build = "0.11"
 reqwest = { version = "0.11", features = ["json"] }
 tempfile = "3.0"
 uuid = { version = "1.0", features = ["v4"] }
+tokio-stream = "0.1"

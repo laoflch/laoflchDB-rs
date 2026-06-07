@@ -14,9 +14,11 @@ use crate::pb::rpc::{
     UpdateRowRequest, UpdateRowResponse,
     GetAllMetaRequest, GetAllMetaResponse,
     GetSchemaInfoRequest, GetSchemaInfoResponse,
+    ListSchemasRequest, ListSchemasResponse,
     GetTableMetaRequest, GetTableMetaResponse,
     QueryRequest, QueryResponse,
     SqlQueryRequest, SqlQueryResponse,
+    RefreshTablesRequest, RefreshTablesResponse,
     SqlQueryResultRow,
     SqlField,
     ColumnMeta as RpcColumnMeta,
@@ -525,6 +527,21 @@ impl LaoflchDb for GrpcService {
         }
     }
 
+    async fn list_schemas(&self, request: Request<ListSchemasRequest>) -> Result<Response<ListSchemasResponse>, Status> {
+        let _req = request.into_inner();
+        
+        self.check_permission("sys", None, PermissionAction::ListTables)?;
+        
+        match self.service.list_schemas().await {
+            Ok(schemas) => Ok(Response::new(ListSchemasResponse {
+                success: true,
+                schemas,
+                message: String::new(),
+            })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
     async fn get_table_meta(&self, request: Request<GetTableMetaRequest>) -> Result<Response<GetTableMetaResponse>, Status> {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
@@ -649,6 +666,22 @@ impl LaoflchDb for GrpcService {
                     message: String::new(),
                 }))
             },
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+    
+    async fn refresh_tables(&self, request: Request<RefreshTablesRequest>) -> Result<Response<RefreshTablesResponse>, Status> {
+        let req = request.into_inner();
+        let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        
+        self.check_permission(schema, None, PermissionAction::Query)?;
+        
+        match self.service.refresh_tables(schema).await {
+            Ok(tables) => Ok(Response::new(RefreshTablesResponse {
+                success: true,
+                tables,
+                message: String::new(),
+            })),
             Err(e) => Err(Status::internal(e.to_string())),
         }
     }
