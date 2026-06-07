@@ -19,10 +19,15 @@ cargo test --test basic_uuid_tests
 cargo test --test protobuf_tests
 cargo test --test rest_tests
 cargo test --test integration_tests
+cargo test --test sql_advanced_tests
+cargo test --test lsql_client_tests
 
 # Python 自动化测试
 python3 tests_python/test_e2e_grpc.py
 python3 tests_python/test_e2e_rest.py
+python3 tests_python/test_grpc_sql_query.py
+python3 tests_python/test_grpc_sql_advanced.py
+python3 tests_python/test_grpc_sql_join.py
 ```
 
 ---
@@ -177,9 +182,12 @@ python3 tests_python/test_e2e_rest.py
 | 测试类型 | 测试数量 | 状态 |
 |---------|---------|------|
 | Rust 单元测试 | 10 | ✅ |
+| Rust SQL高级测试 | 6 | ✅ |
+| Rust lsql客户端测试 | 4 | ✅ |
 | Python gRPC测试 | 1 | ✅ |
 | Python REST测试 | 10 | ✅ |
-| **总计** | **21** | **✅** |
+| Python SQL测试 | 3 | ✅ |
+| **总计** | **34** | **✅** |
 
 ---
 

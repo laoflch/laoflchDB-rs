@@ -30,9 +30,11 @@ service LaoflchDb {
   // 元数据查询
   rpc GetAllMeta(GetAllMetaRequest) returns (GetAllMetaResponse);
   rpc GetSchemaInfo(GetSchemaInfoRequest) returns (GetSchemaInfoResponse);
+  rpc ListSchemas(ListSchemasRequest) returns (ListSchemasResponse);
   
   // 查询操作
   rpc Query(QueryRequest) returns (QueryResponse);
+  rpc SqlQuery(SqlQueryRequest) returns (SqlQueryResponse);
 }
 ```
 
@@ -267,9 +269,21 @@ service LaoflchDb {
 | info_json | string | Schema 信息（JSON 格式） |
 | message | string | 错误信息 |
 
----
+#### ListSchemasRequest
 
-### 5. 查询操作（CNF 表达式）
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| (无) | - | - | 无参数 |
+
+#### ListSchemasResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| schemas | repeated string | Schema 名称列表 |
+| message | string | 错误信息 |
+
+---
 
 #### QueryRequest
 
@@ -345,6 +359,22 @@ service LaoflchDb {
 | table_name | string | 表名 |
 | row_id | uint64 | 行 ID |
 | row | Row | 行数据 |
+
+#### SqlQueryRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| schema | string | 是 | 数据库 schema 名称 |
+| sql | string | 是 | SQL 查询语句 |
+
+#### SqlQueryResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| columns | repeated string | 列名列表 |
+| rows | repeated QueryRow | 查询结果行 |
+| message | string | 错误信息 |
 
 ---
 

@@ -893,7 +893,15 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 ## 14. 版本历史
 
-### 0.1.2 (当前)
+### 0.1.3 (当前)
+- **lsql 命令行客户端**: 类似 PostgreSQL psql 的交互式 SQL 客户端，支持 gRPC 连接
+- **ListSchemas API**: 新增 gRPC API 用于列出所有可用的 Schema
+- **execute_query 日志**: 添加详细的 SQL 执行日志输出，便于调试和性能分析
+- **错误处理优化**: SQL 执行错误时不退出进程，只打印错误信息
+- **Schema 验证**: 切换和默认 Schema 时验证是否存在
+- **测试增强**: 新增 lsql_client_tests.rs、sql_advanced_tests.rs、test_grpc_sql_advanced.py、test_grpc_sql_join.py
+
+### 0.1.2
 - **SQL 查询下推优化**: 支持 Filter、Project、Limit 下推到存储层
 - **自定义物理执行算子**: `RocksScanExec` 直接对接 RocksDB，替代 MemTable
 - **逻辑表达式支持**: AND/OR 条件下推
@@ -920,6 +928,6 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 ---
 
-**文档版本**: v0.1.2  
-**最后更新**: 2026-06-05  
+**文档版本**: v0.1.3  
+**最后更新**: 2026-06-07  
 **项目**: laoflchDB-rust
