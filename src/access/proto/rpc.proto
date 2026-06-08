@@ -3,6 +3,10 @@ syntax = "proto3";
 package laoflchdb.rpc;
 
 service LaoflchDb {
+  // 用户认证
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  
   // KV 操作
   rpc Get(GetRequest) returns (GetResponse);
   rpc Put(PutRequest) returns (PutResponse);
@@ -366,4 +370,27 @@ message SqlField {
     bytes bytes_value = 4;
     bool bool_value = 5;
   }
+}
+
+// 用户认证相关类型
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  bool success = 1;
+  string message = 2;
+  string token = 3;       // 登录成功返回的 token
+  int64 user_id = 4;     // 用户 ID
+  string username = 5;    // 用户名
+}
+
+message LogoutRequest {
+  string token = 1;      // 要注销的 token
+}
+
+message LogoutResponse {
+  bool success = 1;
+  string message = 2;
 }

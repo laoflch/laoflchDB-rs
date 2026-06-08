@@ -12,6 +12,32 @@ BASE_URL = f"http://127.0.0.1:{PORT}"
 
 TABLE_NAME = "test_sql_validation"
 
+TOKEN = None
+
+def test_login():
+    global TOKEN
+    print("[测试] 用户登录...")
+    try:
+        payload = {
+            "username": "admin",
+            "password": "laoflchdb"
+        }
+        resp = requests.post(f"{BASE_URL}/api/v1/login", json=payload)
+        data = resp.json()
+        assert data["success"] == True, f"登录失败: {data}"
+        assert data["data"]["success"] == True, f"登录数据失败: {data}"
+        TOKEN = data["data"]["token"]
+        print(f"    ✓ 登录成功，Token: {TOKEN[:20]}...")
+        return True
+    except Exception as e:
+        print(f"    ✗ 登录失败: {e}")
+        return False
+
+def get_auth_headers():
+    if TOKEN:
+        return {"Authorization": f"Bearer {TOKEN}"}
+    return {}
+
 def test_health():
     print("[测试] 健康检查...")
     try:
@@ -27,7 +53,7 @@ def test_health():
 def cleanup_table():
     print("[清理] 清理旧表...")
     try:
-        resp = requests.delete(f"{BASE_URL}/api/v1/schemas/sys/tables/{TABLE_NAME}")
+        resp = requests.delete(f"{BASE_URL}/api/v1/schemas/sys/tables/{TABLE_NAME}", headers=get_auth_headers())
         print("    ✓ 清理完成")
     except Exception as e:
         print(f"    - 清理失败(可能表不存在): {e}")
@@ -45,7 +71,7 @@ def test_create_table():
                 {"name": "score", "column_type": "FLOAT"}
             ]
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/tables", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/tables", json=payload, headers=get_auth_headers())
         data = resp.json()
         if data["success"] == True:
             print("    ✓ 创建表成功")
@@ -72,7 +98,7 @@ def test_insert_data():
                 "data": ["1", "Alice", "30", "95.5"]
             }
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/schemas/sys/tables/{TABLE_NAME}/rows", json=payload1)
+        resp = requests.post(f"{BASE_URL}/api/v1/schemas/sys/tables/{TABLE_NAME}/rows", json=payload1, headers=get_auth_headers())
         data = resp.json()
         assert data["success"] == True, f"插入数据失败: {data}"
         
@@ -85,7 +111,7 @@ def test_insert_data():
                 "data": ["2", "Bob", "25", "88.0"]
             }
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/schemas/sys/tables/{TABLE_NAME}/rows", json=payload2)
+        resp = requests.post(f"{BASE_URL}/api/v1/schemas/sys/tables/{TABLE_NAME}/rows", json=payload2, headers=get_auth_headers())
         data = resp.json()
         assert data["success"] == True, f"插入数据失败: {data}"
         
@@ -98,7 +124,7 @@ def test_insert_data():
                 "data": ["3", "Charlie", "35", "92.5"]
             }
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/schemas/sys/tables/{TABLE_NAME}/rows", json=payload3)
+        resp = requests.post(f"{BASE_URL}/api/v1/schemas/sys/tables/{TABLE_NAME}/rows", json=payload3, headers=get_auth_headers())
         data = resp.json()
         assert data["success"] == True, f"插入数据失败: {data}"
         
@@ -114,7 +140,7 @@ def test_sql_query_full():
         payload = {
             "sql": f"SELECT * FROM {TABLE_NAME}"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -154,7 +180,7 @@ def test_sql_query_projection():
         payload = {
             "sql": f"SELECT id, name FROM {TABLE_NAME}"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -187,7 +213,7 @@ def test_sql_query_filter():
         payload = {
             "sql": f"SELECT name, age FROM {TABLE_NAME} WHERE age > 30"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -208,7 +234,7 @@ def test_sql_query_filter():
         payload = {
             "sql": f"SELECT name, age FROM {TABLE_NAME} WHERE age >= 30"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -222,7 +248,7 @@ def test_sql_query_filter():
         payload = {
             "sql": f"SELECT name, age FROM {TABLE_NAME} WHERE age = 30"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -248,7 +274,7 @@ def test_sql_query_filter_or():
         payload = {
             "sql": f"SELECT name, age FROM {TABLE_NAME} WHERE age < 30 OR age > 40"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -264,7 +290,7 @@ def test_sql_query_filter_or():
         payload = {
             "sql": f"SELECT name, age FROM {TABLE_NAME} WHERE age = 25 OR age = 30 OR age = 35"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -292,7 +318,7 @@ def test_sql_query_filter_and():
         payload = {
             "sql": f"SELECT name, age, score FROM {TABLE_NAME} WHERE age > 25 AND score > 90"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -322,7 +348,7 @@ def test_sql_query_filter_combined_logic():
         payload = {
             "sql": f"SELECT name, age, score FROM {TABLE_NAME} WHERE (age > 25 AND age < 40) OR score > 92"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -345,7 +371,7 @@ def test_sql_query_limit():
         payload = {
             "sql": f"SELECT * FROM {TABLE_NAME} LIMIT 2"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -367,7 +393,7 @@ def test_sql_query_combined():
         payload = {
             "sql": f"SELECT name, score FROM {TABLE_NAME} WHERE age > 25 ORDER BY score DESC LIMIT 2"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -397,7 +423,7 @@ def test_data_type_validation():
         payload = {
             "sql": f"SELECT * FROM {TABLE_NAME} WHERE id = 1"
         }
-        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload)
+        resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=payload, headers=get_auth_headers())
         data = resp.json()
         
         assert data["success"] == True, f"查询失败: {data}"
@@ -439,11 +465,9 @@ def main():
     print("=" * 70)
     print()
 
-    cleanup_table()
-    print()
-
     tests = [
         ("健康检查", test_health),
+        ("用户登录", test_login),
         ("创建表", test_create_table),
         ("插入数据", test_insert_data),
         ("全表查询", test_sql_query_full),

@@ -80,6 +80,24 @@ class PermissionTester:
     def __init__(self, base_url: str):
         self.base_url = base_url
         self.client = requests.Session()
+        self.token = None
+    
+    def login(self, username: str = "admin", password: str = "laoflchdb") -> bool:
+        """用户登录"""
+        try:
+            resp = self.client.post(
+                f"{self.base_url}/api/v1/login",
+                json={"username": username, "password": password},
+                timeout=5
+            )
+            data = resp.json()
+            if data.get("success") and data["data"].get("success"):
+                self.token = data["data"]["token"]
+                self.client.headers.update({"Authorization": f"Bearer {self.token}"})
+                return True
+            return False
+        except:
+            return False
     
     def health_check(self) -> bool:
         """健康检查"""
@@ -221,7 +239,7 @@ def test_single_service_basic():
     
     db_dir = tempfile.mkdtemp(prefix="test_single_")
     runner = PermissionTestRunner(
-        "../target/debug/laoflchDB-rust",
+        "../target/release/laoflchdb",
         db_dir
     )
     
@@ -245,6 +263,12 @@ def test_single_service_basic():
             print("  ✗ 服务不可用")
             return False
         print("  ✓ 服务可用")
+        
+        print("用户登录...")
+        if not tester.login():
+            print("  ✗ 登录失败")
+            return False
+        print("  ✓ 登录成功")
         
         print("测试创建表...")
         success, data = tester.create_table("sys", "test_table", [
@@ -296,7 +320,7 @@ def test_multi_service_different_permissions():
     
     db_dir = tempfile.mkdtemp(prefix="test_multi_")
     runner = PermissionTestRunner(
-        "../target/debug/laoflchDB-rust",
+        "../target/release/laoflchdb",
         db_dir
     )
     
@@ -334,6 +358,19 @@ def test_multi_service_different_permissions():
         admin_tester = PermissionTester("http://127.0.0.1:18083")
         readonly_tester = PermissionTester("http://127.0.0.1:18081")
         writeonly_tester = PermissionTester("http://127.0.0.1:18082")
+        
+        # 用户登录
+        print("\n[Admin] 用户登录...")
+        admin_tester.login()
+        print("  ✓ Admin登录成功")
+        
+        print("[ReadOnly] 用户登录...")
+        readonly_tester.login()
+        print("  ✓ ReadOnly登录成功")
+        
+        print("[WriteOnly] 用户登录...")
+        writeonly_tester.login()
+        print("  ✓ WriteOnly登录成功")
         
         # 使用admin创建表
         print("\n[Admin] 创建测试表...")
@@ -389,7 +426,7 @@ def test_add_remove_service():
     
     db_dir = tempfile.mkdtemp(prefix="test_addrm_")
     runner = PermissionTestRunner(
-        "../target/debug/laoflchDB-rust",
+        "../target/release/laoflchdb",
         db_dir
     )
     
@@ -406,6 +443,11 @@ def test_add_remove_service():
         print("  ✓ Admin服务已启动 (18090)")
         
         admin_tester = PermissionTester("http://127.0.0.1:18090")
+        
+        # 用户登录
+        print("\n[Admin] 用户登录...")
+        admin_tester.login()
+        print("  ✓ 登录成功")
         
         # 创建测试表
         print("\n[Admin] 创建测试表...")
@@ -431,6 +473,11 @@ def test_add_remove_service():
         print("  ✓ Admin(18090) 和 ReadOnly(18091) 服务已启动")
         
         readonly_tester = PermissionTester("http://127.0.0.1:18091")
+        
+        # 用户登录
+        print("\n[ReadOnly] 用户登录...")
+        readonly_tester.login()
+        print("  ✓ ReadOnly登录成功")
         
         # 测试readonly服务
         success, _ = readonly_tester.get_data("sys", "test1", "key1")
@@ -475,7 +522,7 @@ def test_config_consistency():
     
     db_dir = tempfile.mkdtemp(prefix="test_consistency_")
     runner = PermissionTestRunner(
-        "../target/debug/laoflchDB-rust",
+        "../target/release/laoflchdb",
         db_dir
     )
     
@@ -498,6 +545,15 @@ def test_config_consistency():
         
         tester1 = PermissionTester("http://127.0.0.1:18100")
         tester2 = PermissionTester("http://127.0.0.1:18101")
+        
+        # 用户登录
+        print("\n[Service1] 用户登录...")
+        tester1.login()
+        print("  ✓ Service1登录成功")
+        
+        print("[Service2] 用户登录...")
+        tester2.login()
+        print("  ✓ Service2登录成功")
         
         # 测试有权限配置的服务
         print("\n[Service1] 有明确权限配置...")
@@ -534,7 +590,7 @@ def test_table_permissions():
     
     db_dir = tempfile.mkdtemp(prefix="test_table_perm_")
     runner = PermissionTestRunner(
-        "../target/debug/laoflchDB-rust",
+        "../target/release/laoflchdb",
         db_dir
     )
     
@@ -570,7 +626,7 @@ def test_table_permissions():
         admin_config = PermissionTestConfig(os.path.join(db_dir, "data_admin"))
         admin_config.add_service("rest", "127.0.0.1:18111", "admin")
         admin_config.add_permission("admin", "allow", ["*"])
-        runner2 = PermissionTestRunner("../target/debug/laoflchDB-rust", db_dir + "_admin")
+        runner2 = PermissionTestRunner("../target/release/laoflchdb", db_dir + "_admin")
         
         config_admin = PermissionTestConfig(os.path.join(db_dir, "data_admin"))
         config_admin.add_service("rest", "127.0.0.1:18111", "admin")
@@ -578,10 +634,16 @@ def test_table_permissions():
         runner2.start_server_with_config(config_admin)
         
         admin = PermissionTester("http://127.0.0.1:18111")
+        admin.login()
         admin.create_table("public", "users", [{"name": "id", "column_type": "Int64"}])
         admin.create_table("public", "secrets", [{"name": "id", "column_type": "Int64"}])
         admin.create_table("internal", "sensitive", [{"name": "id", "column_type": "Int64"}])
         runner2.stop_server()
+        
+        # 用户登录
+        print("\n[Limited] 用户登录...")
+        tester.login()
+        print("  ✓ 登录成功")
         
         # 测试允许的schema和table
         print("\n[Limited] 测试允许的访问...")
@@ -620,7 +682,7 @@ def main():
     print("="*70)
     
     # 检查服务器二进制文件
-    server_bin = "../target/debug/laoflchDB-rust"
+    server_bin = "../target/release/laoflchdb"
     if not os.path.exists(server_bin):
         print(f"\n错误: 服务器二进制文件不存在: {server_bin}")
         print("请先运行: cd .. && cargo build")

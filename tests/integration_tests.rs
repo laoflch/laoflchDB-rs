@@ -20,6 +20,23 @@ async fn setup_rest_service() -> (RestService, Arc<dyn DatabaseService>) {
     (rest_service, service)
 }
 
+async fn login(client: &reqwest::Client, addr: std::net::SocketAddr) -> String {
+    let login_body = serde_json::json!({
+        "username": "admin",
+        "password": "laoflchdb"
+    });
+    
+    let res = client.post(format!("http://{}/api/v1/login", addr))
+        .json(&login_body)
+        .send()
+        .await
+        .unwrap();
+    
+    assert_eq!(res.status(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    body["data"]["token"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn test_integration_full_workflow() {
     let (rest_service, _service) = setup_rest_service().await;
@@ -34,12 +51,16 @@ async fn test_integration_full_workflow() {
     
     let client = reqwest::Client::new();
     
-    // 1. 健康检查
+    // 1. 健康检查（不需要认证）
     let res = client.get(format!("http://{}/health", addr))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
+    
+    // 2. 登录获取 token
+    let token = login(&client, addr).await;
+    let auth_header = format!("Bearer {}", token);
     
     // 2. 创建表
     let create_table_body = serde_json::json!({
@@ -53,6 +74,7 @@ async fn test_integration_full_workflow() {
     });
     
     let res = client.post(format!("http://{}/api/v1/tables", addr))
+        .header("Authorization", &auth_header)
         .json(&create_table_body)
         .send()
         .await
@@ -63,6 +85,7 @@ async fn test_integration_full_workflow() {
     
     // 3. 列出表
     let res = client.get(format!("http://{}/api/v1/schemas/sys/tables", addr))
+        .header("Authorization", &auth_header)
         .send()
         .await
         .unwrap();
@@ -72,6 +95,7 @@ async fn test_integration_full_workflow() {
     
     // 4. 获取表元数据
     let res = client.get(format!("http://{}/api/v1/schemas/sys/tables/users", addr))
+        .header("Authorization", &auth_header)
         .send()
         .await
         .unwrap();
@@ -89,6 +113,7 @@ async fn test_integration_full_workflow() {
     });
     
     let res = client.post(format!("http://{}/api/v1/put", addr))
+        .header("Authorization", &auth_header)
         .json(&put_body)
         .send()
         .await
@@ -97,6 +122,7 @@ async fn test_integration_full_workflow() {
     
     // 6. 读取数据
     let res = client.get(format!("http://{}/api/v1/get", addr))
+        .header("Authorization", &auth_header)
         .query(&[("schema", "sys"), ("table", "users"), ("key", "user1")])
         .send()
         .await
@@ -115,6 +141,7 @@ async fn test_integration_full_workflow() {
     });
     
     let res = client.post(format!("http://{}/api/v1/put", addr))
+        .header("Authorization", &auth_header)
         .json(&update_body)
         .send()
         .await
@@ -123,6 +150,7 @@ async fn test_integration_full_workflow() {
     
     // 8. 再次读取验证更新
     let res = client.get(format!("http://{}/api/v1/get", addr))
+        .header("Authorization", &auth_header)
         .query(&[("schema", "sys"), ("table", "users"), ("key", "user1")])
         .send()
         .await
@@ -137,6 +165,7 @@ async fn test_integration_full_workflow() {
     });
     
     let res = client.post(format!("http://{}/api/v1/delete", addr))
+        .header("Authorization", &auth_header)
         .json(&delete_body)
         .send()
         .await
@@ -145,6 +174,7 @@ async fn test_integration_full_workflow() {
     
     // 10. 验证删除
     let res = client.get(format!("http://{}/api/v1/get", addr))
+        .header("Authorization", &auth_header)
         .query(&[("schema", "sys"), ("table", "users"), ("key", "user1")])
         .send()
         .await
@@ -168,6 +198,10 @@ async fn test_integration_multiple_tables() {
     
     let client = reqwest::Client::new();
     
+    // 登录获取 token
+    let token = login(&client, addr).await;
+    let auth_header = format!("Bearer {}", token);
+    
     // 创建多个表
     for i in 1..=3 {
         let table_name = format!("table_{}", i);
@@ -181,6 +215,7 @@ async fn test_integration_multiple_tables() {
         });
         
         let res = client.post(format!("http://{}/api/v1/tables", addr))
+            .header("Authorization", &auth_header)
             .json(&create_table_body)
             .send()
             .await
@@ -190,6 +225,7 @@ async fn test_integration_multiple_tables() {
     
     // 验证所有表都创建了
     let res = client.get(format!("http://{}/api/v1/schemas/sys/tables", addr))
+        .header("Authorization", &auth_header)
         .send()
         .await
         .unwrap();
@@ -213,8 +249,13 @@ async fn test_integration_error_handling() {
     
     let client = reqwest::Client::new();
     
+    // 登录获取 token
+    let token = login(&client, addr).await;
+    let auth_header = format!("Bearer {}", token);
+    
     // 尝试从不存在的表读取数据
     let res = client.get(format!("http://{}/api/v1/get", addr))
+        .header("Authorization", &auth_header)
         .query(&[("schema", "sys"), ("table", "nonexistent_table"), ("key", "test")])
         .send()
         .await
@@ -225,6 +266,7 @@ async fn test_integration_error_handling() {
     
     // 尝试获取不存在的表元数据
     let res = client.get(format!("http://{}/api/v1/schemas/sys/tables/nonexistent_table", addr))
+        .header("Authorization", &auth_header)
         .send()
         .await
         .unwrap();
@@ -247,6 +289,10 @@ async fn test_integration_sql_query() {
     
     let client = reqwest::Client::new();
     
+    // 登录获取 token
+    let token = login(&client, addr).await;
+    let auth_header = format!("Bearer {}", token);
+    
     // 1. 创建测试表
     let create_table_body = serde_json::json!({
         "schema": "sys",
@@ -259,6 +305,7 @@ async fn test_integration_sql_query() {
     });
     
     let res = client.post(format!("http://{}/api/v1/tables", addr))
+        .header("Authorization", &auth_header)
         .json(&create_table_body)
         .send()
         .await
@@ -275,6 +322,7 @@ async fn test_integration_sql_query() {
     });
     
     let res = client.post(format!("http://{}/api/v1/sql_query", addr))
+        .header("Authorization", &auth_header)
         .json(&sql_query_body)
         .send()
         .await

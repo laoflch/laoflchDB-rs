@@ -6,10 +6,37 @@
 - **协议**: gRPC (HTTP/2)
 - **语言**: Protocol Buffers 3
 
+## 认证机制
+
+LaoflchDB 使用 Token 认证机制。所有 API 请求（除登录、登出外）都需要在请求元数据中携带有效的认证 Token。
+
+**获取 Token**:
+```protobuf
+// 通过 Login 请求获取 Token
+rpc Login(LoginRequest) returns (LoginResponse);
+```
+
+**使用 Token**:
+在 gRPC 请求的元数据中添加 `authorization` 头：
+```
+authorization: Bearer <your_token>
+```
+
+**默认用户**:
+- 用户名: `admin`
+- 密码: `admin123`
+- 数据库初始化时自动创建
+
+---
+
 ## 服务定义
 
 ```protobuf
 service LaoflchDb {
+  // 用户认证
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  
   // KV 操作
   rpc Get(GetRequest) returns (GetResponse);
   rpc Put(PutRequest) returns (PutResponse);
@@ -42,7 +69,41 @@ service LaoflchDb {
 
 ## 消息类型
 
-### 1. KV 操作
+### 1. 用户认证
+
+#### LoginRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| username | string | 是 | 用户名 |
+| password | string | 是 | 密码 |
+
+#### LoginResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 登录是否成功 |
+| message | string | 提示信息 |
+| token | string | 登录成功后返回的认证 Token |
+| user_id | int64 | 用户 ID |
+| username | string | 用户名 |
+
+#### LogoutRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| token | string | 是 | 要撤销的 Token |
+
+#### LogoutResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 登出是否成功 |
+| message | string | 提示信息 |
+
+---
+
+### 2. KV 操作
 
 #### GetRequest
 
@@ -410,7 +471,17 @@ import rpc_pb2_grpc
 channel = grpc.insecure_channel("localhost:29777")
 stub = rpc_pb2_grpc.LaoflchDbStub(channel)
 
-# 1. 创建表
+# 1. 用户登录（获取 Token）
+login_resp = stub.Login(rpc_pb2.LoginRequest(
+    username="admin",
+    password="admin123"
+))
+print(f"Login: {login_resp.success}, token={login_resp.token}")
+
+# 创建认证元数据
+metadata = [('authorization', f'Bearer {login_resp.token}')]
+
+# 2. 创建表（需要认证）
 resp = stub.CreateTable(rpc_pb2.CreateTableRequest(
     schema="sys",
     table_name="users",
@@ -419,27 +490,27 @@ resp = stub.CreateTable(rpc_pb2.CreateTableRequest(
         rpc_pb2.ColumnDef(name="name", column_type=2),
         rpc_pb2.ColumnDef(name="email", column_type=2),
     ]
-))
+), metadata=metadata)
 print(f"Create table: {resp.success}")
 
-# 2. 插入数据
+# 3. 插入数据（需要认证）
 resp = stub.Put(rpc_pb2.PutRequest(
     schema="sys",
     table="users",
     key=b"user_001",
     value=b'{"id":1,"name":"Alice","email":"alice@example.com"}'
-))
+), metadata=metadata)
 print(f"Put: {resp.success}")
 
-# 3. 读取数据
+# 4. 读取数据（需要认证）
 resp = stub.Get(rpc_pb2.GetRequest(
     schema="sys",
     table="users",
     key=b"user_001"
-))
+), metadata=metadata)
 print(f"Get: {resp.success}, value={resp.value.decode()}")
 
-# 4. 查询数据（CNF 表达式）
+# 5. 查询数据（CNF 表达式，需要认证）
 resp = stub.Query(rpc_pb2.QueryRequest(
     schema="sys",
     table_filters=[
@@ -460,23 +531,29 @@ resp = stub.Query(rpc_pb2.QueryRequest(
     ],
     limit=10,
     offset=0
-))
+), metadata=metadata)
 print(f"Query: {resp.success}, rows={len(resp.rows)}")
 
-# 5. 删除数据
+# 6. 删除数据（需要认证）
 resp = stub.Delete(rpc_pb2.DeleteRequest(
     schema="sys",
     table="users",
     key=b"user_001"
-))
+), metadata=metadata)
 print(f"Delete: {resp.success}")
 
-# 6. 删除表
+# 7. 删除表（需要认证）
 resp = stub.DropTable(rpc_pb2.DropTableRequest(
     schema="sys",
     table_name="users"
-))
+), metadata=metadata)
 print(f"Drop table: {resp.success}")
+
+# 8. 用户登出
+resp = stub.Logout(rpc_pb2.LogoutRequest(
+    token=login_resp.token
+))
+print(f"Logout: {resp.success}")
 ```
 
 ### Go 示例
@@ -490,6 +567,7 @@ import (
     "log"
 
     "google.golang.org/grpc"
+    "google.golang.org/grpc/metadata"
     pb "path/to/proto"
 )
 
@@ -502,8 +580,22 @@ func main() {
     
     client := pb.NewLaoflchDbClient(conn)
 
-    // 创建表
-    resp, err := client.CreateTable(context.Background(), &pb.CreateTableRequest{
+    // 1. 用户登录
+    loginResp, err := client.Login(context.Background(), &pb.LoginRequest{
+        Username: "admin",
+        Password: "admin123",
+    })
+    if err != nil {
+        log.Fatalf("Login failed: %v", err)
+    }
+    fmt.Printf("Login: %v, Token: %s\n", loginResp.Success, loginResp.Token)
+
+    // 创建认证上下文
+    ctx := metadata.AppendToOutgoingContext(context.Background(), 
+        "authorization", "Bearer "+loginResp.Token)
+
+    // 2. 创建表（需要认证）
+    resp, err := client.CreateTable(ctx, &pb.CreateTableRequest{
         Schema:    "sys",
         TableName: "users",
         Columns: []*pb.ColumnDef{
@@ -512,6 +604,12 @@ func main() {
         },
     })
     fmt.Printf("Create table: %v\n", resp.Success)
+
+    // 3. 用户登出
+    logoutResp, err := client.Logout(context.Background(), &pb.LogoutRequest{
+        Token: loginResp.Token,
+    })
+    fmt.Printf("Logout: %v\n", logoutResp.Success)
 }
 ```
 
@@ -593,3 +691,4 @@ cargo auto-test prod
 | INTERNAL (13) | 服务器内部错误 |
 | INVALID_ARGUMENT (3) | 参数错误 |
 | PERMISSION_DENIED (7) | 权限不足 |
+| UNAUTHENTICATED (16) | 未认证（无效或缺失的 Token） |

@@ -29,8 +29,9 @@ def encode_field(value, field_type):
     return field.SerializeToString()
 
 TEST_DB = "./laoflch_db_grpc_test"
-TEST_ADDR = "127.0.0.1:19777"# 服务二进制路径
+TEST_ADDR = "127.0.0.1:19777"
 SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchDB-rust")
+
 def run_grpc_test():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
@@ -74,10 +75,16 @@ def run_grpc_test():
             try:
                 channel = grpc.insecure_channel(TEST_ADDR)
                 stub = rpc_pb2_grpc.LaoflchDbStub(channel)
-                # 尝试调用 ListTables 来检查服务是否就绪
-                stub.ListTables(rpc_pb2.ListTablesRequest(schema="sys"))
-                print(f"    ✓ 服务已就绪 (尝试 {i+1}/{max_retries})")
-                break
+                # 尝试调用 Login 来检查服务是否就绪
+                login_resp = stub.Login(rpc_pb2.LoginRequest(
+                    username="admin",
+                    password="admin123"
+                ))
+                if login_resp.success:
+                    print(f"    ✓ 服务已就绪 (尝试 {i+1}/{max_retries})")
+                    token = login_resp.token
+                    metadata = [('authorization', f'Bearer {token}')]
+                    break
             except grpc.RpcError as e:
                 print(f"    服务尚未就绪 (尝试 {i+1}/{max_retries}): {e.code()}")
                 time.sleep(1)
@@ -89,7 +96,7 @@ def run_grpc_test():
                 schema="sys",
                 table_name="test_grpc_sql"
             )
-            stub.DropTable(drop_req)
+            stub.DropTable(drop_req, metadata=metadata)
             print("    - 已删除旧表")
         except grpc.RpcError as e:
             if e.code() == grpc.StatusCode.NOT_FOUND:
@@ -109,7 +116,7 @@ def run_grpc_test():
                 rpc_pb2.ColumnDef(name="score", column_type=3),   # FLOAT
             ]
         )
-        create_resp = stub.CreateTable(create_req)
+        create_resp = stub.CreateTable(create_req, metadata=metadata)
         assert create_resp.success == True, "创建表失败"
         print("    ✓ 创建表成功")
         
@@ -140,7 +147,7 @@ def run_grpc_test():
                     ]
                 )
             )
-            add_resp = stub.AddRow(add_req)
+            add_resp = stub.AddRow(add_req, metadata=metadata)
             assert add_resp.success == True, f"插入行 {row_id} 失败"
             print(f"    ✓ 插入行 {row_id} 成功")
         
@@ -150,7 +157,7 @@ def run_grpc_test():
         
         # 在 SQL 查询前先列出表，确保表已注册到 SQL 引擎
         print("    检查表注册状态...")
-        list_resp = stub.ListTables(rpc_pb2.ListTablesRequest(schema="sys"))
+        list_resp = stub.ListTables(rpc_pb2.ListTablesRequest(schema="sys"), metadata=metadata)
         print(f"    当前表列表: {list_resp.tables}")
         
         # 添加额外等待时间
@@ -162,7 +169,7 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT * FROM test_grpc_sql"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SQL 查询失败"
         print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
         print(f"        ✓ 列名: {sql_resp.columns}")
@@ -186,7 +193,7 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT name, age FROM test_grpc_sql WHERE age > 30"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SQL 查询失败"
         assert len(sql_resp.rows) == 1, f"应返回 1 行 (Charlie, age=35)，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
@@ -197,7 +204,7 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT id, name, age, score FROM test_grpc_sql WHERE id = 1"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert len(sql_resp.rows) == 1, "应返回 1 行"
         
         row = sql_resp.rows[0]
@@ -222,7 +229,7 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT name, age FROM test_grpc_sql WHERE age < 30 OR age > 40"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SQL 查询失败"
         assert len(sql_resp.rows) == 1, f"应返回 1 行，实际返回 {len(sql_resp.rows)} 行"
         assert sql_resp.rows[0].values[0].string_value == "Bob", "name 应为 Bob"
@@ -235,7 +242,7 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT name, age FROM test_grpc_sql WHERE age = 25 OR age = 30 OR age = 35"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SQL 查询失败"
         assert len(sql_resp.rows) == 3, f"应返回 3 行，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
@@ -246,7 +253,7 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT name, age, score FROM test_grpc_sql WHERE age > 25 AND score > 90"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SQL 查询失败"
         assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
@@ -257,7 +264,7 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT name, age, score FROM test_grpc_sql WHERE (age > 25 AND age < 40) OR score > 92"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SQL 查询失败"
         assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
@@ -268,7 +275,7 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT * FROM test_grpc_sql LIMIT 2"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
 
@@ -278,7 +285,7 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT name, age, score FROM test_grpc_sql WHERE age = 30 OR score = 88.0"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SQL 查询失败"
         assert len(sql_resp.rows) == 2, f"应返回 2 行 (Alice 和 Bob)，实际返回 {len(sql_resp.rows)} 行"
         names = sorted([row.values[0].string_value for row in sql_resp.rows])
@@ -291,11 +298,8 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT name, age, score FROM test_grpc_sql WHERE (age > 25 AND score > 90) OR name = 'Bob'"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SQL 查询失败"
-        # age > 25 AND score > 90: Alice(30,95.5), Charlie(35,92.5)
-        # name = 'Bob': Bob(25,88.0)
-        # OR 结果: Alice, Bob, Charlie
         assert len(sql_resp.rows) == 3, f"应返回 3 行，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
 
@@ -305,7 +309,7 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT name, age FROM test_grpc_sql WHERE age = 35 OR name = 'Alice'"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SQL 查询失败"
         assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
         names = sorted([row.values[0].string_value for row in sql_resp.rows])
@@ -318,11 +322,15 @@ def run_grpc_test():
             schema="sys",
             sql="SELECT name, age FROM test_grpc_sql WHERE NOT age = 25"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SQL 查询失败"
-        # NOT age = 25: 排除 Bob(25)，返回 Alice 和 Charlie
         assert len(sql_resp.rows) == 2, f"应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ 查询成功，返回 {len(sql_resp.rows)} 行")
+
+        print("\n[8/6] 用户登出...")
+        logout_resp = stub.Logout(rpc_pb2.LogoutRequest(token=token))
+        assert logout_resp.success == True, "登出失败"
+        print("    ✓ 登出成功")
 
         print("\n" + "=" * 70)
         print("SUCCESS! gRPC SQL 查询测试全部通过")

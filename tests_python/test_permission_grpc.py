@@ -201,7 +201,7 @@ def test_grpc_single_service():
     
     db_dir = tempfile.mkdtemp(prefix="test_grpc_single_")
     runner = GrpcPermissionTestRunner(
-        "../target/debug/laoflchDB-rust",
+        "../target/release/laoflchdb",
         db_dir
     )
     
@@ -287,7 +287,7 @@ def test_grpc_multi_service():
     
     db_dir = tempfile.mkdtemp(prefix="test_grpc_multi_")
     runner = GrpcPermissionTestRunner(
-        "../target/debug/laoflchDB-rust",
+        "../target/release/laoflchdb",
         db_dir
     )
     
@@ -419,7 +419,7 @@ def test_grpc_add_remove_service():
     
     db_dir = tempfile.mkdtemp(prefix="test_grpc_addrm_")
     runner = GrpcPermissionTestRunner(
-        "../target/debug/laoflchDB-rust",
+        "../target/release/laoflchdb",
         db_dir
     )
     
@@ -565,7 +565,7 @@ def test_grpc_concurrent_access():
     
     db_dir = tempfile.mkdtemp(prefix="test_grpc_concurrent_")
     runner = GrpcPermissionTestRunner(
-        "../target/debug/laoflchDB-rust",
+        "../target/release/laoflchdb",
         db_dir
     )
     
@@ -660,7 +660,7 @@ def main():
     print(" "*15 + "gRPC权限配置自动化测试套件")
     print("="*70)
     
-    server_bin = "../target/debug/laoflchDB-rust"
+    server_bin = "../target/release/laoflchdb"
     if not os.path.exists(server_bin):
         print(f"\n错误: 服务器二进制文件不存在: {server_bin}")
         print("请先运行: cd .. && cargo build")

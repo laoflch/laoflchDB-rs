@@ -246,11 +246,53 @@ curl -s http://localhost:19777/health
 curl -s http://localhost:8080/health
 ```
 
+### 用户认证
+
+数据库初始化后会自动创建默认管理员用户：
+- **用户名**: `admin`
+- **密码**: `admin123`
+
+**登录获取 Token**:
+
+```bash
+# 通过 REST API 登录
+curl -X POST http://localhost:8080/api/v1/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin123"}'
+
+# 响应示例
+# {
+#   "success": true,
+#   "message": "",
+#   "data": {
+#     "success": true,
+#     "message": "Login successful",
+#     "token": "550e8400-e29b-41d4-a716-446655440000",
+#     "user_id": 1,
+#     "username": "admin"
+#   }
+# }
+```
+
+**使用 Token 访问受保护的 API**:
+
+```bash
+# 使用获取到的 token
+TOKEN="550e8400-e29b-41d4-a716-446655440000"
+
+# 访问需要认证的接口
+curl -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8080/api/v1/schemas/sys/tables
+```
+
 ### 使用 lsql 客户端连接
 
 ```bash
-# 使用 lsql 客户端连接
-./target/release/lsql --host 127.0.0.1:19777
+# 使用 lsql 客户端连接（需要登录）
+./target/release/lsql --host 127.0.0.1:19777 --user admin --password admin123
+
+# 或使用环境变量
+LAOFLCHDB_USER=admin LAOFLCHDB_PASSWORD=admin123 ./target/release/lsql --host 127.0.0.1:19777
 ```
 
 ---

@@ -1,10 +1,11 @@
 use clap::Parser;
 use tonic::transport::Channel;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use laoflchDB_rust::pb::rpc::laoflch_db_client::LaoflchDbClient;
 use laoflchDB_rust::pb::rpc::{
     ListTablesRequest, ListSchemasRequest, SqlQueryRequest,
-    GetVersionRequest, ListTableColsRequest,
+    GetVersionRequest, ListTableColsRequest, LoginRequest, LogoutRequest,
 };
 
 #[derive(Parser, Debug)]
@@ -13,50 +14,112 @@ use laoflchDB_rust::pb::rpc::{
 pub struct LsqlCli {
     #[arg(long, help = "数据库服务器地址，格式为 host:port")]
     pub host: String,
-    
-    #[arg(short, long, default_value = "sys", help = "默认 Schema 名称")]
-    pub schema: String,
-    
+
+    #[arg(short, long, help = "默认 Schema 名称")]
+    pub schema: Option<String>,
+
+    #[arg(short = 'u', long, help = "用户名")]
+    pub user: Option<String>,
+
+    #[arg(short = 'W', long, help = "密码")]
+    pub password: Option<String>,
+
     #[arg(short, long, help = "执行单次 SQL 命令后退出")]
     pub command: Option<String>,
+}
+
+// 全局变量存储当前 token
+lazy_static::lazy_static! {
+    static ref AUTH_TOKEN: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    static ref IS_AUTHENTICATED: AtomicBool = AtomicBool::new(false);
+}
+
+fn set_auth_token(token: String) {
+    let mut guard = AUTH_TOKEN.lock().unwrap();
+    *guard = Some(token);
+    IS_AUTHENTICATED.store(true, Ordering::SeqCst);
+}
+
+fn get_auth_token() -> Option<String> {
+    AUTH_TOKEN.lock().unwrap().clone()
+}
+
+fn clear_auth_token() {
+    let mut guard = AUTH_TOKEN.lock().unwrap();
+    *guard = None;
+    IS_AUTHENTICATED.store(false, Ordering::SeqCst);
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = LsqlCli::parse();
-    
+
     println!("欢迎使用 lsql - LaoflchDB SQL 客户端");
     println!("正在连接到 {}...", cli.host);
-    
+
     // 连接到 gRPC 服务器
     let addr = format!("http://{}", cli.host);
     let mut client = LaoflchDbClient::connect(addr).await?;
-    
+
     println!("连接成功！");
-    
+
+    // 如果提供了用户名和密码，进行登录
+    if let (Some(username), Some(password)) = (&cli.user, &cli.password) {
+        println!("正在验证用户 {}...", username);
+        let request = LoginRequest {
+            username: username.clone(),
+            password: password.clone(),
+        };
+
+        match client.login(request).await {
+            Ok(response) => {
+                let response = response.into_inner();
+                if response.success {
+                    set_auth_token(response.token.clone());
+                    println!("✅ 登录成功！");
+                    println!("   用户: {}", response.username);
+                } else {
+                    eprintln!("❌ 登录失败: {}", response.message);
+                    std::process::exit(1);
+                }
+            }
+            Err(e) => {
+                eprintln!("❌ 登录请求失败: {}", e);
+                std::process::exit(1);
+            }
+        }
+    } else {
+        println!("⚠️  未提供用户名和密码，将以访客模式连接（部分功能可能受限）");
+    }
+
     // 获取所有可用的 schema
     let schemas = list_schemas_internal(&mut client).await?;
-    
+
     // 使用用户指定的 schema 或默认的 sys schema
-    let default_schema = cli.schema;
+    let default_schema = cli.schema.unwrap_or_else(|| "sys".to_string());
     if !schemas.contains(&default_schema) {
-        eprintln!("错误: Schema '{}' 不存在！", default_schema);
-        eprintln!("可用的 Schema: {}", schemas.join(", "));
-        std::process::exit(1);
+        eprintln!("警告: Schema '{}' 不存在！", default_schema);
     }
-    
+
     println!("默认 Schema: {}", default_schema);
     println!("");
     println!("输入 '\\help' 查看帮助，'\\q' 或 '\\quit' 退出，'\\dt' 查看所有表\n");
-    
-    if let Some(sql) = cli.command {
+
+    if let Some(cmd) = cli.command {
         // 单次命令模式
-        execute_sql(&mut client, &default_schema, &sql).await?;
+        let mut schema = default_schema.clone();
+        if cmd.starts_with('\\') {
+            // 元命令
+            handle_meta_command(&mut client, &mut schema, &cmd).await?;
+        } else {
+            // SQL 命令
+            execute_sql(&mut client, &default_schema, &cmd).await?;
+        }
     } else {
         // 交互式模式
         run_interactive_mode(&mut client, default_schema).await?;
     }
-    
+
     Ok(())
 }
 
@@ -65,19 +128,24 @@ async fn run_interactive_mode(
     mut schema: String,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut rl = rustyline::DefaultEditor::new()?;
-    
+
     loop {
-        let prompt = format!("lsql@{}> ", schema);
+        let prompt = if IS_AUTHENTICATED.load(Ordering::SeqCst) {
+            format!("lsql@{}> ", schema)
+        } else {
+            format!("lsql@{} (guest)> ", schema)
+        };
+
         match rl.readline(&prompt) {
             Ok(line) => {
                 let line = line.trim();
-                
+
                 if line.is_empty() {
                     continue;
                 }
-                
+
                 rl.add_history_entry(line)?;
-                
+
                 if line.starts_with('\\') {
                     // 元命令
                     if let Some(new_schema) = handle_meta_command(client, &mut schema, line).await? {
@@ -97,7 +165,6 @@ async fn run_interactive_mode(
                 continue;
             }
             Err(rustyline::error::ReadlineError::Eof) => {
-                println!("再见！");
                 break;
             }
             Err(err) => {
@@ -106,7 +173,21 @@ async fn run_interactive_mode(
             }
         }
     }
-    
+
+    // 退出时注销登录
+    if IS_AUTHENTICATED.load(Ordering::SeqCst) {
+        if let Some(token) = get_auth_token() {
+            let request = LogoutRequest { token };
+            if let Err(e) = client.logout(request).await {
+                eprintln!("注销失败: {}", e);
+            } else {
+                println!("已注销登录");
+            }
+        }
+        clear_auth_token();
+    }
+
+    println!("再见！");
     Ok(())
 }
 
@@ -126,7 +207,7 @@ async fn handle_meta_command(
             print_help();
             Ok(None)
         }
-        "\\version" => {
+        "\\version" | "\\v" => {
             print_version(client).await?;
             Ok(None)
         }
@@ -155,6 +236,14 @@ async fn handle_meta_command(
             describe_table(client, schema, parts[1]).await?;
             Ok(None)
         }
+        "\\login" => {
+            handle_login(client).await?;
+            Ok(None)
+        }
+        "\\logout" => {
+            handle_logout(client).await?;
+            Ok(None)
+        }
         _ => {
             println!("未知命令: '{}'. 输入 '\\help' 查看帮助。", cmd);
             Ok(None)
@@ -166,7 +255,9 @@ fn print_help() {
     println!("lsql 帮助:");
     println!("  \\q, \\quit                退出 lsql");
     println!("  \\help, \\?, \\h           显示此帮助信息");
-    println!("  \\version                显示版本信息");
+    println!("  \\version, \\v            显示版本信息");
+    println!("  \\login                  登录数据库");
+    println!("  \\logout                 退出登录");
     println!("  \\dn, \\schemas           列出所有可用的 Schema");
     println!("  \\c, \\connect <schema>    切换到指定的 Schema");
     println!("  \\dt                     列出当前 schema 中的所有表");
@@ -178,16 +269,14 @@ fn print_help() {
 async fn print_version(
     client: &mut LaoflchDbClient<Channel>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("lsql 客户端版本: {}", env!("CARGO_PKG_VERSION"));
+    println!("lsql 版本: {}", env!("CARGO_PKG_VERSION"));
     
     match client.get_version(GetVersionRequest {}).await {
         Ok(response) => {
             let response = response.into_inner();
             if response.success {
-                println!("数据库服务版本: {}", response.version);
-                if !response.build_info.is_empty() {
-                    println!("服务构建信息: {}", response.build_info);
-                }
+                println!("laoflchdb 版本: {}", response.version);
+                println!("服务构建信息: {}", response.build_info);
             } else {
                 println!("无法获取数据库服务版本: {}", response.message);
             }
@@ -197,6 +286,85 @@ async fn print_version(
         }
     }
     
+    Ok(())
+}
+
+async fn handle_login(
+    client: &mut LaoflchDbClient<Channel>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{self, Write};
+    
+    if IS_AUTHENTICATED.load(Ordering::SeqCst) {
+        println!("⚠️  您已经登录，先使用 \\logout 退出当前登录");
+        return Ok(());
+    }
+
+    print!("用户名: ");
+    io::stdout().flush()?;
+    let mut username = String::new();
+    io::stdin().read_line(&mut username)?;
+    let username = username.trim();
+
+    print!("密码: ");
+    io::stdout().flush()?;
+    let mut password = String::new();
+    io::stdin().read_line(&mut password)?;
+    let password = password.trim();
+
+    let request = LoginRequest {
+        username: username.to_string(),
+        password: password.to_string(),
+    };
+
+    match client.login(request).await {
+        Ok(response) => {
+            let response = response.into_inner();
+            if response.success {
+                set_auth_token(response.token.clone());
+                println!("✅ 登录成功！");
+                println!("   用户: {}", response.username);
+            } else {
+                println!("❌ 登录失败: {}", response.message);
+            }
+        }
+        Err(e) => {
+            println!("❌ 登录请求失败: {}", e);
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_logout(
+    client: &mut LaoflchDbClient<Channel>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !IS_AUTHENTICATED.load(Ordering::SeqCst) {
+        println!("⚠️  您当前未登录");
+        return Ok(());
+    }
+
+    if let Some(token) = get_auth_token() {
+        let request = LogoutRequest { token: token.clone() };
+        match client.logout(request).await {
+            Ok(response) => {
+                let response = response.into_inner();
+                if response.success {
+                    clear_auth_token();
+                    println!("✅ 已成功退出登录");
+                } else {
+                    println!("❌ 注销失败: {}", response.message);
+                }
+            }
+            Err(e) => {
+                println!("❌ 注销请求失败: {}", e);
+                clear_auth_token();
+                println!("已清除本地登录状态");
+            }
+        }
+    } else {
+        println!("⚠️  未找到登录凭证");
+    }
+
     Ok(())
 }
 
@@ -360,18 +528,20 @@ async fn describe_table(
 
 fn column_type_to_string(col_type: i32) -> String {
     // 列类型常量（来自 protobuf 定义）
-    const COLUMN_TYPE_INT64: i32 = 0;
-    const COLUMN_TYPE_STRING: i32 = 1;
+    const COLUMN_TYPE_STRING: i32 = 0;
+    const COLUMN_TYPE_INT64: i32 = 1;
     const COLUMN_TYPE_BYTES: i32 = 2;
     const COLUMN_TYPE_FLOAT: i32 = 3;
-    const COLUMN_TYPE_BOOL: i32 = 4;
+    const COLUMN_TYPE_LIST: i32 = 4;
+    const COLUMN_TYPE_IMAGE: i32 = 5;
     
     match col_type {
-        COLUMN_TYPE_INT64 => "INT64".to_string(),
         COLUMN_TYPE_STRING => "STRING".to_string(),
+        COLUMN_TYPE_INT64 => "INT64".to_string(),
         COLUMN_TYPE_BYTES => "BYTES".to_string(),
         COLUMN_TYPE_FLOAT => "FLOAT".to_string(),
-        COLUMN_TYPE_BOOL => "BOOL".to_string(),
+        COLUMN_TYPE_LIST => "LIST".to_string(),
+        COLUMN_TYPE_IMAGE => "IMAGE".to_string(),
         _ => format!("UNKNOWN({})", col_type),
     }
 }
@@ -382,26 +552,34 @@ async fn execute_sql(
     sql: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use std::time::Instant;
-    
+    use tonic::Request;
+
     let start = Instant::now();
-    
+
     let request = SqlQueryRequest {
         schema: schema.to_string(),
         sql: sql.to_string(),
     };
-    
-    let response = client.sql_query(request).await?;
+
+    // 添加 auth token 到请求中
+    let mut req = Request::new(request);
+    if let Some(token) = get_auth_token() {
+        let metadata = req.metadata_mut();
+        metadata.insert("authorization", token.parse().unwrap());
+    }
+
+    let response = client.sql_query(req).await?;
     let response = response.into_inner();
-    
+
     let elapsed = start.elapsed();
-    
+
     if response.success {
         print_query_result(&response);
         println!("\n耗时: {:?}", elapsed);
     } else {
         println!("错误: {}", response.message);
     }
-    
+
     Ok(())
 }
 

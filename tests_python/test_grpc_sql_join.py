@@ -70,13 +70,21 @@ def run_grpc_join_test():
     try:
         print("\n[4/7] 等待服务就绪...")
         max_retries = 10
+        token = None
+        metadata = []
         for i in range(max_retries):
             try:
                 channel = grpc.insecure_channel(TEST_ADDR)
                 stub = rpc_pb2_grpc.LaoflchDbStub(channel)
-                stub.ListTables(rpc_pb2.ListTablesRequest(schema="sys"))
-                print(f"    ✓ 服务已就绪 (尝试 {i+1}/{max_retries})")
-                break
+                login_resp = stub.Login(rpc_pb2.LoginRequest(
+                    username="admin",
+                    password="admin123"
+                ))
+                if login_resp.success:
+                    token = login_resp.token
+                    metadata = [('authorization', f'Bearer {token}')]
+                    print(f"    ✓ 服务已就绪并登录成功 (尝试 {i+1}/{max_retries})")
+                    break
             except grpc.RpcError as e:
                 print(f"    服务尚未就绪 (尝试 {i+1}/{max_retries}): {e.code()}")
                 time.sleep(1)
@@ -91,7 +99,7 @@ def run_grpc_join_test():
                     schema="sys",
                     table_name=table_name
                 )
-                stub.DropTable(drop_req)
+                stub.DropTable(drop_req, metadata=metadata)
                 print(f"    - 已删除旧表 {table_name}")
             except grpc.RpcError as e:
                 if e.code() == grpc.StatusCode.NOT_FOUND:
@@ -107,7 +115,7 @@ def run_grpc_join_test():
                 rpc_pb2.ColumnDef(name="city", column_type=0),        # STRING
             ]
         )
-        create_resp = stub.CreateTable(create_customer_req)
+        create_resp = stub.CreateTable(create_customer_req, metadata=metadata)
         assert create_resp.success == True, "创建 customers 表失败"
         print("    ✓ 创建 customers 表成功")
         
@@ -121,7 +129,7 @@ def run_grpc_join_test():
                 rpc_pb2.ColumnDef(name="amount", column_type=3),      # FLOAT
             ]
         )
-        create_resp = stub.CreateTable(create_order_req)
+        create_resp = stub.CreateTable(create_order_req, metadata=metadata)
         assert create_resp.success == True, "创建 orders 表失败"
         print("    ✓ 创建 orders 表成功")
         
@@ -153,7 +161,7 @@ def run_grpc_join_test():
                     ]
                 )
             )
-            add_resp = stub.AddRow(add_req)
+            add_resp = stub.AddRow(add_req, metadata=metadata)
             assert add_resp.success == True, f"插入 customer {customer_id} 失败"
             print(f"    ✓ 插入 customer {customer_id}: {name}")
         
@@ -180,7 +188,7 @@ def run_grpc_join_test():
                     ]
                 )
             )
-            add_resp = stub.AddRow(add_req)
+            add_resp = stub.AddRow(add_req, metadata=metadata)
             assert add_resp.success == True, f"插入 order {order_id} 失败"
             print(f"    ✓ 插入 order {order_id}: customer={customer_id}, amount={amount}")
         
@@ -190,7 +198,7 @@ def run_grpc_join_test():
         
         # 检查表注册状态
         print("    检查表注册状态...")
-        list_resp = stub.ListTables(rpc_pb2.ListTablesRequest(schema="sys"))
+        list_resp = stub.ListTables(rpc_pb2.ListTablesRequest(schema="sys"), metadata=metadata)
         print(f"    当前表列表: {list_resp.tables}")
         
         time.sleep(2)
@@ -201,7 +209,7 @@ def run_grpc_join_test():
             schema="sys",
             sql="SELECT c.name, o.order_id, o.amount FROM customers c INNER JOIN orders o ON c.customer_id = o.customer_id"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "INNER JOIN 查询失败"
         print(f"        ✓ INNER JOIN 查询成功，返回 {len(sql_resp.rows)} 行")
         
@@ -211,7 +219,7 @@ def run_grpc_join_test():
             schema="sys",
             sql="SELECT c.name, o.order_id, o.amount FROM customers c LEFT JOIN orders o ON c.customer_id = o.customer_id"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "LEFT JOIN 查询失败"
         print(f"        ✓ LEFT JOIN 查询成功，返回 {len(sql_resp.rows)} 行")
         
@@ -221,7 +229,7 @@ def run_grpc_join_test():
             schema="sys",
             sql="SELECT c.name, o.order_id, o.amount FROM customers c RIGHT JOIN orders o ON c.customer_id = o.customer_id"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "RIGHT JOIN 查询失败"
         print(f"        ✓ RIGHT JOIN 查询成功，返回 {len(sql_resp.rows)} 行")
         
@@ -231,7 +239,7 @@ def run_grpc_join_test():
             schema="sys",
             sql="SELECT c.name, o.order_id, o.amount FROM customers c INNER JOIN orders o ON c.customer_id = o.customer_id WHERE o.amount > 100"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "带 WHERE 条件的 JOIN 查询失败"
         print(f"        ✓ 带 WHERE 条件的 JOIN 查询成功，返回 {len(sql_resp.rows)} 行")
         
@@ -241,7 +249,7 @@ def run_grpc_join_test():
             schema="sys",
             sql="SELECT c.name, COUNT(o.order_id) as order_count FROM customers c LEFT JOIN orders o ON c.customer_id = o.customer_id GROUP BY c.name"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "聚合函数 + JOIN 查询失败"
         print(f"        ✓ 聚合函数 + JOIN 查询成功，返回 {len(sql_resp.rows)} 行")
         

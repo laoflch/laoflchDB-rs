@@ -707,7 +707,9 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c673075a2e0e5f4a1dde27ce9dee1ea4558c7ffe648f576438a20ca1d2acc4b0"
 dependencies = [
  "iana-time-zone",
+ "js-sys",
  "num-traits",
+ "wasm-bindgen",
  "windows-link",
 ]
 
@@ -2460,13 +2462,15 @@ dependencies = [
 
 [[package]]
 name = "laoflchDB-rust"
-version = "0.1.3"
+version = "0.1.3+8003c2d15b7ed55afca1020fda4cc19f90c698f5"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
  "bytes",
+ "chrono",
  "clap",
  "env_logger",
+ "hex",
  "laoflchdb_engines",
  "laoflchdb_sql_df_engine",
  "log",
@@ -2481,6 +2485,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2522,6 +2527,12 @@ dependencies = [
  "protobuf",
  "tokio",
 ]
+
+[[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
 name = "leb128fmt"
@@ -2684,6 +2695,7 @@ version = "0.1.3"
 dependencies = [
  "clap",
  "laoflchDB-rust",
+ "lazy_static",
  "rustyline",
  "tokio",
  "tonic",

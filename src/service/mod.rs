@@ -1,8 +1,27 @@
 use laoflchdb_engines::{StorageEngine, EngineOptions, SQLEngine, QueryResult, ColumnMeta, Query};
-use laoflchdb_engines::{ColumnType, TableMeta, Row};
+use laoflchdb_engines::{ColumnType, TableMeta, Row, Field, SpecialFields, EnumOrUnknown, RowType};
+use laoflchdb_engines::field::field::Value;
+use laoflchdb_engines::Message;
 use std::sync::Arc;
 use std::collections::HashMap;
 use std::fmt;
+use sha2::{Sha256, Digest};
+use chrono;
+
+// 密码哈希函数
+fn hash_password(password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(password.as_bytes());
+    let result = hasher.finalize();
+    hex::encode(result)
+}
+
+// 字段编码函数
+fn encode_field(f: &Field) -> Vec<u8> {
+    let mut buf = Vec::new();
+    f.write_to_vec(&mut buf).unwrap();
+    buf
+}
 
 pub struct SchemaManager {
     engines: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::RwLock<Box<dyn StorageEngine + 'static>>>>>,
@@ -196,7 +215,16 @@ impl DatabaseService for DatabaseServiceImpl {
         let existing_tables = self.list_tables(sys_schema).await.unwrap_or_default();
         let user_table_exists = existing_tables.contains(&"user".to_string());
         
-        if schema_exists && user_table_exists {
+        // 检查 user 表结构是否为新版本 (id, username, email, password_hash, created_at)
+        let user_table_needs_update = if user_table_exists {
+            // 尝试查询 username 字段，如果失败则说明是旧版本表
+            let check_sql = "SELECT username FROM user LIMIT 1";
+            self.sql_query(sys_schema, check_sql).await.is_err()
+        } else {
+            false
+        };
+        
+        if schema_exists && user_table_exists && !user_table_needs_update {
             println!("✅ 数据库已初始化，本次启动不执行初始化");
             return Ok(());
         }
@@ -205,19 +233,81 @@ impl DatabaseService for DatabaseServiceImpl {
             println!("✅ 创建 Schema '{}'", sys_schema);
             self.schema_manager.as_ref().create_schema(sys_schema).await?;
         }
-        
-        if !user_table_exists {
-            println!("✅ 创建表 'user'");
-            let user_columns = [
-                (1, "id", ColumnType::COLUMN_TYPE_INT64),
-                (2, "username", ColumnType::COLUMN_TYPE_STRING),
-                (3, "email", ColumnType::COLUMN_TYPE_STRING),
-                (4, "password_hash", ColumnType::COLUMN_TYPE_STRING),
-                (5, "created_at", ColumnType::COLUMN_TYPE_STRING),
-            ];
-            self.create_table(sys_schema, "user", &user_columns).await?;
+
+        // 如果 user 表不存在或结构需要更新，则删除旧表并创建新表
+        if user_table_exists {
+            println!("⚠️ 检测到旧版本 user 表，删除并重建...");
+            self.drop_table(sys_schema, "user").await?;
         }
         
+        println!("✅ 创建表 'user' (id, username, email, password_hash, created_at)");
+        let user_columns = [
+            (1, "id", ColumnType::COLUMN_TYPE_INT64),
+            (2, "username", ColumnType::COLUMN_TYPE_STRING),
+            (3, "email", ColumnType::COLUMN_TYPE_STRING),
+            (4, "password_hash", ColumnType::COLUMN_TYPE_STRING),
+            (5, "created_at", ColumnType::COLUMN_TYPE_STRING),
+        ];
+        self.create_table(sys_schema, "user", &user_columns).await?;
+
+        // 创建默认用户
+        println!("✅ 创建默认用户 'admin'");
+        let admin_password_hash = hash_password("laoflchdb");
+        let created_at = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+        // 使用 add_row API 添加用户
+        let id_field = Field {
+            value: Some(Value::IntegerValue(laoflchdb_engines::field::Integer { 
+                value: 1,
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
+        };
+        let username_field = Field {
+            value: Some(Value::StringValue(laoflchdb_engines::field::String { 
+                value: "admin".to_string(),
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
+        };
+        let email_field = Field {
+            value: Some(Value::StringValue(laoflchdb_engines::field::String { 
+                value: "admin@laoflchdb.local".to_string(),
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
+        };
+        let password_field = Field {
+            value: Some(Value::StringValue(laoflchdb_engines::field::String { 
+                value: admin_password_hash,
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
+        };
+        let created_at_field = Field {
+            value: Some(Value::StringValue(laoflchdb_engines::field::String { 
+                value: created_at,
+                special_fields: SpecialFields::default(),
+            })),
+            special_fields: SpecialFields::default(),
+        };
+
+        let row = Row {
+            row_type: EnumOrUnknown::new(RowType::ROW_TYPE_NORMAL),
+            version: 1,
+            data: vec![
+                encode_field(&id_field),
+                encode_field(&username_field),
+                encode_field(&email_field),
+                encode_field(&password_field),
+                encode_field(&created_at_field),
+            ],
+            special_fields: SpecialFields::default(),
+        };
+
+        self.add_row(sys_schema, "user", &row).await?;
+        println!("   提示: 默认用户名 'admin', 密码 'laoflchdb'");
+
         Ok(())
     }
 

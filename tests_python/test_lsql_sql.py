@@ -19,6 +19,34 @@ LSQL_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "targe
 REST_PORT = "8080"
 REST_BASE_URL = f"http://127.0.0.1:{REST_PORT}"
 
+TOKEN = None
+
+def login():
+    global TOKEN
+    print("    [认证] 用户登录...")
+    try:
+        payload = {
+            "username": "admin",
+            "password": "laoflchdb"
+        }
+        resp = requests.post(f"{REST_BASE_URL}/api/v1/login", json=payload)
+        data = resp.json()
+        if data.get("success") and data["data"].get("success"):
+            TOKEN = data["data"]["token"]
+            print(f"    ✓ 登录成功，Token: {TOKEN[:20]}...")
+            return True
+        else:
+            print(f"    ✗ 登录失败: {data}")
+            return False
+    except Exception as e:
+        print(f"    ✗ 登录失败: {e}")
+        return False
+
+def get_auth_headers():
+    if TOKEN:
+        return {"Authorization": f"Bearer {TOKEN}"}
+    return {}
+
 def create_table_via_api(schema, table_name, columns):
     """通过 REST API 创建表"""
     payload = {
@@ -26,7 +54,7 @@ def create_table_via_api(schema, table_name, columns):
         "table_name": table_name,
         "columns": columns
     }
-    resp = requests.post(f"{REST_BASE_URL}/api/v1/tables", json=payload)
+    resp = requests.post(f"{REST_BASE_URL}/api/v1/tables", json=payload, headers=get_auth_headers())
     return resp.json()
 
 def insert_row_via_api(schema, table_name, row_id, data):
@@ -39,7 +67,7 @@ def insert_row_via_api(schema, table_name, row_id, data):
             "data": data
         }
     }
-    resp = requests.post(f"{REST_BASE_URL}/api/v1/schemas/{schema}/tables/{table_name}/rows", json=payload)
+    resp = requests.post(f"{REST_BASE_URL}/api/v1/schemas/{schema}/tables/{table_name}/rows", json=payload, headers=get_auth_headers())
     return resp.json()
 
 def run_lsql_command(sql, host=TEST_ADDR, schema="sys"):
@@ -116,14 +144,19 @@ def run_lsql_test():
         time.sleep(2)
         print("    ✓ 服务就绪")
         
-        print("\n[5/10] 测试 lsql 基本连接...")
+        print("\n[5/10] 用户登录...")
+        if not login():
+            return 1
+        print("    ✓ 用户登录成功")
+        
+        print("\n[6/10] 测试 lsql 基本连接...")
         result = run_lsql_command("SELECT 1")
         if result["returncode"] != 0:
             print(f"    ✗ 连接失败: {result['stderr']}")
             return 1
         print("    ✓ 基本连接测试通过")
         
-        print("\n[6/10] 通过 API 创建表和插入数据...")
+        print("\n[7/10] 通过 API 创建表和插入数据...")
         # 通过 API 创建第一个表
         columns1 = [
             {"name": "id", "column_type": "INT64"},

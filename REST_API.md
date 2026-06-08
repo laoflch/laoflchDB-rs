@@ -6,9 +6,79 @@
 - **Content-Type**: `application/json`
 - **gRPC 端口**: `29777`
 
+## 认证机制
+
+LaoflchDB 使用 Token 认证机制。所有 API 请求（除登录、登出和健康检查外）都需要在请求头中携带有效的认证 Token。
+
+### 获取 Token
+
+通过登录接口获取 Token：
+
+```bash
+curl -X POST http://localhost:38080/api/v1/login \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "admin123"}'
+```
+
+### 使用 Token
+
+获取 Token 后，在请求头中携带 `Authorization` 头：
+
+```bash
+curl -X GET "http://localhost:38080/api/v1/get?schema=sys&table=user&key=1" \
+  -H "Authorization: Bearer <your_token>"
+```
+
 ## API 端点
 
-### 1. 健康检查
+### 1. 用户登录
+
+**端点**: `POST /api/v1/login`
+
+**请求体**:
+```json
+{
+  "username": "admin",
+  "password": "admin123"
+}
+```
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": {
+    "success": true,
+    "message": "Login successful",
+    "token": "550e8400-e29b-41d4-a716-446655440000",
+    "user_id": 1,
+    "username": "admin"
+  }
+}
+```
+
+### 2. 用户登出
+
+**端点**: `POST /api/v1/logout`
+
+**请求体**:
+```json
+{
+  "token": "550e8400-e29b-41d4-a716-446655440000"
+}
+```
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": "Logout successful"
+}
+```
+
+### 3. 健康检查
 
 **端点**: `GET /health`
 
@@ -471,5 +541,6 @@ cargo auto-test prod
 |--------|------|
 | 200 | 成功 |
 | 400 | 请求参数错误 |
+| 401 | 未授权（无效或缺失的 Token） |
 | 403 | 权限不足 |
 | 500 | 服务器内部错误 |

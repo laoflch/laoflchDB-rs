@@ -52,7 +52,7 @@ cargo build --release --bin lsql
 ### 基本语法
 
 ```bash
-lsql --host <host:port> [--schema <schema_name>] [--command <sql>]
+lsql --host <host:port> [--schema <schema_name>] [--user <username>] [--password <password>] [--command <sql>]
 ```
 
 ### 参数说明
@@ -61,9 +61,18 @@ lsql --host <host:port> [--schema <schema_name>] [--command <sql>]
 |------|------|------|------|
 | `--host` | - | **是** | 数据库服务器地址，格式为 `host:port` |
 | `--schema` | `-s` | 否 | 默认连接的 Schema 名称，默认为 `sys` |
+| `--user` | `-u` | 否 | 用户名，用于登录认证 |
+| `--password` | `-W` | 否 | 密码，用于登录认证 |
 | `--command` | `-c` | 否 | 执行单次 SQL 命令后退出 |
 | `--help` | `-h` | 否 | 显示帮助信息 |
 | `--version` | `-V` | 否 | 显示版本信息 |
+
+### 环境变量
+
+| 环境变量 | 说明 |
+|----------|------|
+| `LAOFLCHDB_USER` | 用户名 |
+| `LAOFLCHDB_PASSWORD` | 密码 |
 
 ### 使用示例
 
@@ -71,11 +80,20 @@ lsql --host <host:port> [--schema <schema_name>] [--command <sql>]
 # 连接到本地数据库（必须指定 --host）
 lsql --host 127.0.0.1:19777
 
+# 使用用户名和密码登录
+lsql --host 127.0.0.1:19777 --user admin --password admin123
+
+# 使用简写参数
+lsql --host 127.0.0.1:19777 -u admin -W admin123
+
+# 使用环境变量登录
+LAOFLCHDB_USER=admin LAOFLCHDB_PASSWORD=admin123 lsql --host 127.0.0.1:19777
+
 # 连接到远程服务器并指定 Schema
-lsql --host 192.168.1.100:19777 --schema analytics
+lsql --host 192.168.1.100:19777 --schema analytics --user admin --password admin123
 
 # 执行单次 SQL 查询
-lsql --host 127.0.0.1:19777 --command "SELECT COUNT(*) FROM users"
+lsql --host 127.0.0.1:19777 --user admin --password admin123 --command "SELECT COUNT(*) FROM users"
 
 # 显示帮助信息
 lsql --help

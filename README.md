@@ -520,6 +520,11 @@ enum ColumnType {
 
 ```protobuf
 service LaoflchDb {
+    // 用户认证接口
+    rpc Login (LoginRequest) returns (LoginResponse);
+    rpc Logout (LogoutRequest) returns (LogoutResponse);
+    
+    // 数据操作接口
     rpc Get (GetRequest) returns (GetResponse);
     rpc Put (PutRequest) returns (PutResponse);
     rpc Delete (DeleteRequest) returns (DeleteResponse);
@@ -534,16 +539,32 @@ service LaoflchDb {
 
 详细文档: [REST_API.md](REST_API.md)
 
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/health` | GET | 健康检查 |
-| `/api/v1/tables` | POST | 创建表 |
-| `/api/v1/schemas/{schema}/tables` | GET | 列出表 |
-| `/api/v1/schemas/{schema}/tables/{table}` | GET | 获取表元数据 |
-| `/api/v1/put` | POST | 插入数据 |
-| `/api/v1/get` | GET | 读取数据 |
-| `/api/v1/delete` | POST | 删除数据 |
-| `/api/v1/sql_query` | POST | SQL 查询 |
+| 端点 | 方法 | 说明 | 是否需要认证 |
+|------|------|------|-------------|
+| `/health` | GET | 健康检查 | 否 |
+| `/api/v1/login` | POST | 用户登录 | 否 |
+| `/api/v1/logout` | POST | 用户登出 | 否 |
+| `/api/v1/tables` | POST | 创建表 | 是 |
+| `/api/v1/schemas/{schema}/tables` | GET | 列出表 | 是 |
+| `/api/v1/schemas/{schema}/tables/{table}` | GET | 获取表元数据 | 是 |
+| `/api/v1/put` | POST | 插入数据 | 是 |
+| `/api/v1/get` | GET | 读取数据 | 是 |
+| `/api/v1/delete` | POST | 删除数据 | 是 |
+| `/api/v1/sql_query` | POST | SQL 查询 | 是 |
+
+### 认证机制
+
+LaoflchDB 使用 Token 认证机制：
+
+1. **获取 Token**: 通过登录接口获取认证 Token
+2. **使用 Token**: 在请求头中携带 `Authorization: Bearer <token>`
+3. **Token 有效期**: 默认 24 小时
+4. **默认用户**: 初始化时自动创建 `admin` 用户（密码: `admin123`）
+
+**认证流程**:
+```
+客户端 → POST /api/v1/login → 获取 Token → 请求携带 Token → 受保护的 API
+```
 
 ---
 

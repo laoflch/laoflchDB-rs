@@ -1,5 +1,5 @@
 use crate::service::DatabaseService;
-use crate::access::{PermissionChecker, PermissionContext};
+use crate::access::{PermissionChecker, PermissionContext, TokenManager};
 use crate::config::PermissionAction;
 use protobuf::Enum;
 use laoflchdb_engines::{ColumnType, ColumnMeta, Row, SpecialFields, EnumOrUnknown, RowType};
@@ -10,8 +10,9 @@ use axum::{
     routing::{get, post, delete, put},
     extract::{Path, Query, State},
     response::Json,
-    http::StatusCode,
+    http::{StatusCode, Request},
     response::IntoResponse,
+    middleware::{self, Next},
 };
 
 #[derive(Clone)]
@@ -19,6 +20,7 @@ pub struct RestService {
     service: Arc<dyn DatabaseService>,
     permission_checker: Arc<PermissionChecker>,
     service_id: String,
+    token_manager: Arc<TokenManager>,
 }
 
 impl RestService {
@@ -27,6 +29,7 @@ impl RestService {
             service,
             permission_checker: Arc::new(PermissionChecker::new(true)),
             service_id: "default".to_string(),
+            token_manager: Arc::new(TokenManager::default()),
         }
     }
 
@@ -35,6 +38,16 @@ impl RestService {
             service,
             permission_checker,
             service_id,
+            token_manager: Arc::new(TokenManager::default()),
+        }
+    }
+
+    pub fn with_token_manager(service: Arc<dyn DatabaseService>, permission_checker: Arc<PermissionChecker>, service_id: String, token_manager: Arc<TokenManager>) -> Self {
+        Self {
+            service,
+            permission_checker,
+            service_id,
+            token_manager,
         }
     }
 
@@ -59,29 +72,40 @@ impl RestService {
     }
 
     pub fn router(&self) -> Router {
+        let state = (self.service.clone(), self.permission_checker.clone(), self.service_id.clone(), self.token_manager.clone());
+        
         Router::new()
+            // 公开路由（不需要认证）
             .route("/health", get(health_handler))
-            // KV 操作
-            .route("/api/v1/get", get(get_handler))
-            .route("/api/v1/put", post(put_handler))
-            .route("/api/v1/delete", post(delete_kv_handler))
-            // 表管理
-            .route("/api/v1/tables", post(create_table_handler))
-            .route("/api/v1/schemas/:schema/tables/:table", delete(drop_table_handler))
-            .route("/api/v1/schemas/:schema/tables", get(list_tables_handler))
-            .route("/api/v1/schemas/:schema/tables/:table/columns", get(list_table_cols_handler))
-            .route("/api/v1/schemas/:schema/tables/:table", get(get_table_meta_handler))
-            // 行操作
-            .route("/api/v1/schemas/:schema/tables/:table/rows", post(add_row_handler))
-            .route("/api/v1/schemas/:schema/tables/:table/rows/:row_id", get(get_row_handler))
-            .route("/api/v1/schemas/:schema/tables/:table/rows/:row_id", delete(delete_row_handler))
-            .route("/api/v1/schemas/:schema/tables/:table/rows/:row_id", put(update_row_handler))
-            // 元数据查询
-            .route("/api/v1/schemas/:schema/meta", get(get_all_meta_handler))
-            .route("/api/v1/schemas/:schema/info", get(get_schema_info_handler))
-            // SQL 查询
-            .route("/api/v1/sql_query", post(sql_query_handler))
-            .with_state((self.service.clone(), self.permission_checker.clone(), self.service_id.clone()))
+            .route("/api/v1/login", post(login_handler))
+            // 需要认证的路由
+            .nest(
+                "/api/v1",
+                Router::new()
+                    .route("/logout", post(logout_handler))
+                    // KV 操作
+                    .route("/get", get(get_handler))
+                    .route("/put", post(put_handler))
+                    .route("/delete", post(delete_kv_handler))
+                    // 表管理
+                    .route("/tables", post(create_table_handler))
+                    .route("/schemas/:schema/tables/:table", delete(drop_table_handler))
+                    .route("/schemas/:schema/tables", get(list_tables_handler))
+                    .route("/schemas/:schema/tables/:table/columns", get(list_table_cols_handler))
+                    .route("/schemas/:schema/tables/:table", get(get_table_meta_handler))
+                    // 行操作
+                    .route("/schemas/:schema/tables/:table/rows", post(add_row_handler))
+                    .route("/schemas/:schema/tables/:table/rows/:row_id", get(get_row_handler))
+                    .route("/schemas/:schema/tables/:table/rows/:row_id", delete(delete_row_handler))
+                    .route("/schemas/:schema/tables/:table/rows/:row_id", put(update_row_handler))
+                    // 元数据查询
+                    .route("/schemas/:schema/meta", get(get_all_meta_handler))
+                    .route("/schemas/:schema/info", get(get_schema_info_handler))
+                    // SQL 查询
+                    .route("/sql_query", post(sql_query_handler))
+                    .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware)),
+            )
+            .with_state(state)
     }
 
     pub async fn start(&self, addr: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -92,7 +116,28 @@ impl RestService {
     }
 }
 
-type SharedState = (Arc<dyn DatabaseService>, Arc<PermissionChecker>, String);
+type SharedState = (Arc<dyn DatabaseService>, Arc<PermissionChecker>, String, Arc<TokenManager>);
+
+async fn auth_middleware(
+    State((_, _, _, token_manager)): State<SharedState>,
+    req: Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Result<axum::response::Response, ApiError> {
+    let auth_header = req.headers().get(axum::http::header::AUTHORIZATION);
+    
+    if let Some(header) = auth_header {
+        let header_str = header.to_str().map_err(|_| ApiError { message: "Invalid authorization header".to_string() })?;
+        
+        if header_str.starts_with("Bearer ") {
+            let token = &header_str[7..];
+            if token_manager.validate_token(token).await.is_some() {
+                return Ok(next.run(req).await);
+            }
+        }
+    }
+    
+    Err(ApiError { message: "Unauthorized: Invalid or missing token".to_string() })
+}
 
 pub struct ApiError {
     message: String,
@@ -129,6 +174,86 @@ impl<T> ApiResponse<T> {
             data: None,
         }
     }
+}
+
+use sha2::{Sha256, Digest};
+
+fn hash_password(password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(password.as_bytes());
+    let result = hasher.finalize();
+    hex::encode(result)
+}
+
+async fn verify_user(service: &Arc<dyn DatabaseService>, username: &str, password: &str) -> Result<i64, String> {
+    let result = service
+        .sql_query("sys", &format!(
+            "SELECT id, password_hash FROM user WHERE username = '{}'",
+            username.replace("'", "''")
+        ))
+        .await
+        .map_err(|e| format!("Database query failed: {}", e))?;
+
+    if result.rows.is_empty() {
+        return Err("Invalid username or password".to_string());
+    }
+
+    let qr = &result.rows[0];
+    if !qr.row.is_some() {
+        return Err("User data error".to_string());
+    }
+
+    let row = qr.row.get_or_default();
+    if row.data.len() < 2 {
+        return Err("User data format error".to_string());
+    }
+
+    use protobuf::CodedInputStream;
+    use laoflchdb_engines::Message;
+    let mut input_id = CodedInputStream::from_bytes(&row.data[0]);
+    let id_field = laoflchdb_engines::Field::parse_from(&mut input_id)
+        .map_err(|_| "Failed to parse user ID")?;
+
+    let user_id = match id_field.value {
+        Some(laoflchdb_engines::field::field::Value::IntegerValue(i)) => i.value,
+        _ => return Err("User ID format error".to_string()),
+    };
+
+    let mut input_hash = CodedInputStream::from_bytes(&row.data[1]);
+    let hash_field = laoflchdb_engines::Field::parse_from(&mut input_hash)
+        .map_err(|_| "Failed to parse password hash")?;
+
+    let stored_hash = match hash_field.value {
+        Some(laoflchdb_engines::field::field::Value::StringValue(s)) => s.value,
+        _ => return Err("Password hash format error".to_string()),
+    };
+
+    let input_hash = hash_password(password);
+    if input_hash != stored_hash {
+        return Err("Invalid username or password".to_string());
+    }
+
+    Ok(user_id)
+}
+
+#[derive(Deserialize, Debug)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct LogoutRequest {
+    pub token: String,
+}
+
+#[derive(Serialize)]
+pub struct LoginResponse {
+    pub success: bool,
+    pub message: String,
+    pub token: Option<String>,
+    pub user_id: Option<i64>,
+    pub username: Option<String>,
 }
 
 // 请求和响应结构
@@ -372,15 +497,59 @@ fn convert_column_meta_to_rest(meta: &ColumnMeta) -> ColumnMetaResponse {
     }
 }
 
+async fn login_handler(
+    State((service, _, _, token_manager)): State<SharedState>,
+    Json(body): Json<LoginRequest>,
+) -> Json<ApiResponse<LoginResponse>> {
+    match verify_user(&service, &body.username, &body.password).await {
+        Ok(user_id) => {
+            let token = token_manager.generate_token(user_id, body.username.clone()).await;
+            Json(ApiResponse::success(LoginResponse {
+                success: true,
+                message: "Login successful".to_string(),
+                token: Some(token),
+                user_id: Some(user_id),
+                username: Some(body.username),
+            }))
+        }
+        Err(msg) => {
+            let msg_clone = msg.clone();
+            Json(ApiResponse {
+                success: false,
+                message: msg,
+                data: Some(LoginResponse {
+                    success: false,
+                    message: msg_clone,
+                    token: None,
+                    user_id: None,
+                    username: None,
+                }),
+            })
+        }
+    }
+}
+
+async fn logout_handler(
+    State((_, _, _, token_manager)): State<SharedState>,
+    Json(body): Json<LogoutRequest>,
+) -> Json<ApiResponse<&'static str>> {
+    if token_manager.revoke_token(&body.token).await {
+        Json(ApiResponse::success("Logout successful"))
+    } else {
+        Json(ApiResponse::error("Token not found or already expired".to_string()))
+    }
+}
+
 // 处理函数
 async fn health_handler() -> Json<ApiResponse<&'static str>> {
     Json(ApiResponse::success("OK"))
 }
 
 async fn get_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Query(query): Query<GetQuery>,
 ) -> Result<Json<ApiResponse<GetResponse>>, ApiError> {
+    
     let schema = query.schema.unwrap_or_else(|| "sys".to_string());
     let context = PermissionContext {
         schema: schema.clone(),
@@ -403,9 +572,10 @@ async fn get_handler(
 }
 
 async fn put_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Json(body): Json<PutBody>,
 ) -> Result<Json<ApiResponse<&'static str>>, ApiError> {
+    
     let schema = body.schema.unwrap_or_else(|| "sys".to_string());
     let context = PermissionContext {
         schema: schema.clone(),
@@ -432,9 +602,10 @@ async fn put_handler(
 }
 
 async fn delete_kv_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Json(body): Json<DeleteKvBody>,
 ) -> Result<Json<ApiResponse<&'static str>>, ApiError> {
+    
     let schema = body.schema.unwrap_or_else(|| "sys".to_string());
     let context = PermissionContext {
         schema: schema.clone(),
@@ -457,9 +628,10 @@ async fn delete_kv_handler(
 }
 
 async fn create_table_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Json(body): Json<CreateTableBody>,
 ) -> Result<Json<ApiResponse<CreateTableResponse>>, ApiError> {
+    
     let schema = body.schema.unwrap_or_else(|| "sys".to_string());
     let context = PermissionContext {
         schema: schema.clone(),
@@ -494,9 +666,10 @@ async fn create_table_handler(
 }
 
 async fn drop_table_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Path((schema, table)): Path<(String, String)>,
 ) -> Result<Json<ApiResponse<&'static str>>, ApiError> {
+    
     let context = PermissionContext {
         schema: schema.clone(),
         table: Some(table.clone()),
@@ -513,9 +686,10 @@ async fn drop_table_handler(
 }
 
 async fn list_tables_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Path(schema): Path<String>,
 ) -> Result<Json<ApiResponse<Vec<String>>>, ApiError> {
+    
     let context = PermissionContext {
         schema: schema.clone(),
         table: None,
@@ -532,9 +706,10 @@ async fn list_tables_handler(
 }
 
 async fn list_table_cols_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Path((schema, table)): Path<(String, String)>,
 ) -> Result<Json<ApiResponse<Vec<ColumnMetaResponse>>>, ApiError> {
+    
     let context = PermissionContext {
         schema: schema.clone(),
         table: Some(table.clone()),
@@ -556,9 +731,10 @@ async fn list_table_cols_handler(
 }
 
 async fn get_table_meta_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Path((schema, table)): Path<(String, String)>,
 ) -> Result<Json<ApiResponse<TableMetaResponse>>, ApiError> {
+    
     let context = PermissionContext {
         schema: schema.clone(),
         table: Some(table.clone()),
@@ -583,10 +759,11 @@ async fn get_table_meta_handler(
 }
 
 async fn add_row_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Path((schema, table)): Path<(String, String)>,
     Json(body): Json<AddRowBody>,
 ) -> Result<Json<ApiResponse<AddRowResponse>>, ApiError> {
+    
     let context = PermissionContext {
         schema: schema.clone(),
         table: Some(table.clone()),
@@ -613,9 +790,10 @@ async fn add_row_handler(
 }
 
 async fn get_row_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Path((schema, table, row_id)): Path<(String, String, u64)>,
 ) -> Result<Json<ApiResponse<RestRow>>, ApiError> {
+    
     let context = PermissionContext {
         schema: schema.clone(),
         table: Some(table.clone()),
@@ -633,9 +811,10 @@ async fn get_row_handler(
 }
 
 async fn delete_row_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Path((schema, table, row_id)): Path<(String, String, u64)>,
 ) -> Result<Json<ApiResponse<&'static str>>, ApiError> {
+    
     let context = PermissionContext {
         schema: schema.clone(),
         table: Some(table.clone()),
@@ -652,10 +831,11 @@ async fn delete_row_handler(
 }
 
 async fn update_row_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Path((schema, table, row_id)): Path<(String, String, u64)>,
     Json(body): Json<UpdateRowBody>,
 ) -> Result<Json<ApiResponse<&'static str>>, ApiError> {
+    
     let context = PermissionContext {
         schema: schema.clone(),
         table: Some(table.clone()),
@@ -677,9 +857,10 @@ async fn update_row_handler(
 }
 
 async fn get_all_meta_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Path(schema): Path<String>,
 ) -> Result<Json<ApiResponse<MetaJsonResponse>>, ApiError> {
+    
     let context = PermissionContext {
         schema: schema.clone(),
         table: None,
@@ -696,9 +877,10 @@ async fn get_all_meta_handler(
 }
 
 async fn get_schema_info_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Path(schema): Path<String>,
 ) -> Result<Json<ApiResponse<MetaJsonResponse>>, ApiError> {
+    
     let context = PermissionContext {
         schema: schema.clone(),
         table: None,
@@ -715,9 +897,10 @@ async fn get_schema_info_handler(
 }
 
 async fn sql_query_handler(
-    State((service, checker, service_id)): State<SharedState>,
+    State((service, checker, service_id, _)): State<SharedState>,
     Json(body): Json<SqlQueryBody>,
 ) -> Result<Json<ApiResponse<SqlQueryResponse>>, ApiError> {
+    
     let schema = body.schema.unwrap_or_else(|| "sys".to_string());
     let context = PermissionContext {
         schema: schema.clone(),

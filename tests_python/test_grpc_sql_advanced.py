@@ -70,13 +70,21 @@ def run_grpc_advanced_sql_test():
     try:
         print("\n[4/6] 等待服务就绪...")
         max_retries = 10
+        token = None
+        metadata = []
         for i in range(max_retries):
             try:
                 channel = grpc.insecure_channel(TEST_ADDR)
                 stub = rpc_pb2_grpc.LaoflchDbStub(channel)
-                stub.ListTables(rpc_pb2.ListTablesRequest(schema="sys"))
-                print(f"    ✓ 服务已就绪 (尝试 {i+1}/{max_retries})")
-                break
+                login_resp = stub.Login(rpc_pb2.LoginRequest(
+                    username="admin",
+                    password="admin123"
+                ))
+                if login_resp.success:
+                    token = login_resp.token
+                    metadata = [('authorization', f'Bearer {token}')]
+                    print(f"    ✓ 服务已就绪并登录成功 (尝试 {i+1}/{max_retries})")
+                    break
             except grpc.RpcError as e:
                 print(f"    服务尚未就绪 (尝试 {i+1}/{max_retries}): {e.code()}")
                 time.sleep(1)
@@ -91,7 +99,7 @@ def run_grpc_advanced_sql_test():
                     schema="sys",
                     table_name=table_name
                 )
-                stub.DropTable(drop_req)
+                stub.DropTable(drop_req, metadata=metadata)
                 print(f"    - 已删除旧表 {table_name}")
             except grpc.RpcError as e:
                 if e.code() == grpc.StatusCode.NOT_FOUND:
@@ -109,7 +117,7 @@ def run_grpc_advanced_sql_test():
                 rpc_pb2.ColumnDef(name="age", column_type=1),         # INT64
             ]
         )
-        create_resp = stub.CreateTable(create_employee_req)
+        create_resp = stub.CreateTable(create_employee_req, metadata=metadata)
         assert create_resp.success == True, "创建 employees 表失败"
         print("    ✓ 创建 employees 表成功")
         
@@ -124,7 +132,7 @@ def run_grpc_advanced_sql_test():
                 rpc_pb2.ColumnDef(name="subject", column_type=0),     # STRING
             ]
         )
-        create_resp = stub.CreateTable(create_score_req)
+        create_resp = stub.CreateTable(create_score_req, metadata=metadata)
         assert create_resp.success == True, "创建 scores 表失败"
         print("    ✓ 创建 scores 表成功")
         
@@ -161,7 +169,7 @@ def run_grpc_advanced_sql_test():
                     ]
                 )
             )
-            add_resp = stub.AddRow(add_req)
+            add_resp = stub.AddRow(add_req, metadata=metadata)
             assert add_resp.success == True, f"插入 employee {id} 失败"
             print(f"    ✓ 插入 employee {id}: {name}")
         
@@ -191,7 +199,7 @@ def run_grpc_advanced_sql_test():
                     ]
                 )
             )
-            add_resp = stub.AddRow(add_req)
+            add_resp = stub.AddRow(add_req, metadata=metadata)
             assert add_resp.success == True, f"插入 score {id} 失败"
             print(f"    ✓ 插入 score {id}: {student} - {subject} = {score}")
         
@@ -206,7 +214,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT COUNT(id) FROM employees"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "COUNT(id) 查询失败"
         print(f"        ✓ COUNT(id) 查询成功，返回 {len(sql_resp.rows)} 行")
         
@@ -216,7 +224,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT COUNT(department) FROM employees"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "COUNT(department) 查询失败"
         print(f"        ✓ COUNT(department) 查询成功")
         
@@ -226,7 +234,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT COUNT(id) FROM employees WHERE salary > 8000"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "COUNT with WHERE 查询失败"
         print(f"        ✓ COUNT with WHERE 查询成功")
         
@@ -236,7 +244,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT SUM(salary) FROM employees"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "SUM(salary) 查询失败"
         print(f"        ✓ SUM(salary) 查询成功")
         
@@ -246,7 +254,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT AVG(age) FROM employees"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "AVG(age) 查询失败"
         print(f"        ✓ AVG(age) 查询成功")
         
@@ -256,7 +264,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT MIN(salary), MAX(salary) FROM employees"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "MIN/MAX 查询失败"
         print(f"        ✓ MIN/MAX 查询成功")
         
@@ -266,7 +274,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT COUNT(id), SUM(salary) FROM employees"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "多个聚合函数查询失败"
         print(f"        ✓ 多个聚合函数查询成功")
         
@@ -279,7 +287,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT department, COUNT(id) as cnt FROM employees GROUP BY department ORDER BY department"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "GROUP BY 查询失败"
         print(f"        ✓ GROUP BY 查询成功，返回 {len(sql_resp.rows)} 行")
         for row in sql_resp.rows:
@@ -293,7 +301,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT department, AVG(salary) as avg_salary FROM employees GROUP BY department ORDER BY department"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "GROUP BY + AVG 查询失败"
         print(f"        ✓ GROUP BY + AVG 查询成功，返回 {len(sql_resp.rows)} 行")
         
@@ -306,7 +314,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT name, salary FROM employees ORDER BY salary ASC"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "ORDER BY ASC 查询失败"
         print(f"        ✓ ORDER BY ASC 查询成功，返回 {len(sql_resp.rows)} 行")
         
@@ -316,7 +324,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT name, salary FROM employees ORDER BY salary DESC"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "ORDER BY DESC 查询失败"
         print(f"        ✓ ORDER BY DESC 查询成功，返回 {len(sql_resp.rows)} 行")
         
@@ -326,7 +334,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT department, name, salary FROM employees ORDER BY department ASC, salary DESC"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "ORDER BY 多列查询失败"
         print(f"        ✓ ORDER BY 多列查询成功，返回 {len(sql_resp.rows)} 行")
         
@@ -339,7 +347,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 3"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "LIMIT 查询失败"
         assert len(sql_resp.rows) == 3, f"LIMIT 3 应返回 3 行，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ LIMIT 查询成功，返回 {len(sql_resp.rows)} 行")
@@ -350,7 +358,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 2 OFFSET 2"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "LIMIT OFFSET 查询失败"
         assert len(sql_resp.rows) == 2, f"LIMIT 2 OFFSET 2 应返回 2 行，实际返回 {len(sql_resp.rows)} 行"
         print(f"        ✓ LIMIT OFFSET 查询成功，返回 {len(sql_resp.rows)} 行")
@@ -364,7 +372,7 @@ def run_grpc_advanced_sql_test():
             schema="sys",
             sql="SELECT department, COUNT(id) as cnt, AVG(salary) as avg_sal FROM employees GROUP BY department ORDER BY cnt DESC LIMIT 2"
         )
-        sql_resp = stub.SqlQuery(sql_req)
+        sql_resp = stub.SqlQuery(sql_req, metadata=metadata)
         assert sql_resp.success == True, "复杂查询失败"
         print(f"        ✓ 复杂查询成功，返回 {len(sql_resp.rows)} 行")
         

@@ -24,8 +24,20 @@ use crate::pb::rpc::{
     SqlField,
     ColumnMeta as RpcColumnMeta,
     Row as RpcRow,
+    LoginRequest, LoginResponse,
+    LogoutRequest, LogoutResponse,
 };
 use crate::config::PermissionAction;
+use sha2::{Sha256, Digest};
+
+/// 对密码进行 SHA256 哈希
+fn hash_password(password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(password.as_bytes());
+    let result = hasher.finalize();
+    hex::encode(result)
+}
+
 use protobuf::Enum;
 use laoflchdb_engines::{ColumnMeta, Row, ColumnType, Query, QueryResult, QueryRow, SpecialFields};
 use std::sync::Arc;
@@ -33,14 +45,17 @@ use tonic::{Request, Response, Status};
 
 pub mod rest;
 pub mod permission;
+pub mod auth;
 pub use rest::RestService;
 pub use permission::{PermissionChecker, PermissionContext, PermissionCheckResult};
+pub use auth::TokenManager;
 
 #[derive(Clone)]
 pub struct GrpcService {
     service: Arc<dyn DatabaseService>,
     permission_checker: Option<Arc<PermissionChecker>>,
     service_id: String,
+    token_manager: Arc<TokenManager>,
 }
 
 impl GrpcService {
@@ -49,6 +64,7 @@ impl GrpcService {
             service,
             permission_checker: None,
             service_id: "default".to_string(),
+            token_manager: Arc::new(TokenManager::default()),
         }
     }
 
@@ -61,6 +77,21 @@ impl GrpcService {
             service,
             permission_checker: Some(permission_checker),
             service_id,
+            token_manager: Arc::new(TokenManager::default()),
+        }
+    }
+
+    pub fn with_token_manager(
+        service: Arc<dyn DatabaseService>,
+        permission_checker: Option<Arc<PermissionChecker>>,
+        service_id: String,
+        token_manager: Arc<TokenManager>,
+    ) -> Self {
+        Self {
+            service,
+            permission_checker,
+            service_id,
+            token_manager,
         }
     }
 
@@ -85,11 +116,94 @@ impl GrpcService {
         }
         Ok(())
     }
+
+    /// 验证请求的认证 token
+    async fn validate_auth<T>(&self, request: &Request<T>) -> Result<(), Status> {
+        // 从 metadata 中获取 token
+        let metadata = request.metadata();
+        
+        if let Some(token_value) = metadata.get("authorization") {
+            if let Ok(token_str) = token_value.to_str() {
+                // 移除 "Bearer " 前缀
+                let token = if token_str.starts_with("Bearer ") {
+                    &token_str[7..]
+                } else {
+                    token_str
+                };
+                
+                if let Some(_token_info) = self.token_manager.validate_token(token).await {
+                    // Token 有效，可以继续
+                    return Ok(());
+                }
+            }
+        }
+        
+        // 从 gRPC 请求中获取 token（可能在某些请求头中）
+        Err(Status::unauthenticated("未提供有效的认证 token"))
+    }
+
+    /// 验证用户名和密码
+    async fn verify_user(&self, username: &str, password: &str) -> Result<i64, String> {
+        // 查询 sys.user 表查找用户
+        let result = self.service
+            .sql_query("sys", &format!(
+                "SELECT id, password_hash FROM user WHERE username = '{}'",
+                username.replace("'", "''")
+            ))
+            .await
+            .map_err(|e| format!("数据库查询失败: {}", e))?;
+
+        if result.rows.is_empty() {
+            return Err("用户名或密码错误".to_string());
+        }
+
+        // 获取第一行结果
+        let qr = &result.rows[0];
+        if !qr.row.is_some() {
+            return Err("用户数据异常".to_string());
+        }
+
+        let row = qr.row.get_or_default();
+        if row.data.len() < 2 {
+            return Err("用户数据格式错误".to_string());
+        }
+
+        // 解析 id (INT64, 第一列)
+        use protobuf::CodedInputStream;
+        use laoflchdb_engines::Message;
+        let mut input_id = CodedInputStream::from_bytes(&row.data[0]);
+        let id_field = laoflchdb_engines::Field::parse_from(&mut input_id)
+            .map_err(|_| "无法解析用户ID")?;
+
+        let user_id = match id_field.value {
+            Some(laoflchdb_engines::field::field::Value::IntegerValue(i)) => i.value,
+            _ => return Err("用户ID格式错误".to_string()),
+        };
+
+        // 解析 password_hash (STRING, 第二列)
+        let mut input_hash = CodedInputStream::from_bytes(&row.data[1]);
+        let hash_field = laoflchdb_engines::Field::parse_from(&mut input_hash)
+            .map_err(|_| "无法解析密码哈希")?;
+
+        let stored_hash = match hash_field.value {
+            Some(laoflchdb_engines::field::field::Value::StringValue(s)) => s.value,
+            _ => return Err("密码哈希格式错误".to_string()),
+        };
+
+        // 验证密码
+        let input_hash = hash_password(password);
+        if input_hash != stored_hash {
+            return Err("用户名或密码错误".to_string());
+        }
+
+        Ok(user_id)
+    }
 }
 
 pub struct AccessService {
     service: Arc<dyn DatabaseService>,
     permission_checker: Option<Arc<PermissionChecker>>,
+    token_manager: Arc<TokenManager>,
 }
 
 impl AccessService {
@@ -97,6 +211,7 @@ impl AccessService {
         Self {
             service,
             permission_checker: None,
+            token_manager: Arc::new(TokenManager::default()),
         }
     }
 
@@ -104,6 +219,15 @@ impl AccessService {
         Self {
             service,
             permission_checker: Some(permission_checker),
+            token_manager: Arc::new(TokenManager::default()),
+        }
+    }
+
+    pub fn with_token_manager(service: Arc<dyn DatabaseService>, permission_checker: Option<Arc<PermissionChecker>>, token_manager: Arc<TokenManager>) -> Self {
+        Self {
+            service,
+            permission_checker,
+            token_manager,
         }
     }
 
@@ -111,17 +235,19 @@ impl AccessService {
         let sid = service_id.unwrap_or_else(|| "default".to_string());
         if let Some(ref checker) = self.permission_checker {
             if let Some(perm) = checker.get_service_policy(&sid) {
-                return GrpcService::with_permissions(
+                return GrpcService::with_token_manager(
                     Arc::clone(&self.service),
-                    Arc::clone(checker),
+                    Some(Arc::clone(checker)),
                     perm.service_id.clone(),
+                    Arc::clone(&self.token_manager),
                 );
             }
         }
-        GrpcService::with_permissions(
+        GrpcService::with_token_manager(
             Arc::clone(&self.service),
-            Arc::new(PermissionChecker::new(true)),
+            Some(Arc::new(PermissionChecker::new(true))),
             sid,
+            Arc::clone(&self.token_manager),
         )
     }
 
@@ -129,17 +255,19 @@ impl AccessService {
         let sid = service_id.unwrap_or_else(|| "default".to_string());
         if let Some(ref checker) = self.permission_checker {
             if let Some(perm) = checker.get_service_policy(&sid) {
-                return RestService::with_permissions(
+                return RestService::with_token_manager(
                     Arc::clone(&self.service),
                     Arc::clone(checker),
                     perm.service_id.clone(),
+                    Arc::clone(&self.token_manager),
                 );
             }
         }
-        RestService::with_permissions(
+        RestService::with_token_manager(
             Arc::clone(&self.service),
             Arc::new(PermissionChecker::new(true)),
             sid,
+            Arc::clone(&self.token_manager),
         )
     }
 
@@ -302,7 +430,53 @@ fn convert_query_row_to_rpc(qr: &QueryRow) -> crate::pb::rpc::QueryRow {
 
 #[tonic::async_trait]
 impl LaoflchDb for GrpcService {
+    async fn login(&self, request: Request<LoginRequest>) -> Result<Response<LoginResponse>, Status> {
+        let req = request.into_inner();
+        
+        // 验证用户名和密码
+        match self.verify_user(&req.username, &req.password).await {
+            Ok(user_id) => {
+                // 生成 token
+                let token = self.token_manager.generate_token(user_id, req.username.clone()).await;
+                
+                Ok(Response::new(LoginResponse {
+                    success: true,
+                    message: "登录成功".to_string(),
+                    token,
+                    user_id,
+                    username: req.username,
+                }))
+            }
+            Err(e) => Ok(Response::new(LoginResponse {
+                success: false,
+                message: e.to_string(),
+                token: String::new(),
+                user_id: 0,
+                username: String::new(),
+            })),
+        }
+    }
+
+    async fn logout(&self, request: Request<LogoutRequest>) -> Result<Response<LogoutResponse>, Status> {
+        let req = request.into_inner();
+        
+        if self.token_manager.revoke_token(&req.token).await {
+            Ok(Response::new(LogoutResponse {
+                success: true,
+                message: "已注销登录".to_string(),
+            }))
+        } else {
+            Ok(Response::new(LogoutResponse {
+                success: false,
+                message: "Token 不存在或已过期".to_string(),
+            }))
+        }
+    }
+
     async fn get(&self, request: Request<GetRequest>) -> Result<Response<GetResponse>, Status> {
+        // 验证 token
+        self.validate_auth(&request).await?;
+        
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
         
@@ -603,71 +777,77 @@ impl LaoflchDb for GrpcService {
         
         match self.service.sql_query(schema, sql).await {
             Ok(result) => {
-                let mut columns: Vec<String> = Vec::new();
-                let mut rows: Vec<SqlQueryResultRow> = Vec::new();
-                
-                if !result.rows.is_empty() {
+                let columns = if !result.columns.is_empty() {
+                    result.columns.clone()
+                } else if !result.rows.is_empty() {
                     if let Some(first_row) = result.rows.first() {
                         if first_row.row.is_some() {
                             let row = first_row.row.get_or_default();
-                            for (idx, _) in row.data.iter().enumerate() {
-                                columns.push(format!("col_{}", idx));
-                            }
+                            row.data.iter().enumerate()
+                                .map(|(idx, _)| format!("col_{}", idx))
+                                .collect()
+                        } else {
+                            Vec::new()
                         }
+                    } else {
+                        Vec::new()
                     }
-                    
-                    for qr in &result.rows {
-                        if qr.row.is_some() {
-                            let row = qr.row.get_or_default();
-                            let mut fields: Vec<SqlField> = Vec::new();
-                            for data in &row.data {
-                                use protobuf::CodedInputStream;
-                                use laoflchdb_engines::Message;
-                                let mut input = CodedInputStream::from_bytes(data);
-                                if let Ok(field) = laoflchdb_engines::Field::parse_from(&mut input) {
-                                    use laoflchdb_engines::field::field::Value;
-                                    let sql_field = match field.value {
-                                        Some(Value::StringValue(s)) => SqlField {
-                                            value: Some(crate::pb::rpc::sql_field::Value::StringValue(s.value)),
-                                        },
-                                        Some(Value::IntegerValue(i)) => SqlField {
-                                            value: Some(crate::pb::rpc::sql_field::Value::Int64Value(i.value)),
-                                        },
-                                        Some(Value::FloatValue(f)) => SqlField {
-                                            value: Some(crate::pb::rpc::sql_field::Value::FloatValue(f.value)),
-                                        },
-                                        Some(Value::BytesValue(b)) => SqlField {
-                                            value: Some(crate::pb::rpc::sql_field::Value::BytesValue(b.value)),
-                                        },
-                                        _ => SqlField {
-                                            value: Some(crate::pb::rpc::sql_field::Value::StringValue(String::new())),
-                                        },
-                                    };
-                                    fields.push(sql_field);
-                                } else {
-                                    if let Ok(s) = String::from_utf8(data.clone()) {
-                                        if let Ok(num) = s.parse::<i64>() {
-                                            fields.push(SqlField {
-                                                value: Some(crate::pb::rpc::sql_field::Value::Int64Value(num)),
-                                            });
-                                        } else if let Ok(f) = s.parse::<f64>() {
-                                            fields.push(SqlField {
-                                                value: Some(crate::pb::rpc::sql_field::Value::FloatValue(f)),
-                                            });
-                                        } else {
-                                            fields.push(SqlField {
-                                                value: Some(crate::pb::rpc::sql_field::Value::StringValue(s)),
-                                            });
-                                        }
+                } else {
+                    Vec::new()
+                };
+                let mut rows: Vec<SqlQueryResultRow> = Vec::new();
+                
+                for qr in &result.rows {
+                    if qr.row.is_some() {
+                        let row = qr.row.get_or_default();
+                        let mut fields: Vec<SqlField> = Vec::new();
+                        for data in &row.data {
+                            use protobuf::CodedInputStream;
+                            use laoflchdb_engines::Message;
+                            let mut input = CodedInputStream::from_bytes(data);
+                            if let Ok(field) = laoflchdb_engines::Field::parse_from(&mut input) {
+                                use laoflchdb_engines::field::field::Value;
+                                let sql_field = match field.value {
+                                    Some(Value::StringValue(s)) => SqlField {
+                                        value: Some(crate::pb::rpc::sql_field::Value::StringValue(s.value)),
+                                    },
+                                    Some(Value::IntegerValue(i)) => SqlField {
+                                        value: Some(crate::pb::rpc::sql_field::Value::Int64Value(i.value)),
+                                    },
+                                    Some(Value::FloatValue(f)) => SqlField {
+                                        value: Some(crate::pb::rpc::sql_field::Value::FloatValue(f.value)),
+                                    },
+                                    Some(Value::BytesValue(b)) => SqlField {
+                                        value: Some(crate::pb::rpc::sql_field::Value::BytesValue(b.value)),
+                                    },
+                                    _ => SqlField {
+                                        value: Some(crate::pb::rpc::sql_field::Value::StringValue(String::new())),
+                                    },
+                                };
+                                fields.push(sql_field);
+                            } else {
+                                if let Ok(s) = String::from_utf8(data.clone()) {
+                                    if let Ok(num) = s.parse::<i64>() {
+                                        fields.push(SqlField {
+                                            value: Some(crate::pb::rpc::sql_field::Value::Int64Value(num)),
+                                        });
+                                    } else if let Ok(f) = s.parse::<f64>() {
+                                        fields.push(SqlField {
+                                            value: Some(crate::pb::rpc::sql_field::Value::FloatValue(f)),
+                                        });
                                     } else {
                                         fields.push(SqlField {
-                                            value: Some(crate::pb::rpc::sql_field::Value::BytesValue(data.clone())),
+                                            value: Some(crate::pb::rpc::sql_field::Value::StringValue(s)),
                                         });
                                     }
+                                } else {
+                                    fields.push(SqlField {
+                                        value: Some(crate::pb::rpc::sql_field::Value::BytesValue(data.clone())),
+                                    });
                                 }
                             }
-                            rows.push(SqlQueryResultRow { values: fields });
                         }
+                        rows.push(SqlQueryResultRow { values: fields });
                     }
                 }
                 

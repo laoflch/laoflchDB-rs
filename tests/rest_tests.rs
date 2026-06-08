@@ -41,6 +41,23 @@ async fn test_rest_health() {
     assert_eq!(resp.status(), 200);
 }
 
+async fn login(client: &reqwest::Client, addr: std::net::SocketAddr) -> String {
+    let login_body = serde_json::json!({
+        "username": "admin",
+        "password": "laoflchdb"
+    });
+    
+    let res = client.post(format!("http://{}/api/v1/login", addr))
+        .json(&login_body)
+        .send()
+        .await
+        .unwrap();
+    
+    assert_eq!(res.status(), 200);
+    let body: serde_json::Value = res.json().await.unwrap();
+    body["data"]["token"].as_str().unwrap().to_string()
+}
+
 #[tokio::test]
 async fn test_rest_create_table() {
     let (rest_service, service) = setup_rest_service().await;
@@ -55,9 +72,14 @@ async fn test_rest_create_table() {
     
     let client = reqwest::Client::new();
     
+    // 登录获取 token
+    let token = login(&client, addr).await;
+    let auth_header = format!("Bearer {}", token);
+    
     service.create_schema("test").await.unwrap();
     
     let resp = client.post(&format!("http://{}/api/v1/tables", addr))
+        .header("Authorization", &auth_header)
         .json(&serde_json::json!({
             "schema": "test",
             "table_name": "users",
