@@ -30,7 +30,7 @@ def encode_field(value, field_type):
 
 TEST_DB = "./laoflch_db_grpc_join_test"
 TEST_ADDR = "127.0.0.1:19777"
-SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchDB-rust")
+SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchdb")
 
 def run_grpc_join_test():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))

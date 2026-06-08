@@ -616,7 +616,72 @@ permissions:
 
 ---
 
-## 10. 命令行 CLI 能力
+## 10. lsql 命令行客户端
+
+`lsql` 是一个类似 PostgreSQL psql 的交互式 SQL 客户端，通过 gRPC 连接到 laoflchDB。
+
+### 安装和编译
+
+```bash
+cargo build --bin lsql
+```
+
+### 命令行参数
+
+```bash
+lsql --help
+
+lsql 命令行选项：
+      --host <HOST>          数据库服务器地址，格式为 host:port (必需)
+  -s, --schema <SCHEMA>      默认 Schema 名称 (默认: sys)
+  -c, --command <COMMAND>    执行单次 SQL 命令后退出
+  -h, --help                 显示帮助信息
+```
+
+### 使用示例
+
+```bash
+# 连接到本地数据库，使用默认 sys schema
+lsql --host 127.0.0.1:19777
+
+# 连接到指定服务器，使用特定 schema
+lsql --host 192.168.1.100:19777 --schema analytics
+
+# 执行单次 SQL 查询并退出
+lsql --host 127.0.0.1:19777 --command "SELECT * FROM users"
+```
+
+### 交互式命令
+
+进入交互式模式后，可以使用以下命令：
+
+| 命令 | 说明 |
+|------|------|
+| `\q` 或 `\quit` | 退出 lsql |
+| `\help` 或 `\?` | 显示帮助信息 |
+| `\dn` 或 `\schemas` | 列出所有可用的 Schema |
+| `\dt` | 列出当前 Schema 中的所有表 |
+| `\c <schema>` 或 `\connect <schema>` | 切换到指定的 Schema |
+| `<SQL语句>` | 执行 SQL 查询 |
+
+### 交互式会话示例
+
+```sql
+lsql@sys> \dn
+所有 Schema:
+  - sys
+  - analytics
+lsql@sys> \c analytics
+已切换到 Schema 'analytics'
+lsql@analytics> \dt
+当前 Schema 'analytics' 中的表:
+  - events
+  - logs
+lsql@analytics> SELECT * FROM events LIMIT 5;
+...
+```
+
+## 11. 命令行 CLI 能力
 
 ```
 Commands:
@@ -719,6 +784,19 @@ cargo build --release
 
 ```bash
 ./target/release/laoflchDB-rust init
+```
+
+**幂等性说明：**
+
+- **`sys` Schema**：采用"存在则跳过"策略，不会删除或修改现有数据
+- **`--example` 选项**：初始化示例数据，会删除并重建 `example` Schema
+
+```bash
+# 初始化数据库（幂等，不会删除现有数据）
+./target/release/laoflchDB-rust init
+
+# 初始化数据库并创建示例数据（会删除重建 example Schema）
+./target/release/laoflchDB-rust init --example
 ```
 
 ### 3. 启动服务
@@ -825,7 +903,7 @@ python3 tests_python/test_sql_query_validation.py
 
 ---
 
-## 15. 架构升级说明
+## 17. 架构升级说明
 
 ### SQL 引擎重构
 

@@ -188,7 +188,36 @@ impl DatabaseServiceImpl {
 #[async_trait::async_trait]
 impl DatabaseService for DatabaseServiceImpl {
     async fn init_database(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let _ = self.schema_manager.as_ref().get_schema_engine(&self.default_schema).await?;
+        let sys_schema = "sys";
+        
+        let schemas = self.schema_manager.as_ref().list_schemas().await;
+        let schema_exists = schemas.contains(&sys_schema.to_string());
+        
+        let existing_tables = self.list_tables(sys_schema).await.unwrap_or_default();
+        let user_table_exists = existing_tables.contains(&"user".to_string());
+        
+        if schema_exists && user_table_exists {
+            println!("✅ 数据库已初始化，本次启动不执行初始化");
+            return Ok(());
+        }
+        
+        if !schema_exists {
+            println!("✅ 创建 Schema '{}'", sys_schema);
+            self.schema_manager.as_ref().create_schema(sys_schema).await?;
+        }
+        
+        if !user_table_exists {
+            println!("✅ 创建表 'user'");
+            let user_columns = [
+                (1, "id", ColumnType::COLUMN_TYPE_INT64),
+                (2, "username", ColumnType::COLUMN_TYPE_STRING),
+                (3, "email", ColumnType::COLUMN_TYPE_STRING),
+                (4, "password_hash", ColumnType::COLUMN_TYPE_STRING),
+                (5, "created_at", ColumnType::COLUMN_TYPE_STRING),
+            ];
+            self.create_table(sys_schema, "user", &user_columns).await?;
+        }
+        
         Ok(())
     }
 

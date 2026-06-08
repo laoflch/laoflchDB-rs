@@ -19,6 +19,7 @@ use crate::pb::rpc::{
     QueryRequest, QueryResponse,
     SqlQueryRequest, SqlQueryResponse,
     RefreshTablesRequest, RefreshTablesResponse,
+    GetVersionRequest, GetVersionResponse,
     SqlQueryResultRow,
     SqlField,
     ColumnMeta as RpcColumnMeta,
@@ -540,6 +541,17 @@ impl LaoflchDb for GrpcService {
             })),
             Err(e) => Err(Status::internal(e.to_string())),
         }
+    }
+
+    async fn get_version(&self, request: Request<GetVersionRequest>) -> Result<Response<GetVersionResponse>, Status> {
+        let _req = request.into_inner();
+        
+        Ok(Response::new(GetVersionResponse {
+            success: true,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            build_info: format!("Rust {}", rustc_version_runtime::version()),
+            message: String::new(),
+        }))
     }
 
     async fn get_table_meta(&self, request: Request<GetTableMetaRequest>) -> Result<Response<GetTableMetaResponse>, Status> {

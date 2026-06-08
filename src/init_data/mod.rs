@@ -20,10 +20,25 @@ pub async fn init_example_data(db_path: &str) -> Result<(), Box<dyn std::error::
     
     let schema = "example";
     
-    match db_service.create_schema(schema).await {
-        Ok(_) => println!("✅ 创建 Schema 'example'"),
-        Err(e) => println!("⚠️ Schema 'example' 已存在: {}", e),
+    let schemas = db_service.list_schemas().await?;
+    let is_recreate = schemas.contains(&schema.to_string());
+    if is_recreate {
+        println!("⚠️ Schema '{}' 已存在，删除重建", schema);
+        db_service.drop_schema(schema).await?;
+        println!("✅ 删除 Schema '{}'", schema);
     }
+    
+    db_service.create_schema(schema).await?;
+    println!("✅ 创建 Schema '{}'", schema);
+    
+    let existing_tables = if is_recreate {
+        HashSet::new()
+    } else {
+        match db_service.list_tables(schema).await {
+            Ok(tables) => tables.into_iter().collect::<HashSet<_>>(),
+            Err(_) => HashSet::new(),
+        }
+    };
     
     println!("\n--- 创建用户表 users ---");
     let users_columns = [
@@ -32,11 +47,6 @@ pub async fn init_example_data(db_path: &str) -> Result<(), Box<dyn std::error::
         (3, "age", ColumnType::COLUMN_TYPE_INT64),
         (4, "email", ColumnType::COLUMN_TYPE_STRING),
     ];
-    
-    let existing_tables = match db_service.list_tables(schema).await {
-        Ok(tables) => tables.into_iter().collect::<HashSet<_>>(),
-        Err(_) => HashSet::new(),
-    };
     
     if !existing_tables.contains("users") {
         let table_id = db_service.create_table(schema, "users", &users_columns).await?;

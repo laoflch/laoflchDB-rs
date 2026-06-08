@@ -895,11 +895,15 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 ### 0.1.3 (当前)
 - **lsql 命令行客户端**: 类似 PostgreSQL psql 的交互式 SQL 客户端，支持 gRPC 连接
+- **版本支持**: `laoflchdb` 和 `lsql` 均支持 `--version` 选项，版本号从各自的 Cargo.toml 读取
 - **ListSchemas API**: 新增 gRPC API 用于列出所有可用的 Schema
 - **execute_query 日志**: 添加详细的 SQL 执行日志输出，便于调试和性能分析
 - **错误处理优化**: SQL 执行错误时不退出进程，只打印错误信息
 - **Schema 验证**: 切换和默认 Schema 时验证是否存在
-- **测试增强**: 新增 lsql_client_tests.rs、sql_advanced_tests.rs、test_grpc_sql_advanced.py、test_grpc_sql_join.py
+- **幂等初始化**: `init` 命令支持幂等执行，`sys` Schema 存在则跳过，`example` Schema 存在则删除重建
+- **user 表**: 初始化时自动在 `sys` Schema 下创建 `user` 表存储用户信息
+- **CLI 优化**: 移除 help 子命令，增加 `--example` 参数详细说明
+- **测试增强**: 新增 lsql_client_tests.rs、sql_advanced_tests.rs、init_idempotent_tests.rs、cli_tests.rs、test_grpc_sql_advanced.py、test_grpc_sql_join.py
 
 ### 0.1.2
 - **SQL 查询下推优化**: 支持 Filter、Project、Limit 下推到存储层

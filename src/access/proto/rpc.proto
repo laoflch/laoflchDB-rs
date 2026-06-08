@@ -36,6 +36,9 @@ service LaoflchDb {
   
   // 刷新 SQL 引擎中的表注册
   rpc RefreshTables(RefreshTablesRequest) returns (RefreshTablesResponse);
+  
+  // 获取版本信息
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
 }
 
 message RefreshTablesRequest {
@@ -219,6 +222,16 @@ message ListSchemasResponse {
   bool success = 1;
   repeated string schemas = 2;
   string message = 3;
+}
+
+message GetVersionRequest {
+}
+
+message GetVersionResponse {
+  bool success = 1;
+  string version = 2;
+  string build_info = 3;
+  string message = 4;
 }
 
 // 引用的类型定义

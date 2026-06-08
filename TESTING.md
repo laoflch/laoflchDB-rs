@@ -20,7 +20,8 @@ cargo test --test protobuf_tests
 cargo test --test rest_tests
 cargo test --test integration_tests
 cargo test --test sql_advanced_tests
-cargo test --test lsql_client_tests
+cargo test --test init_idempotent_tests
+cargo test --test cli_tests
 
 # Python 自动化测试
 python3 tests_python/test_e2e_grpc.py
@@ -28,6 +29,10 @@ python3 tests_python/test_e2e_rest.py
 python3 tests_python/test_grpc_sql_query.py
 python3 tests_python/test_grpc_sql_advanced.py
 python3 tests_python/test_grpc_sql_join.py
+python3 tests_python/test_lsql_sql.py
+python3 tests_python/test_list_schemas.py
+python3 tests_python/test_data_validation.py
+python3 tests_python/test_sql_query_validation.py
 ```
 
 ---
@@ -107,6 +112,25 @@ python3 tests_python/test_e2e_grpc.py
 python3 tests_python/test_e2e_rest.py
 ```
 
+#### lsql 客户端 SQL 执行测试
+- **文件**: `tests_python/test_lsql_sql.py`
+- **内容**: 通过 lsql 命令行工具测试所有 SQL 功能
+- **测试流程**:
+  1. 通过 REST API 创建表和插入数据
+  2. 使用 lsql 客户端工具执行 SQL 查询
+  3. 验证查询结果正确
+- **测试内容**:
+  - 基本连接测试
+  - SELECT 查询（全表、指定列、WHERE、ORDER BY、LIMIT）
+  - 多表 JOIN（INNER JOIN、LEFT JOIN）
+  - 查询系统表
+  - 列别名
+  - IN 条件查询
+
+```bash
+python3 tests_python/test_lsql_sql.py
+```
+
 ---
 
 ## 测试覆盖率
@@ -181,13 +205,15 @@ python3 tests_python/test_e2e_rest.py
 
 | 测试类型 | 测试数量 | 状态 |
 |---------|---------|------|
+| Rust CLI测试 | 6 | ✅ |
 | Rust 单元测试 | 10 | ✅ |
 | Rust SQL高级测试 | 6 | ✅ |
 | Rust lsql客户端测试 | 4 | ✅ |
+| Rust 幂等初始化测试 | 4 | ✅ |
 | Python gRPC测试 | 1 | ✅ |
 | Python REST测试 | 10 | ✅ |
 | Python SQL测试 | 3 | ✅ |
-| **总计** | **34** | **✅** |
+| **总计** | **44** | **✅** |
 
 ---
 
@@ -301,5 +327,8 @@ jobs:
 ## 相关文档
 
 - [REST_API.md](REST_API.md) - REST API文档
+- [gRPC_API.md](gRPC_API.md) - gRPC API文档
+- [LSQL_USAGE.md](LSQL_USAGE.md) - lsql客户端使用文档
+- [LAOFLCHDB_USAGE.md](LAOFLCHDB_USAGE.md) - 服务端工具使用文档
 - [TEST_REPORT.md](TEST_REPORT.md) - 测试报告
 - [README.md](README.md) - 项目README

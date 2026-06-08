@@ -59,6 +59,8 @@ impl LaoflchDBServer {
             let addr = config.addr.clone();
             
             info!("启动 gRPC 服务: {}", addr);
+            println!("\n🚀 LaoflchDB 服务启动成功！");
+            println!("   gRPC 服务监听: {}", addr);
             let grpc_service: crate::GrpcService = self.access_service.get_grpc_service(None);
             
             tokio::spawn(async move {
@@ -67,6 +69,8 @@ impl LaoflchDBServer {
                 }
             });
         } else {
+            let mut started_protocols = Vec::new();
+            
             for protocol_config in &config.access_protocols {
                 if !protocol_config.enabled {
                     continue;
@@ -79,6 +83,7 @@ impl LaoflchDBServer {
                 match protocol.as_str() {
                     "grpc" => {
                         info!("启动 gRPC 服务: {} (service_id: {:?})", addr, service_id);
+                        started_protocols.push((protocol.to_string(), addr.to_string()));
                         let grpc_service = self.access_service.get_grpc_service(service_id);
                         let addr_owned = addr.to_string();
                         
@@ -90,6 +95,7 @@ impl LaoflchDBServer {
                     }
                     "rest" | "http" => {
                         info!("启动 REST 服务: {} (service_id: {:?})", addr, service_id);
+                        started_protocols.push((protocol.to_string(), addr.to_string()));
                         let rest_service = self.access_service.get_rest_service(service_id);
                         let addr_owned = addr.to_string();
                         
@@ -103,6 +109,11 @@ impl LaoflchDBServer {
                         log::warn!("不支持的协议类型: {}", other);
                     }
                 }
+            }
+            
+            println!("\n🚀 LaoflchDB 服务启动成功！");
+            for (protocol, addr) in started_protocols {
+                println!("   {} 服务监听: {}", protocol.to_uppercase(), addr);
             }
         }
 

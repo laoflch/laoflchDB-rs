@@ -1,12 +1,17 @@
-[alias]
-build-release = "build --release"
-xtask = "run --package xtask --"
-ldb = "xtask ldb"
-all = "xtask all"
-init = "xtask init"
-docker = "xtask docker"
-auto-test = "xtask auto-test"
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))']
+rustflags = [
+    "-C", "opt-level=s",
+    "-C", "panic=abort",
+    "-C", "strip=symbols",
+    "-C", "debuginfo=0",
+]
 
-[env]
-CC = "/usr/local/gcc-13/bin/gcc"
-CXX = "/usr/local/gcc-13/bin/g++"
+[profile.release]
+opt-level = "s"
+debug = false
+debug-assertions = false
+strip = "symbols"
+panic = "abort"
+codegen-units = 1
+lto = "fat"
+incremental = false
