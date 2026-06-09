@@ -68,9 +68,26 @@ pub struct RocksDBTable {
 }
 
 impl RocksDBTable {
+    /// 从带 schema 前缀的表名中提取纯表名
+    /// 例如: "example.orders" -> "orders"
+    ///       "orders" -> "orders"
+    fn extract_table_name(full_name: &str) -> &str {
+        if let Some(pos) = full_name.rfind('.') {
+            &full_name[pos + 1..]
+        } else {
+            full_name
+        }
+    }
+
     pub async fn new(engine: Arc<MultiTableRocksDBEngine>, table_name: &str) -> Self {
-        let schema = match StorageEngine::list_table_cols(&*engine, table_name).await {
+        // 提取纯表名（去掉 schema 前缀）
+        let raw_table_name = Self::extract_table_name(table_name);
+        log::info!("[RocksDBTable] Creating table provider for '{}' (raw: '{}')", table_name, raw_table_name);
+        
+        let schema = match StorageEngine::list_table_cols(&*engine, raw_table_name).await {
             Ok(columns) => {
+                log::info!("[RocksDBTable] Found {} columns for table '{}': {:?}", 
+                    columns.len(), raw_table_name, columns.iter().map(|c| c.column_name.clone()).collect::<Vec<_>>());
                 let arrow_fields: Vec<datafusion::arrow::datatypes::Field> = columns.into_iter()
                     .map(|col| {
                         let col_type = col.column_type.enum_value_or_default();
@@ -80,11 +97,14 @@ impl RocksDBTable {
                     .collect();
                 Arc::new(Schema::new(arrow_fields))
             }
-            Err(_) => Arc::new(Schema::new(Vec::<datafusion::arrow::datatypes::Field>::new())),
+            Err(e) => {
+                log::warn!("[RocksDBTable] Failed to get columns for table '{}': {}", raw_table_name, e);
+                Arc::new(Schema::new(Vec::<datafusion::arrow::datatypes::Field>::new()))
+            }
         };
         Self {
             engine,
-            table_name: table_name.to_string(),
+            table_name: raw_table_name.to_string(),
             schema,
         }
     }
@@ -455,6 +475,12 @@ impl ExecutionPlan for RocksScanExec {
         })?;
         
         let (_, arrays, _) = result;
+        
+        // 检查是否有数据，如果没有则返回空的 batch
+        if arrays.is_empty() || arrays[0].len() == 0 {
+            let empty_batch = RecordBatch::new_empty(schema);
+            return Ok(Box::pin(RocksBatchStream::new(vec![empty_batch])));
+        }
         
         let batch = RecordBatch::try_new(schema, arrays)?;
         
