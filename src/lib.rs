@@ -23,7 +23,7 @@ pub use service::{DatabaseService, DatabaseServiceImpl, SchemaManager};
 pub use access::{AccessService, GrpcService, RestService};
 pub use server::LaoflchDBServer;
 pub use cli::{Cli, Commands};
-pub use config::DatabaseConfig;
+pub use config::{DatabaseConfig, RuntimeMode};
 
 pub mod engine_factory {
     use std::sync::Arc;

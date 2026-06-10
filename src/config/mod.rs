@@ -102,6 +102,20 @@ pub struct AccessProtocolConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+pub enum RuntimeMode {
+    #[serde(rename = "multi_thread")]
+    MultiThread,
+    #[serde(rename = "single_thread")]
+    SingleThread,
+}
+
+impl Default for RuntimeMode {
+    fn default() -> Self {
+        RuntimeMode::MultiThread
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct DatabaseConfig {
     pub db_path: String,
     #[serde(default = "default_addr")]
@@ -114,6 +128,8 @@ pub struct DatabaseConfig {
     pub permissions: Option<Vec<ServicePermission>>,
     #[serde(default = "default_global_default_policy")]
     pub default_policy: String,
+    #[serde(default)]
+    pub runtime_mode: RuntimeMode,
 }
 
 fn default_addr() -> String {
@@ -166,6 +182,7 @@ impl DatabaseConfig {
             access_protocols: vec![],
             permissions: None,
             default_policy: default_global_default_policy(),
+            runtime_mode: RuntimeMode::default(),
         }
     }
 

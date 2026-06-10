@@ -1,13 +1,13 @@
 use laoflchDB_rust::{
-    Cli, Commands, DatabaseConfig, LaoflchDBServer,
+    Cli, Commands, DatabaseConfig, LaoflchDBServer, RuntimeMode,
     AccessService, init_data, engine_factory, DatabaseService,
 };
 use clap::Parser;
 use std::sync::Arc;
 use log::info;
+use tokio::runtime::{Builder, Runtime};
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
     
     let cli = Cli::parse();
@@ -17,14 +17,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         DatabaseConfig::load_or_default()
     };
     
-    match cli.command {
-        Commands::Start { addr, db_path } => {
-            start_server(&config, addr.as_deref(), db_path.as_deref()).await
+    let runtime = match config.runtime_mode {
+        RuntimeMode::MultiThread => {
+            info!("使用多线程运行时");
+            Builder::new_multi_thread().enable_all().build()?
         }
-        Commands::Init { db_path, example } => {
-            init_database(&config, db_path.as_deref(), example).await
+        RuntimeMode::SingleThread => {
+            info!("使用单线程运行时");
+            Builder::new_current_thread().enable_all().build()?
         }
-    }
+    };
+    
+    runtime.block_on(async move {
+        match cli.command {
+            Commands::Start { addr, db_path } => {
+                start_server(&config, addr.as_deref(), db_path.as_deref()).await
+            }
+            Commands::Init { db_path, example } => {
+                init_database(&config, db_path.as_deref(), example).await
+            }
+        }
+    })
 }
 
 async fn start_server(

@@ -7,18 +7,15 @@ FROM ubuntu:24.04
 ARG VERSION=0.1.4
 LABEL version="${VERSION}"
 
-# Create app user and directories
-RUN useradd -m appuser && \
-    mkdir -p /app/data && \
-    mkdir -p /app/config && \
-    chown -R appuser:appuser /app
+# Create app directories
+RUN mkdir -p /app/data && \
+    mkdir -p /app/config
 
-# Switch to non-root user
-USER appuser
+# Set working directory
 WORKDIR /app
 
 # Copy binary
-COPY target/release/laoflchDB-rust /app/laoflchDB-rust
+COPY target/release/laoflchdb /app/laoflchdb
 
 # Copy production configuration
 COPY config/prod.yaml /app/config/prod.yaml
@@ -32,4 +29,4 @@ ENV RUST_LOG=info
 ENV DB_PATH=/app/data
 
 # Start command with production config
-CMD ["/app/laoflchDB-rust", "-c", "/app/config/prod.yaml", "start"]
+CMD ["/app/laoflchdb", "-c", "/app/config/prod.yaml", "start"]

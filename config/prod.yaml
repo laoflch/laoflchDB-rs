@@ -9,6 +9,10 @@ log_level: info
 # Default permission policy: allow or deny
 default_policy: allow
 
+# Runtime mode: multi_thread or single_thread
+# Use single_thread for environments with thread creation restrictions
+runtime_mode: multi_thread
+
 # Access protocols configuration
 access_protocols:
   # gRPC Admin Service
