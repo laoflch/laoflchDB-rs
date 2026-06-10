@@ -131,7 +131,7 @@ impl MultiTableRocksDBEngine {
                 self.put_meta_internal(col_meta_key.as_bytes(), &encoded)?;
             }
             
-            let default_password_hash = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8";
+            let default_password_hash = "c122614abdfa84244a28956ca036991b687700fa0f2e709364799fd39788bd2f";
             
             let mut row_data = Vec::new();
             

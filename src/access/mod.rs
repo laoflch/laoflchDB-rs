@@ -82,9 +82,9 @@ impl GrpcService {
         None
     }
     
-    fn require_authentication<T>(&self, request: &Request<T>) -> Result<i64, Status> {
+    async fn require_authentication_async<T>(&self, request: &Request<T>) -> Result<i64, Status> {
         let metadata = request.metadata();
-        match tokio::runtime::Runtime::new().unwrap().block_on(self.get_user_id_from_metadata(metadata)) {
+        match self.get_user_id_from_metadata(metadata).await {
             Some(user_id) => Ok(user_id),
             None => Err(Status::unauthenticated("Authentication required. Please login first.")),
         }
@@ -822,7 +822,7 @@ impl LaoflchDb for GrpcService {
     }
 
     async fn sql_query(&self, request: Request<SqlQueryRequest>) -> Result<Response<SqlQueryResponse>, Status> {
-        self.require_authentication(&request)?;
+        self.require_authentication_async(&request).await?;
         
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
