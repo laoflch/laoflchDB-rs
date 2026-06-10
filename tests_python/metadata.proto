@@ -19,6 +19,7 @@ message ColumnMeta {
     uint64 column_id = 2;
     string column_name = 3;
     ColumnType column_type = 4;
+    string comment = 5;
 }
 
 enum ColumnType {

@@ -11,7 +11,6 @@ pub struct LaoflchDBServer {
     sql_engine: Arc<tokio::sync::RwLock<dyn SQLEngine>>,
     service: Arc<dyn DatabaseService>,
     access_service: Arc<AccessService>,
-    permission_checker: Arc<PermissionChecker>,
 }
 
 impl LaoflchDBServer {
@@ -19,7 +18,7 @@ impl LaoflchDBServer {
         schema_manager: Arc<SchemaManager>,
         sql_engine: Arc<tokio::sync::RwLock<dyn SQLEngine>>,
         service: Arc<dyn DatabaseService>,
-        access_service: Arc<AccessService>,
+        _access_service: Arc<AccessService>,
         config: &DatabaseConfig,
     ) -> Self {
         let global_default = config.get_global_default_policy();
@@ -41,7 +40,6 @@ impl LaoflchDBServer {
             sql_engine,
             service,
             access_service: Arc::new(access_service),
-            permission_checker: Arc::new(permission_checker),
         }
     }
 

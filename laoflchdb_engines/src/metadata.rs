@@ -176,6 +176,8 @@ pub struct TableMeta {
     pub column_count: u32,
     // @@protoc_insertion_point(field:laoflchdb.TableMeta.next_auto_inc_column_id)
     pub next_auto_inc_column_id: u64,
+    // @@protoc_insertion_point(field:laoflchdb.TableMeta.comment)
+    pub comment: ::std::string::String,
     // special fields
     // @@protoc_insertion_point(special_field:laoflchdb.TableMeta.special_fields)
     pub special_fields: ::protobuf::SpecialFields,
@@ -193,7 +195,7 @@ impl TableMeta {
     }
 
     fn generated_message_descriptor_data() -> ::protobuf::reflect::GeneratedMessageDescriptorData {
-        let mut fields = ::std::vec::Vec::with_capacity(4);
+        let mut fields = ::std::vec::Vec::with_capacity(5);
         let mut oneofs = ::std::vec::Vec::with_capacity(0);
         fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
             "table_id",
@@ -214,6 +216,11 @@ impl TableMeta {
             "next_auto_inc_column_id",
             |m: &TableMeta| { &m.next_auto_inc_column_id },
             |m: &mut TableMeta| { &mut m.next_auto_inc_column_id },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "comment",
+            |m: &TableMeta| { &m.comment },
+            |m: &mut TableMeta| { &mut m.comment },
         ));
         ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<TableMeta>(
             "TableMeta",
@@ -245,6 +252,9 @@ impl ::protobuf::Message for TableMeta {
                 32 => {
                     self.next_auto_inc_column_id = is.read_uint64()?;
                 },
+                42 => {
+                    self.comment = is.read_string()?;
+                },
                 tag => {
                     ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
                 },
@@ -269,6 +279,9 @@ impl ::protobuf::Message for TableMeta {
         if self.next_auto_inc_column_id != 0 {
             my_size += ::protobuf::rt::uint64_size(4, self.next_auto_inc_column_id);
         }
+        if !self.comment.is_empty() {
+            my_size += ::protobuf::rt::string_size(5, &self.comment);
+        }
         my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
         self.special_fields.cached_size().set(my_size as u32);
         my_size
@@ -286,6 +299,9 @@ impl ::protobuf::Message for TableMeta {
         }
         if self.next_auto_inc_column_id != 0 {
             os.write_uint64(4, self.next_auto_inc_column_id)?;
+        }
+        if !self.comment.is_empty() {
+            os.write_string(5, &self.comment)?;
         }
         os.write_unknown_fields(self.special_fields.unknown_fields())?;
         ::std::result::Result::Ok(())
@@ -308,6 +324,7 @@ impl ::protobuf::Message for TableMeta {
         self.table_name.clear();
         self.column_count = 0;
         self.next_auto_inc_column_id = 0;
+        self.comment.clear();
         self.special_fields.clear();
     }
 
@@ -317,6 +334,7 @@ impl ::protobuf::Message for TableMeta {
             table_name: ::std::string::String::new(),
             column_count: 0,
             next_auto_inc_column_id: 0,
+            comment: ::std::string::String::new(),
             special_fields: ::protobuf::SpecialFields::new(),
         };
         &instance
@@ -352,6 +370,8 @@ pub struct ColumnMeta {
     pub column_name: ::std::string::String,
     // @@protoc_insertion_point(field:laoflchdb.ColumnMeta.column_type)
     pub column_type: ::protobuf::EnumOrUnknown<ColumnType>,
+    // @@protoc_insertion_point(field:laoflchdb.ColumnMeta.comment)
+    pub comment: ::std::string::String,
     // special fields
     // @@protoc_insertion_point(special_field:laoflchdb.ColumnMeta.special_fields)
     pub special_fields: ::protobuf::SpecialFields,
@@ -369,7 +389,7 @@ impl ColumnMeta {
     }
 
     fn generated_message_descriptor_data() -> ::protobuf::reflect::GeneratedMessageDescriptorData {
-        let mut fields = ::std::vec::Vec::with_capacity(4);
+        let mut fields = ::std::vec::Vec::with_capacity(5);
         let mut oneofs = ::std::vec::Vec::with_capacity(0);
         fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
             "table_id",
@@ -390,6 +410,11 @@ impl ColumnMeta {
             "column_type",
             |m: &ColumnMeta| { &m.column_type },
             |m: &mut ColumnMeta| { &mut m.column_type },
+        ));
+        fields.push(::protobuf::reflect::rt::v2::make_simpler_field_accessor::<_, _>(
+            "comment",
+            |m: &ColumnMeta| { &m.comment },
+            |m: &mut ColumnMeta| { &mut m.comment },
         ));
         ::protobuf::reflect::GeneratedMessageDescriptorData::new_2::<ColumnMeta>(
             "ColumnMeta",
@@ -421,6 +446,9 @@ impl ::protobuf::Message for ColumnMeta {
                 32 => {
                     self.column_type = is.read_enum_or_unknown()?;
                 },
+                42 => {
+                    self.comment = is.read_string()?;
+                },
                 tag => {
                     ::protobuf::rt::read_unknown_or_skip_group(tag, is, self.special_fields.mut_unknown_fields())?;
                 },
@@ -445,6 +473,9 @@ impl ::protobuf::Message for ColumnMeta {
         if self.column_type != ::protobuf::EnumOrUnknown::new(ColumnType::COLUMN_TYPE_STRING) {
             my_size += ::protobuf::rt::int32_size(4, self.column_type.value());
         }
+        if !self.comment.is_empty() {
+            my_size += ::protobuf::rt::string_size(5, &self.comment);
+        }
         my_size += ::protobuf::rt::unknown_fields_size(self.special_fields.unknown_fields());
         self.special_fields.cached_size().set(my_size as u32);
         my_size
@@ -462,6 +493,9 @@ impl ::protobuf::Message for ColumnMeta {
         }
         if self.column_type != ::protobuf::EnumOrUnknown::new(ColumnType::COLUMN_TYPE_STRING) {
             os.write_enum(4, ::protobuf::EnumOrUnknown::value(&self.column_type))?;
+        }
+        if !self.comment.is_empty() {
+            os.write_string(5, &self.comment)?;
         }
         os.write_unknown_fields(self.special_fields.unknown_fields())?;
         ::std::result::Result::Ok(())
@@ -484,6 +518,7 @@ impl ::protobuf::Message for ColumnMeta {
         self.column_id = 0;
         self.column_name.clear();
         self.column_type = ::protobuf::EnumOrUnknown::new(ColumnType::COLUMN_TYPE_STRING);
+        self.comment.clear();
         self.special_fields.clear();
     }
 
@@ -493,6 +528,7 @@ impl ::protobuf::Message for ColumnMeta {
             column_id: 0,
             column_name: ::std::string::String::new(),
             column_type: ::protobuf::EnumOrUnknown::from_i32(0),
+            comment: ::std::string::String::new(),
             special_fields: ::protobuf::SpecialFields::new(),
         };
         &instance

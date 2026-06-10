@@ -13,9 +13,8 @@ use datafusion::physical_plan::{ExecutionPlan, DisplayAs, Partitioning, PlanProp
 use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType, SchedulingType};
 use datafusion_physical_expr::EquivalenceProperties;
 use futures::Stream;
-use tokio::sync::RwLock as TokioRwLock;
 
-use laoflchdb_engines::{StorageEngine, ColumnFilter, ColumnFilterCondition, FilterOperator, Row};
+use laoflchdb_engines::{StorageEngine, ColumnFilter, ColumnFilterCondition, FilterOperator};
 
 /// 过滤器项
 #[derive(Debug, Clone)]
@@ -372,36 +371,6 @@ impl RocksDBTable {
         }
         field
     }
-    
-    /// 添加列过滤器
-    fn add_column_filter(
-        &self,
-        column_filters: &mut Vec<ColumnFilter>,
-        column_name: String,
-        op: FilterOperator,
-        field: laoflchdb_engines::Field,
-    ) {
-        // 检查是否已经有该列的过滤器，如果有则添加条件
-        if let Some(existing_filter) = column_filters.iter_mut().find(|cf| cf.column_name == column_name) {
-            existing_filter.conditions.push(ColumnFilterCondition {
-                op: op.into(),
-                value: Some(field).into(),
-                values: Vec::new(),
-                special_fields: ::protobuf::SpecialFields::default(),
-            });
-        } else {
-            column_filters.push(ColumnFilter {
-                column_name,
-                conditions: vec![ColumnFilterCondition {
-                    op: op.into(),
-                    value: Some(field).into(),
-                    values: Vec::new(),
-                    special_fields: ::protobuf::SpecialFields::default(),
-                }],
-                special_fields: ::protobuf::SpecialFields::default(),
-            });
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -570,17 +539,17 @@ impl TableProvider for RocksDBTable {
             }
         }
         
-        /// Filter Pushdown 类型说明:
-        /// 
-        /// - `Exact`: 过滤器可以精确下推到存储层执行，返回的结果与在内存中过滤完全一致
-        ///   支持的比较操作符: =, !=, <, >, <=, >=
-        ///   支持的逻辑操作符: AND, OR (仅当所有子表达式都支持时)
-        /// 
-        /// - `Inexact`: 过滤器可以下推，但结果可能不完全精确
-        ///   例如：使用了存储层不完全支持的函数
-        /// 
-        /// - `Unsupported`: 过滤器不能下推，必须在内存中执行
-        ///   例如：使用了存储层不支持的函数或表达式
+        // Filter Pushdown 类型说明:
+        // 
+        // - `Exact`: 过滤器可以精确下推到存储层执行，返回的结果与在内存中过滤完全一致
+        //   支持的比较操作符: =, !=, <, >, <=, >=
+        //   支持的逻辑操作符: AND, OR (仅当所有子表达式都支持时)
+        // 
+        // - `Inexact`: 过滤器可以下推，但结果可能不完全精确
+        //   例如：使用了存储层不完全支持的函数
+        // 
+        // - `Unsupported`: 过滤器不能下推，必须在内存中执行
+        //   例如：使用了存储层不支持的函数或表达式
         
         let mut supported = Vec::new();
         for filter in filters {

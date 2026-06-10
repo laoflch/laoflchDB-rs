@@ -339,12 +339,12 @@ async fn test_sql_engine_query() {
     
     // 创建测试表
     let columns = vec![
-        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
-        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING),
-        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
+        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, None),
+        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
     ];
     
-    service.create_table("sys", "sql_query_test", &columns).await.unwrap();
+    service.create_table("sys", "sql_query_test", None, &columns).await.unwrap();
     
     // 等待表注册
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
@@ -363,13 +363,13 @@ async fn test_sql_query_with_data() {
     
     // 创建测试表
     let columns = vec![
-        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
-        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING),
-        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
-        (3u32, "score", laoflchdb_engines::ColumnType::COLUMN_TYPE_FLOAT),
+        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
+        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, None),
+        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
+        (3u32, "score", laoflchdb_engines::ColumnType::COLUMN_TYPE_FLOAT, None),
     ];
     
-    service.create_table("sys", "sql_data_test", &columns).await.unwrap();
+    service.create_table("sys", "sql_data_test", None, &columns).await.unwrap();
     
     // 等待表注册
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
@@ -466,12 +466,12 @@ async fn test_sql_query_filter_pushdown() {
     
     // 创建测试表
     let columns = vec![
-        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
-        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING),
-        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
+        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, None),
+        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
     ];
     
-    service.create_table("sys", "filter_test", &columns).await.unwrap();
+    service.create_table("sys", "filter_test", None, &columns).await.unwrap();
     
     // 等待表注册
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
@@ -558,13 +558,13 @@ async fn test_sql_query_cross_column_or() {
     
     // 创建测试表
     let columns = vec![
-        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
-        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING),
-        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
-        (3u32, "score", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
+        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
+        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, None),
+        (2u32, "age", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
+        (3u32, "score", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
     ];
     
-    service.create_table("sys", "or_filter_test", &columns).await.unwrap();
+    service.create_table("sys", "or_filter_test", None, &columns).await.unwrap();
     
     // 等待表注册
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;

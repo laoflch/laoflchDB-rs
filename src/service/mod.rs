@@ -38,6 +38,10 @@ impl fmt::Debug for SchemaManager {
 }
 
 impl SchemaManager {
+    pub fn get_base_path(&self) -> &str {
+        &self.base_path
+    }
+    
     pub async fn new<F>(base_path: &str, engine_factory: F) -> Self
     where
         F: Fn(&EngineOptions) -> Result<Box<dyn StorageEngine>, Box<dyn std::error::Error + Send + Sync>> + Send + Sync + 'static,
@@ -52,6 +56,29 @@ impl SchemaManager {
     pub async fn new_with_engine(base_path: &str, default_schema: &str, engine: Arc<tokio::sync::RwLock<multi_table_rocksdb::MultiTableRocksDBEngine>>) -> Self {
         let mut engines: HashMap<String, Arc<tokio::sync::RwLock<Box<dyn StorageEngine + 'static>>>> = HashMap::new();
         engines.insert(default_schema.to_string(), Arc::new(tokio::sync::RwLock::new(Box::new(engine.read().await.clone()))));
+        
+        let path = std::path::Path::new(base_path);
+        if path.exists() && path.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(path) {
+                for entry in entries.flatten() {
+                    let dir_path = entry.path();
+                    if dir_path.is_dir() {
+                        if let Some(schema_name) = dir_path.file_name().and_then(|n| n.to_str()) {
+                            if schema_name != default_schema && !engines.contains_key(schema_name) {
+                                let schema_path = format!("{}/{}", base_path, schema_name);
+                                let options = EngineOptions {
+                                    db_path: schema_path,
+                                    schema_name: schema_name.to_string(),
+                                };
+                                if let Ok(engine) = multi_table_rocksdb::MultiTableRocksDBEngine::new(&options) {
+                                    engines.insert(schema_name.to_string(), Arc::new(tokio::sync::RwLock::new(Box::new(engine))));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         
         Self {
             engines: tokio::sync::Mutex::new(engines),
@@ -98,6 +125,9 @@ impl SchemaManager {
         }
 
         let schema_path = format!("{}/{}", self.base_path, schema);
+        
+        std::fs::create_dir_all(&self.base_path)?;
+        
         let options = EngineOptions {
             db_path: schema_path,
             schema_name: schema.to_string(),
@@ -130,10 +160,14 @@ pub trait DatabaseService: Send + Sync + 'static {
     async fn list_schemas(&self) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>;
     async fn drop_schema(&self, schema: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     
-    async fn create_table(&self, schema: &str, table: &str, columns: &[(u32, &str, ColumnType)]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>;
+    async fn create_table(&self, schema: &str, table: &str, table_comment: Option<&str>, columns: &[(u32, &str, ColumnType, Option<&str>)]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>;
     async fn drop_table(&self, schema: &str, table: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn list_tables(&self, schema: &str) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_table_cols(&self, schema: &str, table: &str) -> Result<Vec<ColumnMeta>, Box<dyn std::error::Error + Send + Sync>>;
+    
+    async fn update_table_comment(&self, schema: &str, table: &str, comment: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+    
+    async fn update_column_comment(&self, schema: &str, table: &str, column_name: &str, comment: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     
     async fn add_row(&self, schema: &str, table: &str, row: &Row) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_row(&self, schema: &str, table: &str, row_id: u64) -> Result<Option<Row>, Box<dyn std::error::Error + Send + Sync>>;
@@ -188,6 +222,35 @@ impl DatabaseServiceImpl {
 
         let schema_manager = Arc::new(SchemaManager::new_with_engine(base_path, "sys", sys_engine).await);
         
+        // 启动时从 SchemaManager 获取所有已加载的 schema 并注册到 SQL 引擎
+        {
+            let mut sql_engine_guard = sql_engine.write().await;
+            let schemas = schema_manager.list_schemas().await;
+            log::info!("[SQL] Found {} schemas: {:?}", schemas.len(), schemas);
+            for schema_name in schemas {
+                if schema_name != "sys" {
+                    log::info!("[SQL] Processing schema: {}", schema_name);
+                    if let Ok(engine) = schema_manager.get_schema_engine(&schema_name).await {
+                        let engine_read = engine.read().await;
+                        if let Ok(tables) = engine_read.list_tables().await {
+                            log::info!("[SQL] Found {} tables in schema '{}': {:?}", tables.len(), schema_name, tables);
+                            for table in tables {
+                                let full_table_name = format!("{}.{}", schema_name, table);
+                                log::info!("[SQL] Registering table '{}'", full_table_name);
+                                let table_provider = engine_read.create_table_provider(&full_table_name);
+                                let result = sql_engine_guard.register_table_with_schema(&schema_name, &table, table_provider).await;
+                                log::info!("[SQL] Registration result for '{}.{}': {:?}", schema_name, table, result);
+                            }
+                        } else {
+                            log::warn!("[SQL] Failed to list tables in schema '{}'", schema_name);
+                        }
+                    } else {
+                        log::warn!("[SQL] Failed to get engine for schema '{}'", schema_name);
+                    }
+                }
+            }
+        }
+        
         Self { 
             schema_manager,
             sql_engine,
@@ -217,9 +280,15 @@ impl DatabaseService for DatabaseServiceImpl {
         
         // 检查 user 表结构是否为新版本 (id, username, email, password_hash, created_at)
         let user_table_needs_update = if user_table_exists {
-            // 尝试查询 username 字段，如果失败则说明是旧版本表
-            let check_sql = "SELECT username FROM user LIMIT 1";
-            self.sql_query(sys_schema, check_sql).await.is_err()
+            // 使用 list_table_cols 检查表结构，避免使用 SQL 查询
+            match self.list_table_cols(sys_schema, "user").await {
+                Ok(cols) => {
+                    let col_names: Vec<String> = cols.iter().map(|c| c.column_name.clone()).collect();
+                    // 新版本表应该包含 username 字段
+                    !col_names.contains(&"username".to_string())
+                }
+                Err(_) => true,
+            }
         } else {
             false
         };
@@ -242,13 +311,13 @@ impl DatabaseService for DatabaseServiceImpl {
         
         println!("✅ 创建表 'user' (id, username, email, password_hash, created_at)");
         let user_columns = [
-            (1, "id", ColumnType::COLUMN_TYPE_INT64),
-            (2, "username", ColumnType::COLUMN_TYPE_STRING),
-            (3, "email", ColumnType::COLUMN_TYPE_STRING),
-            (4, "password_hash", ColumnType::COLUMN_TYPE_STRING),
-            (5, "created_at", ColumnType::COLUMN_TYPE_STRING),
+            (1, "id", ColumnType::COLUMN_TYPE_INT64, Some("用户ID，主键自增")),
+            (2, "username", ColumnType::COLUMN_TYPE_STRING, Some("用户名，唯一标识")),
+            (3, "email", ColumnType::COLUMN_TYPE_STRING, Some("邮箱地址")),
+            (4, "password_hash", ColumnType::COLUMN_TYPE_STRING, Some("密码哈希值")),
+            (5, "created_at", ColumnType::COLUMN_TYPE_STRING, Some("创建时间")),
         ];
-        self.create_table(sys_schema, "user", &user_columns).await?;
+        self.create_table(sys_schema, "user", Some("用户表：存储系统用户信息"), &user_columns).await?;
 
         // 创建默认用户
         println!("✅ 创建默认用户 'admin'");
@@ -312,7 +381,18 @@ impl DatabaseService for DatabaseServiceImpl {
     }
 
     async fn create_schema(&self, schema: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.schema_manager.as_ref().create_schema(schema).await
+        self.schema_manager.as_ref().create_schema(schema).await?;
+        
+        // 在 DataFusion 中创建对应的 schema
+        let sql_engine = self.sql_engine.write().await;
+        let create_schema_sql = format!("CREATE SCHEMA IF NOT EXISTS laoflchdb.{};", schema);
+        log::info!("[SQL] Creating schema '{}' in DataFusion", schema);
+        match sql_engine.execute_query(&create_schema_sql).await {
+            Ok(_) => log::info!("[SQL] Schema '{}' created successfully in DataFusion", schema),
+            Err(e) => log::warn!("[SQL] Failed to create schema '{}' in DataFusion: {}", schema, e),
+        }
+        
+        Ok(())
     }
 
     async fn list_schemas(&self) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {
@@ -330,17 +410,38 @@ impl DatabaseService for DatabaseServiceImpl {
         self.schema_manager.as_ref().drop_schema(schema).await
     }
 
-    async fn create_table(&self, schema: &str, table: &str, columns: &[(u32, &str, ColumnType)]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
-        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
-        let table = table.to_string();
+    async fn create_table(&self, schema: &str, table: &str, table_comment: Option<&str>, columns: &[(u32, &str, ColumnType, Option<&str>)]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        let engine_ref = self.schema_manager.as_ref().get_schema_engine(schema).await?;
+        let table_name = table.to_string();
         let columns = columns.to_vec();
-        let mut engine = engine.write().await;
-        let table_id = engine.as_mut().create_table(&table, &columns).await?;
         
-        if schema == "sys" {
-            let mut sql_engine = self.sql_engine.write().await;
-            sql_engine.register_table(&table).await?;
+        log::warn!("[CreateTable] Creating table '{}.{}' with {} columns", schema, table_name, columns.len());
+        
+        let table_id = {
+            let mut engine_write = engine_ref.write().await;
+            engine_write.as_mut().create_table(&table_name, table_comment, &columns).await?
+        };
+        
+        log::info!("[CreateTable] Table ID: {}", table_id);
+        
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        
+        // 验证表是否创建成功
+        let engine_read = engine_ref.read().await;
+        if let Ok(cols) = engine_read.list_table_cols(&table_name).await {
+            log::info!("[CreateTable] Table '{}' columns after creation: {:?}", table_name, cols.iter().map(|c| c.column_name.clone()).collect::<Vec<_>>());
+        } else {
+            log::error!("[CreateTable] Failed to get columns for '{}'", table_name);
         }
+        
+        let full_table_name = format!("{}.{}", schema, table_name);
+        log::info!("[SQL] Creating table provider for '{}'", full_table_name);
+        
+        let table_provider = engine_read.create_table_provider(&full_table_name);
+        
+        let mut sql_engine = self.sql_engine.write().await;
+        sql_engine.register_table_with_schema(schema, &table_name, table_provider).await?;
+        log::info!("[SQL] Table '{}.{}' registered in DataFusion", schema, table_name);
         
         Ok(table_id)
     }
@@ -351,10 +452,9 @@ impl DatabaseService for DatabaseServiceImpl {
         let mut engine = engine.write().await;
         engine.as_mut().drop_table(&table).await?;
         
-        if schema == "sys" {
-            let mut sql_engine = self.sql_engine.write().await;
-            sql_engine.deregister_table(&table).await?;
-        }
+        let mut sql_engine = self.sql_engine.write().await;
+        sql_engine.deregister_table_with_schema(schema, &table).await?;
+        log::info!("[SQL] Table '{}.{}' deregistered from DataFusion", schema, table);
         
         Ok(())
     }
@@ -370,6 +470,21 @@ impl DatabaseService for DatabaseServiceImpl {
         let table = table.to_string();
         let engine = engine.read().await;
         engine.as_ref().list_table_cols(&table).await
+    }
+
+    async fn update_table_comment(&self, schema: &str, table: &str, comment: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
+        let table = table.to_string();
+        let mut engine = engine.write().await;
+        engine.as_mut().update_table_comment(&table, comment).await
+    }
+
+    async fn update_column_comment(&self, schema: &str, table: &str, column_name: &str, comment: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let engine = self.schema_manager.as_ref().get_schema_engine(schema).await?;
+        let table = table.to_string();
+        let column_name = column_name.to_string();
+        let mut engine = engine.write().await;
+        engine.as_mut().update_column_comment(&table, &column_name, comment).await
     }
 
     async fn add_row(&self, schema: &str, table: &str, row: &Row) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
@@ -452,9 +567,92 @@ impl DatabaseService for DatabaseServiceImpl {
         engine.as_mut().query(query).await
     }
     
-    async fn sql_query(&self, _schema: &str, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
-        let sql_engine = self.sql_engine.read().await;
-        sql_engine.execute_query(sql).await
+    async fn sql_query(&self, schema: &str, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>> {
+        // 从 SQL 中提取所有 schema 引用
+        let mut schemas_to_register = std::collections::HashSet::new();
+        schemas_to_register.insert(self.default_schema.clone());
+        schemas_to_register.insert(schema.to_string());
+        
+        let schema_pattern = regex::Regex::new(r"(\w+)\.(\w+)").unwrap();
+        for cap in schema_pattern.captures_iter(sql) {
+            if let Some(schema_capture) = cap.get(1) {
+                schemas_to_register.insert(schema_capture.as_str().to_string());
+            }
+        }
+        
+        let mut sql_engine = self.sql_engine.write().await;
+        
+        // 注册缺失的 schema 和表
+        for schema_name in &schemas_to_register {
+            let engine = match self.schema_manager.as_ref().get_schema_engine(schema_name).await {
+                Ok(e) => e,
+                Err(_) => {
+                    // 如果 schema 不存在，尝试创建引擎并注册表
+                    let base_path = self.schema_manager.get_base_path();
+                    let db_path = format!("{}/{}", base_path, schema_name);
+                    if let Ok(engine) = multi_table_rocksdb::MultiTableRocksDBEngine::new(&laoflchdb_engines::EngineOptions {
+                        db_path,
+                        schema_name: schema_name.to_string(),
+                    }) {
+                        let engine = Arc::new(tokio::sync::RwLock::new(engine));
+                        let engine_read = engine.read().await;
+                        if let Ok(tables) = engine_read.list_tables().await {
+                            for table in tables {
+                                let full_table_name = format!("{}.{}", schema_name, table);
+                                let table_provider = engine_read.create_table_provider(&full_table_name);
+                                let _ = sql_engine.register_table_with_schema(schema_name, &table, table_provider);
+                            }
+                        }
+                    }
+                    continue;
+                }
+            };
+            
+            let engine_read = engine.read().await;
+            if let Ok(tables) = engine_read.list_tables().await {
+                for table in tables {
+                    let full_table_name = format!("{}.{}", schema_name, table);
+                    let table_provider = engine_read.create_table_provider(&full_table_name);
+                    let _ = sql_engine.register_table_with_schema(schema_name, &table, table_provider);
+                }
+            }
+        }
+        
+        let modified_sql = if !schema.is_empty() && schema != "sys" {
+            let from_pattern = regex::Regex::new(r"(?i)(FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)(\s|,|;|$)").unwrap();
+            from_pattern.replace_all(sql, |caps: &regex::Captures| {
+                let keyword = caps.get(1).unwrap().as_str();
+                let table_name = caps.get(2).unwrap().as_str();
+                let suffix = caps.get(3).unwrap().as_str();
+                if table_name.contains('.') {
+                    if table_name.contains("laoflchdb.") {
+                        format!("{} {}{}", keyword, table_name, suffix)
+                    } else {
+                        format!("{} laoflchdb.{}{}", keyword, table_name, suffix)
+                    }
+                } else {
+                    format!("{} laoflchdb.{}.{}{}", keyword, schema, table_name, suffix)
+                }
+            }).to_string()
+        } else {
+            let from_pattern = regex::Regex::new(r"(?i)(FROM|JOIN)\s+([a-zA-Z_][a-zA-Z0-9_]*)(\s|,|;|$)").unwrap();
+            from_pattern.replace_all(sql, |caps: &regex::Captures| {
+                let keyword = caps.get(1).unwrap().as_str();
+                let table_name = caps.get(2).unwrap().as_str();
+                let suffix = caps.get(3).unwrap().as_str();
+                if table_name.contains('.') {
+                    if table_name.contains("laoflchdb.") {
+                        format!("{} {}{}", keyword, table_name, suffix)
+                    } else {
+                        format!("{} laoflchdb.{}{}", keyword, table_name, suffix)
+                    }
+                } else {
+                    format!("{} laoflchdb.sys.{}{}", keyword, table_name, suffix)
+                }
+            }).to_string()
+        };
+        
+        sql_engine.execute_query(&modified_sql).await
     }
     
     async fn refresh_tables(&self, _schema: &str) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>> {

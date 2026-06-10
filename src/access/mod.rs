@@ -8,6 +8,8 @@ use crate::pb::rpc::{
     DropTableRequest, DropTableResponse,
     ListTablesRequest, ListTablesResponse,
     ListTableColsRequest, ListTableColsResponse,
+    UpdateTableCommentRequest, UpdateTableCommentResponse,
+    UpdateColumnCommentRequest, UpdateColumnCommentResponse,
     AddRowRequest, AddRowResponse,
     GetRowRequest, GetRowResponse,
     DeleteRowRequest, DeleteRowResponse,
@@ -39,7 +41,7 @@ fn hash_password(password: &str) -> String {
 }
 
 use protobuf::Enum;
-use laoflchdb_engines::{ColumnMeta, Row, ColumnType, Query, QueryResult, QueryRow, SpecialFields};
+use laoflchdb_engines::{ColumnMeta, Row, ColumnType, Query, QueryRow, SpecialFields};
 use std::sync::Arc;
 use tonic::{Request, Response, Status};
 
@@ -65,6 +67,26 @@ impl GrpcService {
             permission_checker: None,
             service_id: "default".to_string(),
             token_manager: Arc::new(TokenManager::default()),
+        }
+    }
+    
+    async fn get_user_id_from_metadata(&self, metadata: &tonic::metadata::MetadataMap) -> Option<i64> {
+        if let Some(token) = metadata.get("authorization") {
+            if let Ok(token_str) = token.to_str() {
+                let token_str = token_str.trim_start_matches("Bearer ").trim();
+                if let Some(token_info) = self.token_manager.validate_token(token_str).await {
+                    return Some(token_info.user_id);
+                }
+            }
+        }
+        None
+    }
+    
+    fn require_authentication<T>(&self, request: &Request<T>) -> Result<i64, Status> {
+        let metadata = request.metadata();
+        match tokio::runtime::Runtime::new().unwrap().block_on(self.get_user_id_from_metadata(metadata)) {
+            Some(user_id) => Ok(user_id),
+            None => Err(Status::unauthenticated("Authentication required. Please login first.")),
         }
     }
 
@@ -282,6 +304,7 @@ fn convert_column_meta_to_rpc(meta: &ColumnMeta) -> RpcColumnMeta {
         column_id: meta.column_id,
         column_name: meta.column_name.clone(),
         column_type: meta.column_type.value(),
+        comment: meta.comment.clone(),
     }
 }
 
@@ -526,23 +549,27 @@ impl LaoflchDb for GrpcService {
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
         let table_name = req.table_name.as_str();
+        let table_comment = if req.comment.is_empty() { None } else { Some(req.comment.as_str()) };
 
         self.check_permission(schema, Some(table_name), PermissionAction::CreateTable)?;
 
-        let columns: Vec<(u32, String, ColumnType)> = req.columns
+        let columns: Vec<(u32, String, ColumnType, String)> = req.columns
             .into_iter()
             .enumerate()
             .map(|(idx, col)| {
                 let ct = ColumnType::from_i32(col.column_type).unwrap_or(ColumnType::COLUMN_TYPE_STRING);
-                (idx as u32, col.name, ct)
+                (idx as u32, col.name, ct, col.comment)
             })
             .collect();
         
-        let columns_ref: Vec<(u32, &str, ColumnType)> = columns.iter()
-            .map(|(id, name, col_type)| (*id, name.as_str(), *col_type))
+        let columns_ref: Vec<(u32, &str, ColumnType, Option<&str>)> = columns.iter()
+            .map(|(id, name, col_type, comment)| {
+                let col_comment = if comment.is_empty() { None } else { Some(comment.as_str()) };
+                (*id, name.as_str(), *col_type, col_comment)
+            })
             .collect();
 
-        match self.service.create_table(schema, table_name, &columns_ref).await {
+        match self.service.create_table(schema, table_name, table_comment, &columns_ref).await {
             Ok(table_id) => Ok(Response::new(CreateTableResponse {
                 success: true,
                 table_id,
@@ -594,6 +621,32 @@ impl LaoflchDb for GrpcService {
                 success: true,
                 columns: columns.iter().map(convert_column_meta_to_rpc).collect(),
                 message: String::new(),
+            })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    async fn update_table_comment(&self, request: Request<UpdateTableCommentRequest>) -> Result<Response<UpdateTableCommentResponse>, Status> {
+        let req = request.into_inner();
+        let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        
+        match self.service.update_table_comment(schema, &req.table_name, &req.comment).await {
+            Ok(_) => Ok(Response::new(UpdateTableCommentResponse {
+                success: true,
+                message: "表注释更新成功".to_string(),
+            })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+
+    async fn update_column_comment(&self, request: Request<UpdateColumnCommentRequest>) -> Result<Response<UpdateColumnCommentResponse>, Status> {
+        let req = request.into_inner();
+        let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
+        
+        match self.service.update_column_comment(schema, &req.table_name, &req.column_name, &req.comment).await {
+            Ok(_) => Ok(Response::new(UpdateColumnCommentResponse {
+                success: true,
+                message: "字段注释更新成功".to_string(),
             })),
             Err(e) => Err(Status::internal(e.to_string())),
         }
@@ -769,6 +822,8 @@ impl LaoflchDb for GrpcService {
     }
 
     async fn sql_query(&self, request: Request<SqlQueryRequest>) -> Result<Response<SqlQueryResponse>, Status> {
+        self.require_authentication(&request)?;
+        
         let req = request.into_inner();
         let schema = if req.schema.is_empty() { "sys" } else { &req.schema };
         let sql = req.sql.as_str();

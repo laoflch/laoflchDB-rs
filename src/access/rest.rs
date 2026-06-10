@@ -12,7 +12,7 @@ use axum::{
     response::Json,
     http::{StatusCode, Request},
     response::IntoResponse,
-    middleware::{self, Next},
+    middleware::{self},
 };
 
 #[derive(Clone)]
@@ -48,26 +48,6 @@ impl RestService {
             permission_checker,
             service_id,
             token_manager,
-        }
-    }
-
-    fn check_permission(&self, schema: &str, table: Option<&str>, action: PermissionAction) -> Result<(), StatusCode> {
-        let context = PermissionContext {
-            schema: schema.to_string(),
-            table: table.map(String::from),
-            action,
-        };
-        let result = self.permission_checker.check_permission(&self.service_id, &context);
-        if !result.allowed {
-            log::warn!(
-                "Permission denied for REST service '{}' on action '{}': {}",
-                self.service_id,
-                context.action,
-                result.reason
-            );
-            Err(StatusCode::FORBIDDEN)
-        } else {
-            Ok(())
         }
     }
 
@@ -295,6 +275,7 @@ pub struct DeleteKvBody {
 pub struct CreateTableBody {
     pub schema: Option<String>,
     pub table_name: String,
+    pub comment: Option<String>,
     pub columns: Vec<ColumnDefinition>,
 }
 
@@ -302,6 +283,7 @@ pub struct CreateTableBody {
 pub struct ColumnDefinition {
     pub name: String,
     pub column_type: String,
+    pub comment: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -398,7 +380,7 @@ fn encode_field(f: &laoflchdb_engines::Field) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut os = CodedOutputStream::vec(&mut buf);
-        let mut f_clone = f.clone();
+        let f_clone = f.clone();
         f_clone.compute_size();
         f_clone.write_to_with_cached_sizes(&mut os).unwrap_or_default();
         os.flush().unwrap_or_default();
@@ -642,7 +624,9 @@ async fn create_table_handler(
         return Err(ApiError { message: "Permission denied".to_string() });
     }
     
-    let columns: Vec<(u32, &str, ColumnType)> = body.columns
+    let table_comment = body.comment.as_deref();
+    
+    let columns: Vec<(u32, &str, ColumnType, Option<&str>)> = body.columns
         .iter()
         .enumerate()
         .map(|(idx, col)| {
@@ -655,11 +639,11 @@ async fn create_table_handler(
                 "IMAGE" => ColumnType::COLUMN_TYPE_IMAGE,
                 _ => ColumnType::COLUMN_TYPE_STRING,
             };
-            (idx as u32, col.name.as_str(), ct)
+            (idx as u32, col.name.as_str(), ct, col.comment.as_deref())
         })
         .collect();
     
-    match service.create_table(&schema, &body.table_name, &columns).await {
+    match service.create_table(&schema, &body.table_name, table_comment, &columns).await {
         Ok(table_id) => Ok(Json(ApiResponse::success(CreateTableResponse { table_id }))),
         Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
     }

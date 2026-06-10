@@ -46,11 +46,11 @@ async fn test_init_database_preserves_data() {
     service.init_database().await.unwrap();
     
     let columns = vec![
-        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
-        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING),
+        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
+        (1u32, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, None),
     ];
     
-    service.create_table("sys", "test_data", &columns).await.unwrap();
+    service.create_table("sys", "test_data", None, &columns).await.unwrap();
     
     let mut row = Row::new();
     row.row_type = RowType::ROW_TYPE_NORMAL.into();

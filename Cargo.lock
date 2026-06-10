@@ -674,6 +674,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-xtask"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
 name = "cc"
 version = "1.2.63"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2462,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "laoflchDB-rust"
-version = "0.1.3+752d24bb25632ce2a170cec563fad9f0a0d99634"
+version = "0.1.4+752d24bb25632ce2a170cec563fad9f0a0d99634"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
@@ -2478,6 +2487,7 @@ dependencies = [
  "prost",
  "prost-build",
  "protobuf",
+ "regex",
  "reqwest",
  "rust-rocksdb",
  "rustc_version_runtime",
@@ -2522,6 +2532,7 @@ dependencies = [
  "arrow-schema",
  "async-trait",
  "datafusion",
+ "datafusion-catalog",
  "laoflchdb_engines",
  "log",
  "protobuf",
@@ -4889,15 +4900,6 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
-name = "xtask"
-version = "0.1.0"
-dependencies = [
- "clap",
- "serde",
- "serde_yaml",
-]
 
 [[package]]
 name = "yoke"

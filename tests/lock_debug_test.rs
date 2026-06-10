@@ -22,11 +22,11 @@ async fn test_sql_engine_lock_contention() {
     
     // 创建测试表
     let columns = vec![
-        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64),
-        (1u32, "dept", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING),
+        (0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None),
+        (1u32, "dept", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, None),
     ];
     
-    service.create_table("sys", "lock_test", &columns).await.unwrap();
+    service.create_table("sys", "lock_test", None, &columns).await.unwrap();
     tokio::time::sleep(Duration::from_millis(500)).await;
     
     // 插入测试数据
@@ -70,7 +70,7 @@ async fn test_sql_engine_lock_contention() {
     // 尝试创建新表（需要写锁）
     println!("测试2: 在查询执行期间尝试创建表...");
     let start = Instant::now();
-    let result = tokio::time::timeout(Duration::from_secs(3), service.create_table("sys", "new_table", &[(0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64)])).await;
+    let result = tokio::time::timeout(Duration::from_secs(3), service.create_table("sys", "new_table", None, &[(0u32, "id", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, None)])).await;
     println!("创建表耗时: {:?}", start.elapsed());
     
     match result {

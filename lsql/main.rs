@@ -457,10 +457,12 @@ async fn describe_table(
     let mut col_id_width = 8; // "列ID".len()
     let mut col_name_width = 8; // "列名".len()
     let mut col_type_width = 8; // "类型".len()
+    let mut col_comment_width = 8; // "注释".len()
     
     for col in &response.columns {
         let id_str = col.column_id.to_string();
         let type_str = column_type_to_string(col.column_type);
+        let comment_str = col.comment.clone();
         
         if id_str.len() > col_id_width {
             col_id_width = id_str.len();
@@ -471,6 +473,9 @@ async fn describe_table(
         if type_str.len() > col_type_width {
             col_type_width = type_str.len();
         }
+        if comment_str.len() > col_comment_width {
+            col_comment_width = comment_str.len();
+        }
     }
     
     // 打印分隔线
@@ -480,14 +485,17 @@ async fn describe_table(
     for _ in 0..col_name_width + 2 { print!("-"); }
     print!("+");
     for _ in 0..col_type_width + 2 { print!("-"); }
+    print!("+");
+    for _ in 0..col_comment_width + 2 { print!("-"); }
     println!("+");
     
     // 打印表头
-    println!("| {:^width1$} | {:^width2$} | {:^width3$} |",
-        "列ID", "列名", "类型",
+    println!("| {:^width1$} | {:^width2$} | {:^width3$} | {:^width4$} |",
+        "列ID", "列名", "类型", "注释",
         width1 = col_id_width,
         width2 = col_name_width,
-        width3 = col_type_width
+        width3 = col_type_width,
+        width4 = col_comment_width
     );
     
     // 打印分隔线
@@ -497,18 +505,23 @@ async fn describe_table(
     for _ in 0..col_name_width + 2 { print!("-"); }
     print!("+");
     for _ in 0..col_type_width + 2 { print!("-"); }
+    print!("+");
+    for _ in 0..col_comment_width + 2 { print!("-"); }
     println!("+");
     
     // 打印列信息
     for col in &response.columns {
         let type_str = column_type_to_string(col.column_type);
-        println!("| {:>width1$} | {:<width2$} | {:<width3$} |",
+        let comment_str = col.comment.clone();
+        println!("| {:>width1$} | {:<width2$} | {:<width3$} | {:<width4$} |",
             col.column_id,
             col.column_name,
             type_str,
+            comment_str,
             width1 = col_id_width,
             width2 = col_name_width,
-            width3 = col_type_width
+            width3 = col_type_width,
+            width4 = col_comment_width
         );
     }
     
@@ -519,6 +532,8 @@ async fn describe_table(
     for _ in 0..col_name_width + 2 { print!("-"); }
     print!("+");
     for _ in 0..col_type_width + 2 { print!("-"); }
+    print!("+");
+    for _ in 0..col_comment_width + 2 { print!("-"); }
     println!("+");
     
     println!("({} 列)", response.columns.len());

@@ -58,6 +58,7 @@ def run_tests():
     stub = rpc_pb2_grpc.LaoflchDbStub(channel)
 
     tests = [
+        # 基础 API 测试
         ("创建表", test_create_table, stub, metadata),
         ("列出表", test_list_tables, stub, metadata),
         ("获取表元数据", test_get_table_meta, stub, metadata),
@@ -74,6 +75,18 @@ def run_tests():
         ("SQL查询-SELECT", test_sql_query_select, stub, metadata),
         ("SQL查询-过滤", test_sql_query_filter, stub, metadata),
         ("SQL查询-聚合", test_sql_query_aggregate, stub, metadata),
+        ("SQL查询-排序", test_sql_query_order_by, stub, metadata),
+        ("SQL查询-LIMIT/OFFSET", test_sql_query_limit_offset, stub, metadata),
+        ("SQL查询-GROUP BY", test_sql_query_group_by, stub, metadata),
+        # 注释更新测试
+        ("更新表注释", test_update_table_comment, stub, metadata),
+        ("更新字段注释", test_update_column_comment, stub, metadata),
+        ("验证注释更新", test_verify_comment_update, stub, metadata),
+        # 跨 Schema 测试
+        ("创建测试Schema", test_create_schema, stub, metadata),
+        ("在新Schema创建表", test_create_table_in_schema, stub, metadata),
+        ("跨Schema查询", test_cross_schema_query, stub, metadata),
+        ("删除测试Schema表", test_drop_schema_table, stub, metadata),
         ("删除SQL测试表", test_drop_sql_table, stub, metadata),
     ]
 
@@ -104,8 +117,14 @@ def run_tests():
         pass
 
     try:
-        stub.DropTable(rpc_pb2.DropTableRequest(schema=SCHEMA, table_name=SQL_TABLE_NAME))
+        stub.DropTable(rpc_pb2.DropTableRequest(schema=SCHEMA, table_name=SQL_TABLE_NAME), metadata=metadata)
         print("    ✓ SQL测试表清理完成")
+    except:
+        pass
+
+    try:
+        stub.DropTable(rpc_pb2.DropTableRequest(schema=TEST_SCHEMA, table_name=TEST_SCHEMA_TABLE), metadata=metadata)
+        print("    ✓ 跨Schema测试表清理完成")
     except:
         pass
 
@@ -333,6 +352,210 @@ def test_drop_sql_table(stub, metadata):
         table_name=SQL_TABLE_NAME
     ), metadata=metadata)
     return resp.success
+
+# ==================== 扩展 SQL 查询测试 ====================
+
+def test_sql_query_order_by(stub, metadata):
+    """测试SQL ORDER BY查询"""
+    resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
+        schema=SCHEMA,
+        sql="SELECT name, age FROM {} ORDER BY age DESC".format(SQL_TABLE_NAME)
+    ), metadata=metadata)
+    
+    if not resp.success:
+        print(f"    SQL ORDER BY查询失败: {resp.message}")
+        return False
+    
+    print(f"    ORDER BY查询结果: {len(resp.rows)} 行")
+    return len(resp.rows) >= 0
+
+def test_sql_query_limit_offset(stub, metadata):
+    """测试SQL LIMIT和OFFSET"""
+    resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
+        schema=SCHEMA,
+        sql="SELECT * FROM {} ORDER BY id LIMIT 2 OFFSET 1".format(SQL_TABLE_NAME)
+    ), metadata=metadata)
+    
+    if not resp.success:
+        print(f"    SQL LIMIT/OFFSET查询失败: {resp.message}")
+        return False
+    
+    print(f"    LIMIT/OFFSET查询结果: {len(resp.rows)} 行")
+    return len(resp.rows) == 2
+
+def test_sql_query_group_by(stub, metadata):
+    """测试SQL GROUP BY"""
+    resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
+        schema=SCHEMA,
+        sql="SELECT age, COUNT(*) FROM {} GROUP BY age".format(SQL_TABLE_NAME)
+    ), metadata=metadata)
+    
+    if not resp.success:
+        print(f"    SQL GROUP BY查询失败: {resp.message}")
+        return False
+    
+    print(f"    GROUP BY查询结果: {len(resp.rows)} 行")
+    return len(resp.rows) >= 1
+
+# ==================== 跨 Schema 测试 ====================
+
+TEST_SCHEMA = "test_schema_2024"
+TEST_SCHEMA_TABLE = "users_in_schema"
+
+def test_create_schema(stub, metadata):
+    """创建测试Schema"""
+    try:
+        stub.DropTable(rpc_pb2.DropTableRequest(
+            schema=TEST_SCHEMA,
+            table_name=TEST_SCHEMA_TABLE
+        ), metadata=metadata)
+    except:
+        pass
+    
+    resp = stub.CreateTable(rpc_pb2.CreateTableRequest(
+        schema=TEST_SCHEMA,
+        table_name=TEST_SCHEMA_TABLE,
+        columns=[
+            rpc_pb2.ColumnDef(name="id", column_type=1),      # INT64
+            rpc_pb2.ColumnDef(name="name", column_type=0),    # STRING
+        ]
+    ), metadata=metadata)
+    
+    time.sleep(1)
+    return resp.success
+
+def test_create_table_in_schema(stub, metadata):
+    """在新Schema中创建表并插入数据"""
+    # 先尝试删除已存在的表
+    try:
+        stub.DropTable(rpc_pb2.DropTableRequest(
+            schema=TEST_SCHEMA,
+            table_name=TEST_SCHEMA_TABLE
+        ), metadata=metadata)
+        time.sleep(0.5)
+    except:
+        pass
+    
+    # 创建表
+    resp = stub.CreateTable(rpc_pb2.CreateTableRequest(
+        schema=TEST_SCHEMA,
+        table_name=TEST_SCHEMA_TABLE,
+        comment="测试表",
+        columns=[
+            rpc_pb2.ColumnDef(
+                name="id",
+                column_type=1,  # INT64
+                comment="用户ID"
+            ),
+            rpc_pb2.ColumnDef(
+                name="name",
+                column_type=0,  # STRING
+                comment="用户名"
+            ),
+        ]
+    ), metadata=metadata)
+    
+    if not resp.success:
+        print(f"    创建表失败: {resp.message}")
+        return False
+    
+    # 插入数据
+    for i in range(3):
+        resp = stub.AddRow(rpc_pb2.AddRowRequest(
+            schema=TEST_SCHEMA,
+            table_name=TEST_SCHEMA_TABLE,
+            row=rpc_pb2.Row(
+                row_type=0,
+                version=1,
+                data=[
+                    encode_field(i + 1, 1),      # id: INT64
+                    encode_field(f"User{i+1}", 0), # name: STRING
+                ]
+            )
+        ), metadata=metadata)
+        if not resp.success:
+            return False
+    
+    time.sleep(0.5)
+    return True
+
+def test_cross_schema_query(stub, metadata):
+    """测试跨Schema查询"""
+    # 查询新schema中的表
+    resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
+        schema=TEST_SCHEMA,
+        sql=f"SELECT * FROM {TEST_SCHEMA}.{TEST_SCHEMA_TABLE}"
+    ), metadata=metadata)
+    
+    if not resp.success:
+        print(f"    跨Schema查询失败: {resp.message}")
+        return False
+    
+    print(f"    跨Schema查询结果: {len(resp.rows)} 行")
+    return len(resp.rows) == 3
+
+def test_drop_schema_table(stub, metadata):
+    """删除测试Schema中的表"""
+    resp = stub.DropTable(rpc_pb2.DropTableRequest(
+        schema=TEST_SCHEMA,
+        table_name=TEST_SCHEMA_TABLE
+    ), metadata=metadata)
+    return resp.success
+
+def test_update_table_comment(stub, metadata):
+    """测试更新表注释"""
+    resp = stub.UpdateTableComment(rpc_pb2.UpdateTableCommentRequest(
+        schema=SCHEMA,
+        table_name=TABLE_NAME,
+        comment="更新后的表注释：测试表"
+    ), metadata=metadata)
+    
+    if not resp.success:
+        print(f"    更新表注释失败: {resp.message}")
+        return False
+    
+    return True
+
+def test_update_column_comment(stub, metadata):
+    """测试更新字段注释"""
+    resp = stub.UpdateColumnComment(rpc_pb2.UpdateColumnCommentRequest(
+        schema=SCHEMA,
+        table_name=TABLE_NAME,
+        column_name="id",
+        comment="更新后的字段注释：用户ID"
+    ), metadata=metadata)
+    
+    if not resp.success:
+        print(f"    更新字段注释失败: {resp.message}")
+        return False
+    
+    return True
+
+def test_verify_comment_update(stub, metadata):
+    """验证注释更新是否生效"""
+    resp = stub.ListTableCols(rpc_pb2.ListTableColsRequest(
+        schema=SCHEMA,
+        table_name=TABLE_NAME
+    ), metadata=metadata)
+    
+    if not resp.success:
+        print(f"    获取表列信息失败: {resp.message}")
+        return False
+    
+    print(f"    表列数量: {len(resp.columns)}")
+    for col in resp.columns:
+        comment = getattr(col, 'comment', 'N/A')
+        print(f"      - {col.column_name}: {comment}")
+    
+    # 检查更新的注释是否存在
+    for col in resp.columns:
+        comment = getattr(col, 'comment', '')
+        if col.column_name == "id" and "更新后的字段注释" in comment:
+            print("    ✓ 字段注释更新成功")
+            return True
+    
+    print("    ✗ 字段注释未更新")
+    return False
 
 if __name__ == "__main__":
     run_tests()

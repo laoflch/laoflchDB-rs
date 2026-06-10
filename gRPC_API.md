@@ -2,7 +2,7 @@
 
 ## 基础信息
 
-- **服务地址**: `localhost:29777`
+- **服务地址**: `localhost:19777`
 - **协议**: gRPC (HTTP/2)
 - **语言**: Protocol Buffers 3
 
@@ -230,6 +230,38 @@ service LaoflchDb {
 | column_id | uint64 | 列 ID |
 | column_name | string | 列名 |
 | column_type | int32 | 列类型 |
+| comment | string | 列注释 |
+
+#### UpdateTableCommentRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| schema | string | 是 | 数据库 schema 名称 |
+| table_name | string | 是 | 表名 |
+| comment | string | 是 | 新的表注释 |
+
+#### UpdateTableCommentResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 操作结果消息 |
+
+#### UpdateColumnCommentRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| schema | string | 是 | 数据库 schema 名称 |
+| table_name | string | 是 | 表名 |
+| column_name | string | 是 | 字段名 |
+| comment | string | 是 | 新的字段注释 |
+
+#### UpdateColumnCommentResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 操作结果消息 |
 
 ---
 
@@ -425,8 +457,8 @@ service LaoflchDb {
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| schema | string | 是 | 数据库 schema 名称 |
-| sql | string | 是 | SQL 查询语句 |
+| schema | string | 是 | 数据库 schema 名称（作为默认 schema，SQL 中可使用 `schema.table` 格式引用其他 schema） |
+| sql | string | 是 | SQL 查询语句（支持跨 schema JOIN） |
 
 #### SqlQueryResponse
 
@@ -436,6 +468,47 @@ service LaoflchDb {
 | columns | repeated string | 列名列表 |
 | rows | repeated QueryRow | 查询结果行 |
 | message | string | 错误信息 |
+
+##### SQL 查询支持
+
+**单表查询**：
+```sql
+SELECT * FROM users WHERE age > 18 LIMIT 10
+```
+
+**跨 Schema JOIN**：
+```sql
+-- 跨 schema INNER JOIN
+SELECT sales.orders.order_id, inventory.products.product_name 
+FROM sales.orders 
+JOIN inventory.products ON sales.orders.product_id = inventory.products.product_id;
+
+-- 跨 schema LEFT JOIN
+SELECT sales.orders.order_id, inventory.products.product_name 
+FROM sales.orders 
+LEFT JOIN inventory.products ON sales.orders.product_id = inventory.products.product_id;
+
+-- 三表跨 schema JOIN
+SELECT 
+    sales.customers.customer_name, 
+    sales.orders.order_id, 
+    inventory.products.product_name
+FROM sales.customers 
+JOIN sales.orders ON sales.customers.customer_id = sales.orders.customer_id 
+JOIN inventory.products ON sales.orders.product_id = inventory.products.product_id;
+```
+
+**SQL 语法支持**：
+
+| 功能 | 说明 |
+|------|------|
+| SELECT | 基础查询 |
+| WHERE | 条件过滤 |
+| ORDER BY | 排序 |
+| LIMIT/OFFSET | 分页 |
+| GROUP BY | 分组聚合 |
+| JOIN | 多表连接（INNER/LEFT/RIGHT/FULL OUTER） |
+| 跨 Schema | 使用 `schema.table` 格式引用其他 schema 的表 |
 
 ---
 
@@ -542,14 +615,33 @@ resp = stub.Delete(rpc_pb2.DeleteRequest(
 ), metadata=metadata)
 print(f"Delete: {resp.success}")
 
-# 7. 删除表（需要认证）
+# 7. SQL 查询（需要认证）
+resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
+    schema="sys",
+    sql="SELECT * FROM users WHERE id > 0 LIMIT 5"
+), metadata=metadata)
+print(f"SQL Query: {resp.success}, rows={len(resp.rows)}")
+
+# 8. 跨 Schema JOIN 查询（需要认证）
+resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
+    schema="sales",
+    sql="""
+        SELECT sales.orders.order_id, inventory.products.product_name 
+        FROM sales.orders 
+        JOIN inventory.products ON sales.orders.product_id = inventory.products.product_id
+        LIMIT 10
+    """
+), metadata=metadata)
+print(f"Cross-schema JOIN: {resp.success}, rows={len(resp.rows)}")
+
+# 9. 删除表（需要认证）
 resp = stub.DropTable(rpc_pb2.DropTableRequest(
     schema="sys",
     table_name="users"
 ), metadata=metadata)
 print(f"Drop table: {resp.success}")
 
-# 8. 用户登出
+# 10. 用户登出
 resp = stub.Logout(rpc_pb2.LogoutRequest(
     token=login_resp.token
 ))
@@ -572,7 +664,7 @@ import (
 )
 
 func main() {
-    conn, err := grpc.Dial("localhost:29777", grpc.WithInsecure())
+    conn, err := grpc.Dial("localhost:19777", grpc.WithInsecure())
     if err != nil {
         log.Fatalf("did not connect: %v", err)
     }

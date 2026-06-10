@@ -75,9 +75,9 @@ async fn test_big_endian_ordering_in_rocksdb() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("test_table", &[
-        (1, "id", ColumnType::COLUMN_TYPE_INT64),
-        (2, "name", ColumnType::COLUMN_TYPE_STRING),
+    engine.create_table("test_table", None, &[
+        (1, "id", ColumnType::COLUMN_TYPE_INT64, None),
+        (2, "name", ColumnType::COLUMN_TYPE_STRING, None),
     ]).await.unwrap();
 
     let mut row_ids = Vec::new();
@@ -124,10 +124,10 @@ async fn test_scan_with_prefix_filter() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("users", &[
-        (1, "id", ColumnType::COLUMN_TYPE_INT64),
-        (2, "name", ColumnType::COLUMN_TYPE_STRING),
-        (3, "age", ColumnType::COLUMN_TYPE_INT64),
+    engine.create_table("users", None, &[
+        (1, "id", ColumnType::COLUMN_TYPE_INT64, None),
+        (2, "name", ColumnType::COLUMN_TYPE_STRING, None),
+        (3, "age", ColumnType::COLUMN_TYPE_INT64, None),
     ]).await.unwrap();
 
     for i in 0..10 {
@@ -176,8 +176,8 @@ async fn test_row_id_monotonic_increasing() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("test_table", &[
-        (1, "name", ColumnType::COLUMN_TYPE_STRING),
+    engine.create_table("test_table", None, &[
+        (1, "name", ColumnType::COLUMN_TYPE_STRING, None),
     ]).await.unwrap();
 
     let mut previous_id: u64 = 0;
@@ -215,10 +215,10 @@ async fn test_get_row_by_id() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("products", &[
-        (1, "id", ColumnType::COLUMN_TYPE_INT64),
-        (2, "name", ColumnType::COLUMN_TYPE_STRING),
-        (3, "price", ColumnType::COLUMN_TYPE_FLOAT),
+    engine.create_table("products", None, &[
+        (1, "id", ColumnType::COLUMN_TYPE_INT64, None),
+        (2, "name", ColumnType::COLUMN_TYPE_STRING, None),
+        (3, "price", ColumnType::COLUMN_TYPE_FLOAT, None),
     ]).await.unwrap();
 
     let mut name_field = Field {
@@ -269,8 +269,8 @@ async fn test_delete_row() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("items", &[
-        (1, "name", ColumnType::COLUMN_TYPE_STRING),
+    engine.create_table("items", None, &[
+        (1, "name", ColumnType::COLUMN_TYPE_STRING, None),
     ]).await.unwrap();
 
     let mut name_field = Field {
@@ -308,8 +308,8 @@ async fn test_update_row() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("items", &[
-        (1, "name", ColumnType::COLUMN_TYPE_STRING),
+    engine.create_table("items", None, &[
+        (1, "name", ColumnType::COLUMN_TYPE_STRING, None),
     ]).await.unwrap();
 
     let mut name_field1 = Field {
@@ -358,8 +358,8 @@ async fn test_snowflake_id_distribution() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("test_table", &[
-        (1, "value", ColumnType::COLUMN_TYPE_STRING),
+    engine.create_table("test_table", None, &[
+        (1, "value", ColumnType::COLUMN_TYPE_STRING, None),
     ]).await.unwrap();
 
     let mut ids = Vec::new();
@@ -419,9 +419,9 @@ async fn test_prefix_scan_with_timestamp() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("events", &[
-        (1, "timestamp", ColumnType::COLUMN_TYPE_INT64),
-        (2, "data", ColumnType::COLUMN_TYPE_STRING),
+    engine.create_table("events", None, &[
+        (1, "timestamp", ColumnType::COLUMN_TYPE_INT64, None),
+        (2, "data", ColumnType::COLUMN_TYPE_STRING, None),
     ]).await.unwrap();
 
     let mut inserted_ids = Vec::new();
@@ -476,8 +476,8 @@ async fn test_snowflake_id_timestamp_prefix() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("records", &[
-        (1, "value", ColumnType::COLUMN_TYPE_STRING),
+    engine.create_table("records", None, &[
+        (1, "value", ColumnType::COLUMN_TYPE_STRING, None),
     ]).await.unwrap();
 
     let mut ids = Vec::new();
@@ -523,11 +523,11 @@ async fn test_query_with_cnf_filters() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("products", &[
-        (1, "id", ColumnType::COLUMN_TYPE_INT64),
-        (2, "name", ColumnType::COLUMN_TYPE_STRING),
-        (3, "price", ColumnType::COLUMN_TYPE_FLOAT),
-        (4, "stock", ColumnType::COLUMN_TYPE_INT64),
+    engine.create_table("products", None, &[
+        (1, "id", ColumnType::COLUMN_TYPE_INT64, None),
+        (2, "name", ColumnType::COLUMN_TYPE_STRING, None),
+        (3, "price", ColumnType::COLUMN_TYPE_FLOAT, None),
+        (4, "stock", ColumnType::COLUMN_TYPE_INT64, None),
     ]).await.unwrap();
 
     let products = vec![
@@ -649,8 +649,8 @@ async fn test_scan_rows_in_key_range() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("scan_test", &[
-        (1, "index", ColumnType::COLUMN_TYPE_INT64),
+    engine.create_table("scan_test", None, &[
+        (1, "index", ColumnType::COLUMN_TYPE_INT64, None),
     ]).await.unwrap();
 
     let mut row_ids = Vec::new();
@@ -727,8 +727,8 @@ async fn test_parallel_row_insertion_order() {
 
     let mut engine = MultiTableRocksDBEngine::new(&options).unwrap();
 
-    engine.create_table("parallel_test", &[
-        (1, "seq", ColumnType::COLUMN_TYPE_INT64),
+    engine.create_table("parallel_test", None, &[
+        (1, "seq", ColumnType::COLUMN_TYPE_INT64, None),
     ]).await.unwrap();
 
     let mut row_ids = Vec::new();

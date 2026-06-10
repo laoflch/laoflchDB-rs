@@ -5,8 +5,9 @@ use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::datasource::TableProvider;
 use datafusion::execution::context::{SessionContext, SessionConfig};
-use datafusion::logical_expr::Expr;
 use datafusion::sql::TableReference;
+use datafusion::common::TableReference as CommonTableReference;
+use datafusion_catalog::CatalogProvider;
 use protobuf::Message;
 
 use laoflchdb_engines::{StorageEngine, SQLEngine, QueryResult, QueryRow};
@@ -16,8 +17,6 @@ use laoflchdb_engines::field::field::Value;
 #[async_trait::async_trait]
 pub trait DataFusionStorageEngine: Send + Sync + 'static {
     async fn table_to_arrow(&self, table_name: &str) -> Result<(Schema, Vec<datafusion::arrow::array::ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>>;
-    
-    fn create_table_provider(&self, table_name: &str) -> Arc<dyn TableProvider>;
 }
 
 pub struct DataFusionSQLEngine<E: StorageEngine + DataFusionStorageEngine> {
@@ -29,8 +28,17 @@ pub struct DataFusionSQLEngine<E: StorageEngine + DataFusionStorageEngine> {
 
 impl<E: StorageEngine + DataFusionStorageEngine> DataFusionSQLEngine<E> {
     pub fn new(storage_engine: Arc<tokio::sync::RwLock<E>>) -> Self {
-        let config = SessionConfig::new();
+        let mut config = SessionConfig::new();
+        config = config.with_default_catalog_and_schema("laoflchdb", "sys");
+        
         let ctx = SessionContext::new_with_config(config);
+        
+        use datafusion_catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
+        
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        let schema = Arc::new(MemorySchemaProvider::new());
+        let _ = catalog.register_schema("sys", schema);
+        let _ = ctx.register_catalog("laoflchdb", catalog);
         
         Self {
             storage_engine,
@@ -186,10 +194,36 @@ impl<E: StorageEngine + DataFusionStorageEngine + 'static> SQLEngine for DataFus
         }
         
         let schema = batches[0].schema();
+        
+        // 检查 schema 是否有字段
+        if schema.fields().is_empty() {
+            log::warn!("[SQL] 查询结果 schema 为空，总耗时: {:?}", start_total.elapsed());
+            return Ok(QueryResult {
+                rows: Vec::new(),
+                columns: Vec::new(),
+                special_fields: ::protobuf::SpecialFields::default(),
+            });
+        }
+        
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         log::info!("[SQL] 步骤5 - 结果转换: {} 个批次, 共 {} 行, schema: {:?}", batches.len(), total_rows, schema);
         
-        let result = self.arrow_to_query_result(&schema, &batches[0], &[]);
+        let mut all_rows = Vec::new();
+        for batch in batches {
+            let batch_result = self.arrow_to_query_result(&schema, &batch, &[]);
+            all_rows.extend(batch_result.rows);
+        }
+        
+        let columns: Vec<String> = schema.fields().iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        
+        let result = QueryResult {
+            rows: all_rows,
+            columns,
+            special_fields: ::protobuf::SpecialFields::default(),
+        };
+        
         log::info!("[SQL] 步骤5 - 结果转换完成，耗时: {:?}", start.elapsed());
         log::info!("[SQL] 查询执行完成，总耗时: {:?}", start_total.elapsed());
         
@@ -205,13 +239,37 @@ impl<E: StorageEngine + DataFusionStorageEngine + 'static> SQLEngine for DataFus
         Ok(())
     }
     
+    async fn register_table_with_schema(&mut self, schema: &str, table_name: &str, table_provider: Arc<dyn datafusion::datasource::TableProvider>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let table_ref = CommonTableReference::full("laoflchdb", schema, table_name);
+        
+        if self.ctx.catalog("laoflchdb").and_then(|c| c.schema(schema)).is_none() {
+            log::info!("[SQL] Creating schema '{}' in catalog 'laoflchdb'", schema);
+            let sql = format!("CREATE SCHEMA IF NOT EXISTS laoflchdb.{};", schema);
+            if let Err(e) = self.ctx.sql(&sql).await {
+                log::warn!("[SQL] Failed to create schema '{}': {}", schema, e);
+                return Ok(());
+            }
+        }
+        
+        // 先取消注册旧表（如果存在），然后重新注册
+        let _ = self.ctx.deregister_table(table_ref.clone());
+        
+        match self.ctx.register_table(table_ref, table_provider) {
+            Ok(_) => log::info!("[SQL] Registered table '{}.{}'", schema, table_name),
+            Err(e) => log::warn!("[SQL] Failed to register table '{}.{}': {}", schema, table_name, e),
+        }
+        Ok(())
+    }
+    
     async fn refresh_tables(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let engine = self.storage_engine.read().await;
+        let schema_name = StorageEngine::get_schema_name(&*engine);
         let tables = StorageEngine::list_tables(&*engine).await?;
         
         for table in tables {
             let table_provider = engine.create_table_provider(&table);
-            self.ctx.register_table(TableReference::bare(&*table), table_provider)?;
+            let table_ref = CommonTableReference::full("laoflchdb", schema_name, table.as_str());
+            self.ctx.register_table(table_ref, table_provider)?;
         }
         
         Ok(())
@@ -219,6 +277,12 @@ impl<E: StorageEngine + DataFusionStorageEngine + 'static> SQLEngine for DataFus
     
     async fn deregister_table(&mut self, table_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.ctx.deregister_table(TableReference::bare(table_name))?;
+        Ok(())
+    }
+    
+    async fn deregister_table_with_schema(&mut self, schema: &str, table_name: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let table_ref = CommonTableReference::full("laoflchdb", schema, table_name);
+        let _ = self.ctx.deregister_table(table_ref);
         Ok(())
     }
 }

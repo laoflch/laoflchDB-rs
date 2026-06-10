@@ -18,6 +18,10 @@ service LaoflchDb {
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
   rpc ListTableCols(ListTableColsRequest) returns (ListTableColsResponse);
   
+  // 更新表和字段注释
+  rpc UpdateTableComment(UpdateTableCommentRequest) returns (UpdateTableCommentResponse);
+  rpc UpdateColumnComment(UpdateColumnCommentRequest) returns (UpdateColumnCommentResponse);
+  
   // 行操作
   rpc AddRow(AddRowRequest) returns (AddRowResponse);
   rpc GetRow(GetRowRequest) returns (GetRowResponse);
@@ -93,12 +97,14 @@ message DeleteResponse {
 message CreateTableRequest {
   string schema = 1;
   string table_name = 2;
-  repeated ColumnDef columns = 3;
+  string comment = 3;
+  repeated ColumnDef columns = 4;
 }
 
 message ColumnDef {
   string name = 1;
   int32 column_type = 2;
+  string comment = 3;
 }
 
 message CreateTableResponse {
@@ -255,6 +261,7 @@ message ColumnMeta {
   uint64 column_id = 2;
   string column_name = 3;
   int32 column_type = 4;
+  string comment = 5;
 }
 
 // Query 相关类型
@@ -391,6 +398,33 @@ message LogoutRequest {
 }
 
 message LogoutResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// 更新表注释请求
+message UpdateTableCommentRequest {
+  string schema = 1;           // Schema 名称
+  string table_name = 2;       // 表名称
+  string comment = 3;          // 新的表注释
+}
+
+// 更新表注释响应
+message UpdateTableCommentResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// 更新字段注释请求
+message UpdateColumnCommentRequest {
+  string schema = 1;           // Schema 名称
+  string table_name = 2;       // 表名称
+  string column_name = 3;      // 字段名称
+  string comment = 4;          // 新的字段注释
+}
+
+// 更新字段注释响应
+message UpdateColumnCommentResponse {
   bool success = 1;
   string message = 2;
 }

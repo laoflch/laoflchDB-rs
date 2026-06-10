@@ -22,6 +22,7 @@ cargo test --test integration_tests
 cargo test --test sql_advanced_tests
 cargo test --test init_idempotent_tests
 cargo test --test cli_tests
+cargo test --test cross_schema_join_tests  # 跨 Schema JOIN 测试
 
 # Python 自动化测试
 python3 tests_python/test_e2e_grpc.py
@@ -33,6 +34,9 @@ python3 tests_python/test_lsql_sql.py
 python3 tests_python/test_list_schemas.py
 python3 tests_python/test_data_validation.py
 python3 tests_python/test_sql_query_validation.py
+python3 tests_python/test_cross_schema_join.py  # 跨 Schema JOIN 测试
+python3 tests_python/test_table_structure.py    # 表结构测试
+python3 tests_python/test_final.py              # 完整回归测试
 ```
 
 ---
@@ -217,10 +221,14 @@ python3 tests_python/test_lsql_sql.py
 | Rust SQL高级测试 | 6 | ✅ |
 | Rust lsql客户端测试 | 4 | ✅ |
 | Rust 幂等初始化测试 | 4 | ✅ |
+| Rust 跨Schema JOIN测试 | 4 | ✅ |
 | Python gRPC测试 | 1 | ✅ |
 | Python REST测试 | 10 | ✅ |
 | Python SQL测试 | 3 | ✅ |
-| **总计** | **44** | **✅** |
+| Python 跨Schema JOIN测试 | 1 | ✅ |
+| Python 表结构测试 | 1 | ✅ |
+| Python 完整回归测试 | 1 | ✅ |
+| **总计** | **51** | **✅** |
 
 ---
 

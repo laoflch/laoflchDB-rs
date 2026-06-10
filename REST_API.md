@@ -2,9 +2,9 @@
 
 ## 基础信息
 
-- **Base URL**: `http://localhost:38080`
+- **Base URL**: `http://localhost:8080`
 - **Content-Type**: `application/json`
-- **gRPC 端口**: `29777`
+- **gRPC 端口**: `19777`
 
 ## 认证机制
 
@@ -408,6 +408,36 @@ def query_data():
     }
     resp = requests.post(f"{BASE_URL}/api/v1/query", json=data)
     print(resp.json())
+
+# SQL 查询
+def sql_query():
+    headers = {"Authorization": "Bearer <your_token>"}
+    data = {
+        "schema": "sys",
+        "sql": "SELECT * FROM users WHERE age > 18 LIMIT 10"
+    }
+    resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=data, headers=headers)
+    print(resp.json())
+
+# 跨 Schema JOIN 查询
+def cross_schema_join():
+    headers = {"Authorization": "Bearer <your_token>"}
+    data = {
+        "schema": "sales",
+        "sql": """
+            SELECT sales.orders.order_id, inventory.products.product_name 
+            FROM sales.orders 
+            JOIN inventory.products ON sales.orders.product_id = inventory.products.product_id
+            LIMIT 10
+        """
+    }
+    resp = requests.post(f"{BASE_URL}/api/v1/sql_query", json=data, headers=headers)
+    print(resp.json())
+
+# 列出所有 Schema
+def list_schemas():
+    resp = requests.get(f"{BASE_URL}/api/v1/schemas")
+    print(resp.json())
 ```
 
 ---
@@ -462,12 +492,12 @@ default_policy: allow
 access_protocols:
   - protocol: grpc
     enabled: true
-    addr: 0.0.0.0:29777
+    addr: 0.0.0.0:19777
     service_id: grpc_admin
 
   - protocol: rest
     enabled: true
-    addr: 0.0.0.0:38080
+    addr: 0.0.0.0:8080
     service_id: rest_admin
 
 # 权限配置

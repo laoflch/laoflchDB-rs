@@ -891,9 +891,19 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 ---
 
-## 14. 版本历史
+## 15. 版本历史
 
-### 0.1.3 (当前)
+### 0.1.4 (当前)
+- **跨 Schema JOIN 支持**: 完整的跨不同 Schema 之间的表 JOIN 操作
+- **自定义 laoflchdb Catalog**: 使用 `TableReference::full("laoflchdb", schema, table)` 注册表
+- **动态 Schema 注册**: SQL 查询时动态注册缺失的 Schema 到 DataFusion
+- **多表 JOIN 支持**: 支持三表及以上的跨 Schema JOIN
+- **JOIN 类型支持**: INNER JOIN、LEFT JOIN、RIGHT JOIN、FULL OUTER JOIN
+- **测试覆盖**: 新增 cross_schema_join_tests.rs 和 test_cross_schema_join.py
+- **Python 回归测试**: 新增 test_final.py 完整回归测试套件
+- **Protobuf 修复**: 修复测试端 rpc.proto 与服务端不一致问题
+
+### 0.1.3
 - **lsql 命令行客户端**: 类似 PostgreSQL psql 的交互式 SQL 客户端，支持 gRPC 连接
 - **版本支持**: `laoflchdb` 和 `lsql` 均支持 `--version` 选项，版本号从各自的 Cargo.toml 读取
 - **ListSchemas API**: 新增 gRPC API 用于列出所有可用的 Schema
@@ -932,6 +942,6 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 ---
 
-**文档版本**: v0.1.3  
-**最后更新**: 2026-06-07  
+**文档版本**: v0.1.4  
+**最后更新**: 2026-06-09  
 **项目**: laoflchDB-rust

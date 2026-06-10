@@ -70,12 +70,14 @@ async fn init_database(
     info!("初始化数据库...");
     info!("数据库路径: {}", effective_db_path);
     
-    let service = engine_factory::create_default_database_service(effective_db_path).await?;
-    service.init_database().await?;
-    
-    if example {
-        info!("初始化示例数据...");
-        init_data::init_example_data(effective_db_path).await?;
+    {
+        let service = engine_factory::create_default_database_service(effective_db_path).await?;
+        service.init_database().await?;
+        
+        if example {
+            info!("初始化示例数据...");
+            init_data::init_example_data(&service).await?;
+        }
     }
     
     info!("数据库初始化完成");

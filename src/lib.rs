@@ -27,7 +27,7 @@ pub use config::DatabaseConfig;
 
 pub mod engine_factory {
     use std::sync::Arc;
-    use super::{SQLEngine, DataFusionSQLEngine, EngineOptions, MultiTableRocksDBEngine, DatabaseServiceImpl};
+    use super::DatabaseServiceImpl;
 
     pub async fn create_default_database_service(db_path: &str) -> Result<Arc<DatabaseServiceImpl>, Box<dyn std::error::Error + Send + Sync>> {
         let service = DatabaseServiceImpl::new(db_path).await;

@@ -295,6 +295,41 @@ curl -H "Authorization: Bearer $TOKEN" \
 LAOFLCHDB_USER=admin LAOFLCHDB_PASSWORD=admin123 ./target/release/lsql --host 127.0.0.1:19777
 ```
 
+### SQL 查询示例
+
+LaoflchDB 支持完整的 SQL 查询功能，包括跨 Schema JOIN：
+
+```bash
+# 使用 lsql 执行 SQL 查询
+./target/release/lsql --host 127.0.0.1:19777 --user admin --password admin123 --command "SELECT * FROM sys.user LIMIT 10"
+
+# 通过 REST API 执行 SQL
+curl -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:8080/api/v1/sql_query \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM sys.user LIMIT 10"}'
+
+# 跨 Schema JOIN 查询
+curl -H "Authorization: Bearer $TOKEN" \
+  -X POST http://localhost:8080/api/v1/sql_query \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sql": "SELECT sales.orders.order_id, inventory.products.product_name FROM sales.orders JOIN inventory.products ON sales.orders.product_id = inventory.products.product_id LIMIT 10"
+  }'
+```
+
+**SQL 功能支持：**
+
+| 功能 | 说明 | 示例 |
+|------|------|------|
+| **SELECT** | 查询数据 | `SELECT * FROM users` |
+| **WHERE** | 条件过滤 | `SELECT * FROM users WHERE age > 18` |
+| **ORDER BY** | 排序 | `SELECT * FROM users ORDER BY age DESC` |
+| **LIMIT/OFFSET** | 分页 | `SELECT * FROM users LIMIT 10 OFFSET 20` |
+| **GROUP BY** | 分组聚合 | `SELECT category, COUNT(*) FROM products GROUP BY category` |
+| **JOIN** | 多表连接 | `SELECT a.name, b.price FROM orders a JOIN products b ON a.product_id = b.id` |
+| **跨 Schema JOIN** | 跨 Schema 连接 | `SELECT s.orders.id, i.products.name FROM sales.orders JOIN inventory.products ON ...` |
+
 ---
 
 ## 常见问题

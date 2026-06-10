@@ -242,18 +242,20 @@ lsql@analytics> SELECT COUNT(*) FROM events;
 
 ### 示例 3：查看表结构
 
+`\d <table>` 命令显示表结构，包含列ID、列名、类型和注释信息：
+
 ```bash
 lsql@sys> \d user
 表 "sys.user"
-+--------+---------------+--------+
-| 列ID   |     列名      | 类型   |
-+--------+---------------+--------+
-|      1 | id            | INT64  |
-|      2 | username      | STRING |
-|      3 | email         | STRING |
-|      4 | password_hash | STRING |
-|      5 | created_at    | STRING |
-+--------+---------------+--------+
++--------+---------------+--------+------------------+
+| 列ID   |     列名      | 类型   |      注释        |
++--------+---------------+--------+------------------+
+|      1 | id            | INT64  | 用户唯一标识     |
+|      2 | username      | STRING | 用户名           |
+|      3 | email         | STRING | 邮箱地址         |
+|      4 | password_hash | STRING | 密码哈希         |
+|      5 | created_at    | STRING | 创建时间         |
++--------+---------------+--------+------------------+
 (5 列)
 ```
 
@@ -273,6 +275,49 @@ $ lsql --host 127.0.0.1:19777 --command "SELECT name, price FROM products WHERE 
 +-------+-------+
 (2 行)
 耗时: 8.123ms
+```
+
+### 示例 5：跨 Schema JOIN 查询
+
+lsql 支持跨不同 Schema 执行 JOIN 查询，使用 `schema_name.table_name` 格式引用其他 Schema 的表：
+
+```bash
+$ lsql --host 127.0.0.1:19777
+lsql@sys> \dn
+所有 Schema:
+  - sys
+  - sales
+  - inventory
+
+lsql@sys> SELECT sales.orders.order_id, sales.customers.name, inventory.products.product_name 
+          FROM sales.orders 
+          JOIN sales.customers ON sales.orders.customer_id = sales.customers.id 
+          JOIN inventory.products ON sales.orders.product_id = inventory.products.id 
+          LIMIT 5;
++----------+-------+--------------+
+| order_id | name  | product_name |
++----------+-------+--------------+
+|    1001  | Alice | Laptop       |
+|    1002  | Bob   | Monitor      |
+|    1003  | Carol | Keyboard     |
+|    1004  | Dave  | Mouse        |
+|    1005  | Eve   | Laptop       |
++----------+-------+--------------+
+(5 行)
+耗时: 15.678ms
+
+lsql@sys> SELECT inventory.products.category, COUNT(*) as total_orders 
+          FROM sales.orders 
+          JOIN inventory.products ON sales.orders.product_id = inventory.products.id 
+          GROUP BY inventory.products.category;
++----------+--------------+
+| category | total_orders |
++----------+--------------+
+| Electronics |        150 |
+| Books       |         80 |
+| Clothing    |         45 |
++----------+--------------+
+(3 行)
 ```
 
 ---

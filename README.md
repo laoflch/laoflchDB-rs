@@ -100,6 +100,51 @@ laoflchDB-rust/
 
 ---
 
+## 新增：跨 Schema JOIN 支持
+
+### 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **跨 Schema 查询** | 支持在不同 Schema 之间执行 JOIN 操作 |
+| **多表 JOIN** | 支持三表及以上的跨 Schema JOIN |
+| **JOIN 类型** | 支持 INNER JOIN、LEFT JOIN |
+| **WHERE 条件** | 支持在跨 Schema JOIN 中使用 WHERE 过滤 |
+| **聚合函数** | 支持跨 Schema JOIN 后的聚合操作 |
+
+### 跨 Schema JOIN 示例
+
+```sql
+-- 跨 Schema INNER JOIN
+SELECT sales.orders.order_id, inventory.products.product_name 
+FROM sales.orders 
+JOIN inventory.products ON sales.orders.product_id = inventory.products.product_id;
+
+-- 跨 Schema LEFT JOIN
+SELECT sales.orders.order_id, inventory.products.product_name 
+FROM sales.orders 
+LEFT JOIN inventory.products ON sales.orders.product_id = inventory.products.product_id;
+
+-- 三表跨 Schema JOIN
+SELECT sales.customers.customer_name, inventory.products.product_name, sales.orders.order_id 
+FROM sales.customers 
+JOIN sales.orders ON sales.customers.customer_id = sales.orders.customer_id 
+JOIN inventory.products ON sales.orders.product_id = inventory.products.product_id;
+
+-- 跨 Schema JOIN 带 WHERE 条件
+SELECT sales.orders.order_id, inventory.products.product_name 
+FROM sales.orders 
+JOIN inventory.products ON sales.orders.product_id = inventory.products.product_id 
+WHERE inventory.products.category = 'Electronics';
+```
+
+### Schema 命名约定
+
+- **默认 Schema**: `sys`（不带 Schema 前缀的表名默认使用 `sys` Schema）
+- **跨 Schema 引用**: 使用 `schema_name.table_name` 格式引用其他 Schema 的表
+
+---
+
 ## 新增：SQL 查询优化（Filter/Project/Limit 下推）
 
 ### 核心特性
@@ -559,7 +604,7 @@ LaoflchDB 使用 Token 认证机制：
 1. **获取 Token**: 通过登录接口获取认证 Token
 2. **使用 Token**: 在请求头中携带 `Authorization: Bearer <token>`
 3. **Token 有效期**: 默认 24 小时
-4. **默认用户**: 初始化时自动创建 `admin` 用户（密码: `admin123`）
+4. **默认用户**: 初始化时自动创建 `admin` 用户（密码: `laoflchdb`）
 
 **认证流程**:
 ```
@@ -953,12 +998,79 @@ multi_table_rocksdb
 
 ---
 
-### 0.1.3 (当前)
-- **lsql 命令行客户端**: 类似 PostgreSQL psql 的交互式 SQL 客户端
+### 0.1.4 (当前)
+- **表和字段注释支持**: 在 `TableMeta` 和 `ColumnMeta` 中添加了 `comment` 字段，支持语义化注释
+- **订单交易系统示例**: `--example` 初始化时创建完整的订单交易系统表结构，包含表和字段注释
+- **lsql 命令行客户端**: 类似 PostgreSQL psql 的交互式 SQL 客户端，支持 `\v` 作为 `\version` 的别名
 - **ListSchemas API**: 新增 gRPC API 用于列出所有 Schema
 - **execute_query 日志**: 添加详细的 SQL 执行日志输出
 - **错误处理优化**: SQL 执行错误时不退出进程
 - **Schema 验证**: 切换和默认 Schema 时验证是否存在
+
+---
+
+## 18. 订单交易系统示例数据
+
+使用 `--example` 参数初始化数据库时，会创建完整的订单交易系统表结构和万级样例数据：
+
+### 表结构设计
+
+| 表名 | 字段 | 类型 | 说明 |
+|------|------|------|------|
+| **customers** | id | INT64 | 客户ID |
+| | name | STRING | 客户名称 |
+| | email | STRING | 邮箱 |
+| | phone | STRING | 手机号 |
+| | address | STRING | 地址 |
+| | created_at | STRING | 创建时间 |
+| **products** | id | INT64 | 产品ID |
+| | name | STRING | 产品名称 |
+| | price | FLOAT | 价格 |
+| | stock | INT64 | 库存 |
+| | category | STRING | 分类 |
+| | description | STRING | 描述 |
+| **orders** | id | INT64 | 订单ID |
+| | customer_id | INT64 | 客户ID |
+| | order_date | STRING | 下单时间 |
+| | total_amount | FLOAT | 订单总额 |
+| | status | STRING | 状态 |
+| | shipping_address | STRING | 配送地址 |
+| **order_items** | id | INT64 | 明细ID |
+| | order_id | INT64 | 订单ID |
+| | product_id | INT64 | 产品ID |
+| | quantity | INT64 | 数量 |
+| | unit_price | FLOAT | 单价 |
+| | discount | FLOAT | 折扣 |
+
+### 样例数据规模
+
+| 表名 | 数据量 |
+|------|--------|
+| customers | 1000 条 |
+| products | 100 条 (5个分类) |
+| orders | 10000 条 |
+| order_items | ~20000 条 |
+
+### 使用示例
+
+```bash
+# 初始化 example 库（会删除并重建）
+./target/release/laoflchDB-rust init --example --db-path ./test_db
+
+# 启动服务后通过 lsql 查询
+lsql --host 127.0.0.1:19777 --schema example
+
+lsql@example> SELECT COUNT(*) FROM customers;   -- 1000
+lsql@example> SELECT COUNT(*) FROM orders;      -- 10000
+lsql@example> SELECT c.name, o.order_date, o.total_amount 
+             FROM orders o 
+             JOIN customers c ON o.customer_id = c.id 
+             LIMIT 10;
+```
+
+---
+
+## 19. 版本历史
 
 ### 0.1.2
 - **SQL 查询下推优化**: 支持 Filter、Project、Limit 下推

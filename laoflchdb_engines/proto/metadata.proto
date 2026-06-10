@@ -12,6 +12,7 @@ message TableMeta {
     string table_name = 2;
     uint32 column_count = 3;
     uint64 next_auto_inc_column_id = 4;
+    string comment = 5;
 }
 
 message ColumnMeta {
@@ -19,6 +20,7 @@ message ColumnMeta {
     uint64 column_id = 2;
     string column_name = 3;
     ColumnType column_type = 4;
+    string comment = 5;
 }
 
 enum ColumnType {

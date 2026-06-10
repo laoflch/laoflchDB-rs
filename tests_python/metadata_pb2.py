@@ -24,19 +24,19 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0emetadata.proto\x12\tlaoflchdb\"A\n\nSchemaMeta\x12\x13\n\x0bschema_name\x18\x01 \x01(\t\x12\x1e\n\x16next_auto_inc_table_id\x18\x02 \x01(\x04\"h\n\tTableMeta\x12\x10\n\x08table_id\x18\x01 \x01(\x04\x12\x12\n\ntable_name\x18\x02 \x01(\t\x12\x14\n\x0c\x63olumn_count\x18\x03 \x01(\r\x12\x1f\n\x17next_auto_inc_column_id\x18\x04 \x01(\x04\"r\n\nColumnMeta\x12\x10\n\x08table_id\x18\x01 \x01(\x04\x12\x11\n\tcolumn_id\x18\x02 \x01(\x04\x12\x13\n\x0b\x63olumn_name\x18\x03 \x01(\t\x12*\n\x0b\x63olumn_type\x18\x04 \x01(\x0e\x32\x15.laoflchdb.ColumnType*\x96\x01\n\nColumnType\x12\x16\n\x12\x43OLUMN_TYPE_STRING\x10\x00\x12\x15\n\x11\x43OLUMN_TYPE_INT64\x10\x01\x12\x15\n\x11\x43OLUMN_TYPE_BYTES\x10\x02\x12\x15\n\x11\x43OLUMN_TYPE_FLOAT\x10\x03\x12\x14\n\x10\x43OLUMN_TYPE_LIST\x10\x04\x12\x15\n\x11\x43OLUMN_TYPE_IMAGE\x10\x05\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0emetadata.proto\x12\tlaoflchdb\"A\n\nSchemaMeta\x12\x13\n\x0bschema_name\x18\x01 \x01(\t\x12\x1e\n\x16next_auto_inc_table_id\x18\x02 \x01(\x04\"h\n\tTableMeta\x12\x10\n\x08table_id\x18\x01 \x01(\x04\x12\x12\n\ntable_name\x18\x02 \x01(\t\x12\x14\n\x0c\x63olumn_count\x18\x03 \x01(\r\x12\x1f\n\x17next_auto_inc_column_id\x18\x04 \x01(\x04\"\x83\x01\n\nColumnMeta\x12\x10\n\x08table_id\x18\x01 \x01(\x04\x12\x11\n\tcolumn_id\x18\x02 \x01(\x04\x12\x13\n\x0b\x63olumn_name\x18\x03 \x01(\t\x12*\n\x0b\x63olumn_type\x18\x04 \x01(\x0e\x32\x15.laoflchdb.ColumnType\x12\x0f\n\x07\x63omment\x18\x05 \x01(\t*\x96\x01\n\nColumnType\x12\x16\n\x12\x43OLUMN_TYPE_STRING\x10\x00\x12\x15\n\x11\x43OLUMN_TYPE_INT64\x10\x01\x12\x15\n\x11\x43OLUMN_TYPE_BYTES\x10\x02\x12\x15\n\x11\x43OLUMN_TYPE_FLOAT\x10\x03\x12\x14\n\x10\x43OLUMN_TYPE_LIST\x10\x04\x12\x15\n\x11\x43OLUMN_TYPE_IMAGE\x10\x05\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'metadata_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_COLUMNTYPE']._serialized_start=319
-  _globals['_COLUMNTYPE']._serialized_end=469
+  _globals['_COLUMNTYPE']._serialized_start=337
+  _globals['_COLUMNTYPE']._serialized_end=487
   _globals['_SCHEMAMETA']._serialized_start=29
   _globals['_SCHEMAMETA']._serialized_end=94
   _globals['_TABLEMETA']._serialized_start=96
   _globals['_TABLEMETA']._serialized_end=200
-  _globals['_COLUMNMETA']._serialized_start=202
-  _globals['_COLUMNMETA']._serialized_end=316
+  _globals['_COLUMNMETA']._serialized_start=203
+  _globals['_COLUMNMETA']._serialized_end=334
 # @@protoc_insertion_point(module_scope)

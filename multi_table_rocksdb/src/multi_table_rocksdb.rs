@@ -1,10 +1,8 @@
-use log::warn;
 use rocksdb::{DB, Options, ColumnFamilyDescriptor};
 use protobuf::{Message, Enum};
 use snowflake_me::Snowflake;
 use std::sync::Arc;
 use std::sync::RwLock;
-use tokio::sync::RwLock as TokioRwLock;
 
 use laoflchdb_engines::{StorageEngine, EngineOptions, META_TABLE_PREFIX, META_COLUMN_PREFIX, META_SCHEMA_PREFIX, MAX_TABLE_ID_LENGTH};
 use laoflchdb_sql_df_engine::DataFusionStorageEngine;
@@ -13,9 +11,7 @@ use laoflchdb_engines::{SchemaMeta, TableMeta, ColumnMeta, Row, ColumnType, Quer
 
 use datafusion::arrow::array::{ArrayRef, StringArray, Int64Array, Float64Array, BinaryArray};
 use datafusion::arrow::datatypes::{DataType, Field as ArrowField, Schema};
-use datafusion::catalog::Session;
 use datafusion::datasource::TableProvider;
-use datafusion::physical_plan::ExecutionPlan;
 
 use crate::rocksdb_table::{RocksDBTable, FilterGroup, FilterItem, FilterRelation};
 
@@ -107,16 +103,18 @@ impl MultiTableRocksDBEngine {
             let table_meta = TableMeta {
                 table_id: next_table_id,
                 table_name: "user".to_string(),
-                column_count: 2,
-                next_auto_inc_column_id: 2,
+                column_count: 3,
+                next_auto_inc_column_id: 3,
+                comment: "默认用户表".to_string(),
                 special_fields: ::protobuf::SpecialFields::default(),
             };
             let encoded = write_proto_to_vec(&table_meta);
             self.put_meta_internal(table_meta_key.as_bytes(), &encoded)?;
             
             let columns = vec![
-                (0, "user_id", ColumnType::COLUMN_TYPE_INT64),
-                (1, "password", ColumnType::COLUMN_TYPE_STRING),
+                (0, "id", ColumnType::COLUMN_TYPE_INT64),
+                (1, "username", ColumnType::COLUMN_TYPE_STRING),
+                (2, "password_hash", ColumnType::COLUMN_TYPE_STRING),
             ];
             
             for (column_id, column_name, column_type) in columns {
@@ -126,13 +124,66 @@ impl MultiTableRocksDBEngine {
                     column_id,
                     column_name: column_name.to_string(),
                     column_type: column_type.into(),
+                    comment: "".to_string(),
                     special_fields: ::protobuf::SpecialFields::default(),
                 };
                 let encoded = write_proto_to_vec(&col_meta);
                 self.put_meta_internal(col_meta_key.as_bytes(), &encoded)?;
             }
+            
+            let default_password_hash = "5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8";
+            
+            let mut row_data = Vec::new();
+            
+            let id_field = laoflchdb_engines::Field {
+                value: Some(laoflchdb_engines::field::field::Value::IntegerValue(
+                    laoflchdb_engines::field::Integer { value: 1, special_fields: ::protobuf::SpecialFields::default() }
+                )),
+                special_fields: ::protobuf::SpecialFields::default(),
+            };
+            row_data.push(write_proto_to_vec(&id_field));
+            
+            let username_field = laoflchdb_engines::Field {
+                value: Some(laoflchdb_engines::field::field::Value::StringValue(
+                    laoflchdb_engines::field::String { value: "admin".to_string(), special_fields: ::protobuf::SpecialFields::default() }
+                )),
+                special_fields: ::protobuf::SpecialFields::default(),
+            };
+            row_data.push(write_proto_to_vec(&username_field));
+            
+            let password_field = laoflchdb_engines::Field {
+                value: Some(laoflchdb_engines::field::field::Value::StringValue(
+                    laoflchdb_engines::field::String { value: default_password_hash.to_string(), special_fields: ::protobuf::SpecialFields::default() }
+                )),
+                special_fields: ::protobuf::SpecialFields::default(),
+            };
+            row_data.push(write_proto_to_vec(&password_field));
+            
+            let row = Row {
+                row_type: ::protobuf::EnumOrUnknown::new(laoflchdb_engines::RowType::ROW_TYPE_NORMAL),
+                version: 1,
+                data: row_data,
+                special_fields: ::protobuf::SpecialFields::default(),
+            };
+            
+            self.add_row_sync("user", &row)?;
         }
         Ok(())
+    }
+    
+    fn add_row_sync(&mut self, table: &str, row: &Row) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        let cf_name = self.get_table_cf(table);
+        let db = self.db.read().unwrap();
+        let cf_handle = db.cf_handle(&cf_name)
+            .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
+        
+        let row_id = self.get_next_row_id();
+        let key = self.row_id_to_key(row_id);
+        let value = write_proto_to_vec(row);
+        
+        db.put_cf(cf_handle, &key, value)?;
+        
+        Ok(row_id)
     }
 
     fn get_next_row_id(&self) -> u64 {
@@ -150,6 +201,24 @@ impl MultiTableRocksDBEngine {
 
     fn get_table_cf(&self, table: &str) -> String {
         table.to_string()
+    }
+
+    pub fn get_table_row_count(&self, table_name: &str) -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
+        let cf_name = self.get_table_cf(table_name);
+        let db = self.db.read().unwrap();
+        let cf_handle = match db.cf_handle(&cf_name) {
+            Some(handle) => handle,
+            None => return Ok(0),
+        };
+        
+        let mut count = 0;
+        let iter = db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_, _) = item?;
+            count += 1;
+        }
+        
+        Ok(count)
     }
 
     fn make_schema_meta_key(&self) -> String {
@@ -172,7 +241,6 @@ impl MultiTableRocksDBEngine {
             ColumnType::COLUMN_TYPE_FLOAT => "COLUMN_TYPE_FLOAT",
             ColumnType::COLUMN_TYPE_LIST => "COLUMN_TYPE_LIST",
             ColumnType::COLUMN_TYPE_IMAGE => "COLUMN_TYPE_IMAGE",
-            _ => "COLUMN_TYPE_STRING",
         }
     }
 
@@ -276,7 +344,7 @@ impl MultiTableRocksDBEngine {
 
 #[async_trait::async_trait]
 impl StorageEngine for MultiTableRocksDBEngine {
-    async fn create_table(&mut self, table: &str, columns: &[(u32, &str, ColumnType)]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    async fn create_table(&mut self, table: &str, table_comment: Option<&str>, columns: &[(u32, &str, ColumnType, Option<&str>)]) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         if table == "default" {
             return Err("Cannot create reserved table 'default'".into());
         }
@@ -301,12 +369,13 @@ impl StorageEngine for MultiTableRocksDBEngine {
             table_name: table.to_string(),
             column_count: columns.len() as u32,
             next_auto_inc_column_id: columns.len() as u64,
+            comment: table_comment.unwrap_or("").to_string(),
             special_fields: ::protobuf::SpecialFields::default(),
         };
         let encoded = write_proto_to_vec(&table_meta);
         self.put_meta_internal(table_meta_key.as_bytes(), &encoded)?;
 
-        for (idx, (_, col_name, col_type)) in columns.iter().enumerate() {
+        for (idx, (_, col_name, col_type, col_comment)) in columns.iter().enumerate() {
             let col_id = idx as u64;
             let col_meta_key = self.make_column_meta_key(next_table_id, col_name, col_id, *col_type);
             let col_meta = ColumnMeta {
@@ -314,12 +383,13 @@ impl StorageEngine for MultiTableRocksDBEngine {
                 column_id: col_id,
                 column_name: col_name.to_string(),
                 column_type: (*col_type).into(),
+                comment: col_comment.unwrap_or("").to_string(),
                 special_fields: ::protobuf::SpecialFields::default(),
             };
             let encoded = write_proto_to_vec(&col_meta);
             self.put_meta_internal(col_meta_key.as_bytes(), &encoded)?;
         }
-
+        
         Ok(next_table_id)
     }
 
@@ -366,28 +436,42 @@ impl StorageEngine for MultiTableRocksDBEngine {
         let mut cols = Vec::new();
         
         let table_prefix = format!("{}:{}:", META_TABLE_PREFIX, table);
+        log::info!("[ListTableCols] Scanning table meta with prefix: '{}'", table_prefix);
+        
         let table_entries = self.scan_meta_prefix_internal(table_prefix.as_bytes())?;
+        log::info!("[ListTableCols] Found {} table entries", table_entries.len());
         
         let mut table_id = None;
-        for (_, value) in table_entries {
+        for (key, value) in table_entries {
+            log::info!("[ListTableCols] Found table entry: key={:?}", String::from_utf8_lossy(&key));
             if let Ok(table_meta) = TableMeta::parse_from_bytes(value.as_slice()) {
                 table_id = Some(table_meta.table_id);
+                log::info!("[ListTableCols] Found table_id: {}", table_meta.table_id);
                 break;
             }
         }
         
         if let Some(tid) = table_id {
             let col_prefix = format!("{}:{}:", META_COLUMN_PREFIX, self.format_table_id(tid));
-            let col_entries = self.scan_meta_prefix_internal(col_prefix.as_bytes())?;
+            log::info!("[ListTableCols] Scanning column meta with prefix: '{}'", col_prefix);
             
-            for (_, value) in col_entries {
+            let col_entries = self.scan_meta_prefix_internal(col_prefix.as_bytes())?;
+            log::info!("[ListTableCols] Found {} column entries", col_entries.len());
+            
+            for (key, value) in col_entries {
+                log::info!("[ListTableCols] Found column entry: key={:?}", String::from_utf8_lossy(&key));
                 if let Ok(col_meta) = ColumnMeta::parse_from_bytes(value.as_slice()) {
+                    log::info!("[ListTableCols] Column: {} (id={}, type={})", 
+                        col_meta.column_name, col_meta.column_id, col_meta.column_type.value());
                     cols.push(col_meta);
                 }
             }
+        } else {
+            log::warn!("[ListTableCols] No table found for '{}'", table);
         }
         
         cols.sort_by_key(|c| c.column_id);
+        log::info!("[ListTableCols] Returning {} columns", cols.len());
         Ok(cols)
     }
     
@@ -503,6 +587,45 @@ impl StorageEngine for MultiTableRocksDBEngine {
         Ok(None)
     }
     
+    async fn update_table_comment(&mut self, table: &str, comment: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let prefix = format!("{}:{}:", META_TABLE_PREFIX, table);
+        let meta_entries = self.scan_meta_prefix_internal(prefix.as_bytes())?;
+        
+        for (key, value) in meta_entries {
+            let mut table_meta: TableMeta = TableMeta::parse_from_bytes(&value[..])?;
+            table_meta.comment = comment.to_string();
+            let updated_value = table_meta.write_to_bytes()?;
+            
+            let db = self.db.write().unwrap();
+            db.put(key, updated_value)?;
+            return Ok(());
+        }
+        
+        Err(format!("Table '{}' not found", table).into())
+    }
+    
+    async fn update_column_comment(&mut self, table: &str, column_name: &str, comment: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let table_meta = self.get_table_meta(table).await?
+            .ok_or_else(|| format!("Table '{}' not found", table))?;
+        
+        let col_prefix = format!("{}:{}:", META_COLUMN_PREFIX, self.format_table_id(table_meta.table_id));
+        let col_entries = self.scan_meta_prefix_internal(col_prefix.as_bytes())?;
+        
+        for (key, value) in col_entries {
+            let mut col_meta: ColumnMeta = ColumnMeta::parse_from_bytes(&value[..])?;
+            if col_meta.column_name == column_name {
+                col_meta.comment = comment.to_string();
+                let updated_value = col_meta.write_to_bytes()?;
+                
+                let db = self.db.write().unwrap();
+                db.put(key, updated_value)?;
+                return Ok(());
+            }
+        }
+        
+        Err(format!("Column '{}' not found in table '{}'", column_name, table).into())
+    }
+    
     async fn put(&mut self, table: &str, key: &[u8], value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
         let db = self.db.read().unwrap();
@@ -588,6 +711,26 @@ impl StorageEngine for MultiTableRocksDBEngine {
         
         Ok(column_types)
     }
+    
+    fn create_table_provider(&self, table_name: &str) -> Arc<dyn TableProvider> {
+        use std::thread;
+        use std::sync::mpsc;
+        
+        let engine = Arc::new(self.clone());
+        let table_name_clone = table_name.to_string();
+        
+        let (tx, rx) = mpsc::channel();
+        
+        thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let table = rt.block_on(async move {
+                RocksDBTable::new(engine, &table_name_clone).await
+            });
+            let _ = tx.send(table);
+        });
+        
+        Arc::new(rx.recv().unwrap())
+    }
 }
 
 impl MultiTableRocksDBEngine {
@@ -667,45 +810,6 @@ impl MultiTableRocksDBEngine {
             };
 
             if self.check_table_filters(&row, &table_filter.column_filters, &columns) {
-                result_rows.push(QueryRow {
-                    table_name: table_name.to_string(),
-                    row_id,
-                    row: ::protobuf::MessageField::some(row),
-                    special_fields: ::protobuf::SpecialFields::default(),
-                });
-            }
-        }
-
-        Ok(())
-    }
-
-    fn query_table_negated(&self, table_filter: &TableFilter, result_rows: &mut Vec<QueryRow>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let table_name = &table_filter.table_name;
-        let cf_name = self.get_table_cf(table_name);
-        let db = self.db.read().unwrap();
-        let cf_handle = match db.cf_handle(&cf_name) {
-            Some(handle) => handle,
-            None => return Ok(()),
-        };
-
-        let columns = self.get_table_columns(table_name)?;
-
-        let iter = db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start);
-        for item in iter {
-            let (key, value) = item?;
-
-            let row_id = match self.key_to_row_id(key.as_ref()) {
-                Ok(id) => id,
-                Err(_) => continue,
-            };
-
-            let row = match Row::parse_from_bytes(&value[..]) {
-                Ok(row) => row,
-                Err(_) => continue,
-            };
-
-            // 取反模式：获取不满足过滤器条件的行
-            if !self.check_table_filters(&row, &table_filter.column_filters, &columns) {
                 result_rows.push(QueryRow {
                     table_name: table_name.to_string(),
                     row_id,
@@ -988,7 +1092,7 @@ impl MultiTableRocksDBEngine {
         projection: Option<&Vec<usize>>,
         filters: &[ColumnFilter],
         limit: Option<usize>,
-        negate_result: bool
+        _negate_result: bool
     ) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
         let columns = StorageEngine::list_table_cols(self, table_name).await?;
         
@@ -1141,7 +1245,7 @@ impl MultiTableRocksDBEngine {
         negate_result: bool
     ) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
         let columns = StorageEngine::list_table_cols(self, table_name).await?;
-        let column_types = self.get_column_types(table_name).await?;
+        let _column_types = self.get_column_types(table_name).await?;
         
         let projected_columns: Vec<ColumnMeta> = match projection {
             Some(p) => p.iter()
@@ -1182,7 +1286,7 @@ impl MultiTableRocksDBEngine {
             rows
         };
         
-        for (row_id, row) in limited_rows {
+        for (_row_id, row) in limited_rows {
             let mut row_arrays: Vec<Option<ArrayRef>> = vec![None; projected_columns.len()];
             
             for (arr_idx, col) in projected_columns.iter().enumerate() {
@@ -1379,7 +1483,7 @@ impl MultiTableRocksDBEngine {
         negate_result: bool
     ) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
         let columns = self.list_table_cols_sync(table_name)?;
-        let column_types = self.get_column_types_sync(table_name)?;
+        let _column_types = self.get_column_types_sync(table_name)?;
         
         let projected_columns: Vec<ColumnMeta> = match projection {
             Some(p) => p.iter()
@@ -1420,7 +1524,7 @@ impl MultiTableRocksDBEngine {
             rows
         };
         
-        for (row_id, row) in limited_rows {
+        for (_row_id, row) in limited_rows {
             let mut row_arrays: Vec<Option<ArrayRef>> = vec![None; projected_columns.len()];
             
             for (arr_idx, col) in projected_columns.iter().enumerate() {
@@ -1701,26 +1805,6 @@ impl MultiTableRocksDBEngine {
         let schema = Schema::new(arrow_fields);
         Ok((schema, merged_arrays, column_infos))
     }
-    
-    fn create_table_provider(&self, table_name: &str) -> Arc<dyn TableProvider> {
-        use std::thread;
-        use std::sync::mpsc;
-        
-        let engine = Arc::new(self.clone());
-        let table_name_clone = table_name.to_string();
-        
-        let (tx, rx) = mpsc::channel();
-        
-        thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-            let table = rt.block_on(async move {
-                RocksDBTable::new(engine, &table_name_clone).await
-            });
-            let _ = tx.send(table);
-        });
-        
-        Arc::new(rx.recv().unwrap())
-    }
 }
 
 #[async_trait::async_trait]
@@ -1728,26 +1812,8 @@ impl DataFusionStorageEngine for MultiTableRocksDBEngine {
     async fn table_to_arrow(&self, table_name: &str) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
         self.table_to_arrow(table_name).await
     }
-    
-    fn create_table_provider(&self, table_name: &str) -> Arc<dyn TableProvider> {
-        use std::thread;
-        use std::sync::mpsc;
-        
-        let engine = Arc::new(self.clone());
-        let table_name_clone = table_name.to_string();
-        
-        let (tx, rx) = mpsc::channel();
-        
-        thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-            let table = rt.block_on(async move {
-                RocksDBTable::new(engine, &table_name_clone).await
-            });
-            let _ = tx.send(table);
-        });
-        
-        Arc::new(rx.recv().unwrap())
-    }
 }
+
+
 
 

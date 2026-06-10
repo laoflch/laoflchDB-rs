@@ -1,6 +1,6 @@
 # laoflchDB config
 
-db_path: ./laoflch_db_data
+db_path: /workspace/rust_space/laoflchDB-rust/target/release/laoflch_db_data
 log_level: info
 default_policy: allow
 

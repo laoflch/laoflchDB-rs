@@ -6,6 +6,7 @@ fn test_protobuf_table_meta_encode_decode() {
     let original = TableMeta {
         table_id,
         table_name: "user".to_string(),
+        comment: "test table".to_string(),
         column_count: 2,
         next_auto_inc_column_id: 3,
         special_fields: SpecialFields::default(),
@@ -30,6 +31,7 @@ fn test_protobuf_column_meta_encode_decode() {
         column_id: 42,
         column_name: "user_id".to_string(),
         column_type: ColumnType::COLUMN_TYPE_INT64.into(),
+        comment: "test column".to_string(),
         special_fields: SpecialFields::default(),
     };
 
