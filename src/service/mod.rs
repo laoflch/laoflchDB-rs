@@ -182,6 +182,8 @@ pub trait DatabaseService: Send + Sync + 'static {
     
     async fn put(&self, schema: &str, table: &str, key: &[u8], value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn get(&self, schema: &str, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>;
+    
+    async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn delete(&self, schema: &str, table: &str, key: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     
     async fn sql_query(&self, schema: &str, sql: &str) -> Result<QueryResult, Box<dyn std::error::Error + Send + Sync>>;
@@ -665,5 +667,21 @@ impl DatabaseService for DatabaseServiceImpl {
         let tables = sys_engine.as_ref().list_tables().await?;
         
         Ok(tables)
+    }
+    
+    async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        log::info!("开始关闭数据库服务...");
+        
+        let schemas = self.schema_manager.as_ref().list_schemas().await;
+        for schema in schemas {
+            log::info!("关闭 schema: {}", schema);
+            if let Ok(engine) = self.schema_manager.as_ref().get_schema_engine(&schema).await {
+                let mut engine = engine.write().await;
+                engine.as_mut().shutdown().await?;
+            }
+        }
+        
+        log::info!("数据库服务关闭完成");
+        Ok(())
     }
 }

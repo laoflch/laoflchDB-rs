@@ -52,6 +52,10 @@ pub trait StorageEngine: Send + Sync + 'static {
     
     fn get_schema_name(&self) -> &str;
     
+    async fn shutdown(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+    
     async fn scan_table(&self, table: &str, limit: Option<usize>) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>>;
     
     async fn get_column_types(&self, table: &str) -> Result<std::collections::HashMap<String, ColumnType>, Box<dyn std::error::Error + Send + Sync>>;

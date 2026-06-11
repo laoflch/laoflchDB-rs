@@ -57,8 +57,8 @@ class GrpcPermissionTester:
                 schema=schema,
                 table_name=table_name,
                 columns=[
-                    rpc_pb2.ColumnMeta(
-                        column_name=col["name"],
+                    rpc_pb2.ColumnDef(
+                        name=col["name"],
                         column_type=get_column_type(col["column_type"])
                     )
                     for col in columns
@@ -126,13 +126,13 @@ class GrpcPermissionTester:
 def get_column_type(type_str: str) -> int:
     """转换列类型"""
     type_map = {
-        "STRING": rpc_pb2.STRING,
-        "INT64": rpc_pb2.INT64,
-        "BYTES": rpc_pb2.BYTES,
-        "FLOAT": rpc_pb2.FLOAT,
-        "DOUBLE": rpc_pb2.DOUBLE,
+        "STRING": 0,
+        "INT64": 1,
+        "BYTES": 2,
+        "FLOAT": 3,
+        "DOUBLE": 4,
     }
-    return type_map.get(type_str.upper(), rpc_pb2.STRING)
+    return type_map.get(type_str.upper(), 0)
 
 
 class GrpcPermissionTestRunner:

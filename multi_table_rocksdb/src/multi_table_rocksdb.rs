@@ -712,6 +712,16 @@ impl StorageEngine for MultiTableRocksDBEngine {
         Ok(column_types)
     }
     
+    async fn shutdown(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        log::info!("关闭 RocksDB 数据库...");
+        
+        let db = self.db.write().unwrap();
+        db.flush()?;
+        log::info!("RocksDB 刷新完成");
+        
+        Ok(())
+    }
+    
     fn create_table_provider(&self, table_name: &str) -> Arc<dyn TableProvider> {
         use std::thread;
         use std::sync::mpsc;

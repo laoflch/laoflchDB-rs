@@ -4,8 +4,9 @@ use laoflchDB_rust::{
 };
 use clap::Parser;
 use std::sync::Arc;
-use log::info;
+use log::{info, warn};
 use tokio::runtime::{Builder, Runtime};
+use tokio::signal;
 
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
@@ -53,6 +54,7 @@ async fn start_server(
     info!("监听地址: {}", effective_addr);
     
     let service = engine_factory::create_default_database_service(effective_db_path).await?;
+    let service_clone = service.clone();
     let sql_engine = service.sql_engine().clone();
     
     let access_service = Arc::new(AccessService::new(service.clone()));
@@ -67,8 +69,26 @@ async fn start_server(
     
     server.start(config).await?;
     
-    tokio::signal::ctrl_c().await?;
-    info!("收到停止信号，正在关闭服务...");
+    let mut sigint = signal::unix::signal(signal::unix::SignalKind::interrupt())?;
+    let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;
+    
+    tokio::select! {
+        _ = sigint.recv() => {
+            info!("收到 SIGINT 信号 (Ctrl+C)");
+        },
+        _ = sigterm.recv() => {
+            info!("收到 SIGTERM 信号");
+        },
+        _ = tokio::signal::ctrl_c() => {
+            info!("收到 Ctrl+C");
+        }
+    }
+    
+    info!("正在关闭数据库服务...");
+    match service_clone.shutdown().await {
+        Ok(_) => info!("数据库服务关闭成功"),
+        Err(e) => warn!("关闭数据库服务时出错: {}", e),
+    }
     
     Ok(())
 }
