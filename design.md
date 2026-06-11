@@ -902,6 +902,8 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 - **测试覆盖**: 新增 cross_schema_join_tests.rs 和 test_cross_schema_join.py
 - **Python 回归测试**: 新增 test_final.py 完整回归测试套件
 - **Protobuf 修复**: 修复测试端 rpc.proto 与服务端不一致问题
+- **优雅关闭功能**: 支持 SIGINT/SIGTERM 信号处理，自动刷新 RocksDB 数据并释放锁文件
+- **shutdown 接口**: 在 `StorageEngine` 和 `DatabaseService` trait 中添加 `shutdown` 方法
 
 ### 0.1.3
 - **lsql 命令行客户端**: 类似 PostgreSQL psql 的交互式 SQL 客户端，支持 gRPC 连接
@@ -943,5 +945,5 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 ---
 
 **文档版本**: v0.1.4  
-**最后更新**: 2026-06-09  
+**最后更新**: 2026-06-11  
 **项目**: laoflchDB-rust

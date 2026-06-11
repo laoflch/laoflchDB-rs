@@ -5,6 +5,7 @@
 - **Base URL**: `http://localhost:8080`
 - **Content-Type**: `application/json`
 - **gRPC 端口**: `19777`
+- **版本**: v0.1.4
 
 ## 认证机制
 

@@ -5,6 +5,7 @@
 - **服务地址**: `localhost:19777`
 - **协议**: gRPC (HTTP/2)
 - **语言**: Protocol Buffers 3
+- **版本**: v0.1.4
 
 ## 认证机制
 

@@ -190,6 +190,50 @@ SELECT * FROM users WHERE (age > 25 AND score > 90) OR name = 'Alice'
 
 ---
 
+## 新增：优雅关闭功能
+
+### 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **信号处理** | 支持 SIGINT (Ctrl+C)、SIGTERM (kill 命令) 信号 |
+| **RocksDB 刷新** | 关闭时自动调用 `db.flush()` 确保数据持久化 |
+| **锁释放** | 正确释放 RocksDB 锁文件，避免下次启动报错 |
+| **Schema 遍历** | 遍历所有 Schema 并优雅关闭对应的引擎 |
+
+### 关闭流程
+
+```
+收到信号 (Ctrl+C/SIGTERM)
+    ↓
+调用 service.shutdown()
+    ↓
+遍历所有 Schema
+    ↓
+对每个 Schema 调用 engine.shutdown()
+    ↓
+执行 db.flush() 刷新数据到磁盘
+    ↓
+释放锁文件
+    ↓
+服务正常退出
+```
+
+### 关闭方式
+
+```bash
+# 方式 1: Ctrl+C (终端中)
+^C
+
+# 方式 2: kill 命令
+kill <pid>
+
+# 方式 3: kill -TERM
+kill -TERM <pid>
+```
+
+---
+
 ## 1. Schema 与 RocksDB 映射设计
 
 ### 核心映射关系
@@ -1006,6 +1050,7 @@ multi_table_rocksdb
 - **execute_query 日志**: 添加详细的 SQL 执行日志输出
 - **错误处理优化**: SQL 执行错误时不退出进程
 - **Schema 验证**: 切换和默认 Schema 时验证是否存在
+- **优雅关闭功能**: 支持 SIGINT/SIGTERM 信号处理，自动刷新 RocksDB 数据并释放锁文件
 
 ---
 
