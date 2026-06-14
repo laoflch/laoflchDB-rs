@@ -118,6 +118,7 @@ impl Default for RuntimeMode {
 #[derive(Debug, Deserialize, Clone)]
 pub struct DatabaseConfig {
     pub db_path: String,
+    pub index_path:String,
     #[serde(default = "default_addr")]
     pub addr: String,
     #[serde(default = "default_log_level")]
@@ -177,6 +178,7 @@ impl DatabaseConfig {
     pub fn default() -> Self {
         Self {
             db_path: "./laoflch_db_data".to_string(),
+            index_path: "./laoflch_index_data".to_string(),
             addr: default_addr(),
             log_level: default_log_level(),
             access_protocols: vec![],
@@ -235,6 +237,7 @@ mod tests {
     fn test_default_config() {
         let config = DatabaseConfig::default();
         assert_eq!(config.db_path, "./laoflch_db_data");
+        assert_eq!(config.index_path, "./laoflch_index_data");
         assert_eq!(config.addr, "127.0.0.1:50051");
         assert_eq!(config.log_level, "info");
         assert_eq!(config.default_policy, "allow");
@@ -254,6 +257,7 @@ default_policy: "deny"
         
         let config = DatabaseConfig::load_from_file(temp_file.path()).unwrap();
         assert_eq!(config.db_path, "./test_db");
+        assert_eq!(config.index_path, "./test_index");
         assert_eq!(config.addr, "127.0.0.1:12345");
         assert_eq!(config.log_level, "debug");
         assert_eq!(config.default_policy, "deny");

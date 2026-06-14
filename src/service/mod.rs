@@ -8,6 +8,10 @@ use std::fmt;
 use sha2::{Sha256, Digest};
 use chrono;
 
+pub mod index;
+
+pub use index::{IndexService,IndexServiceImpl};
+
 // 密码哈希函数
 fn hash_password(password: &str) -> String {
     let mut hasher = Sha256::new();

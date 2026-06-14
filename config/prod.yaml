@@ -2,6 +2,7 @@
 
 # Database configuration
 db_path: /app/data
+index_path: /app/indexes
 
 # Log configuration
 log_level: info

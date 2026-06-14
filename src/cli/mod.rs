@@ -22,6 +22,10 @@ pub enum Commands {
         
         #[arg(long, help = "数据库路径")]
         db_path: Option<String>,
+
+        #[arg(long, help = "索引存储路径")]
+        index_path: Option<String>,
+
     },
     #[command(about = "初始化数据库（幂等操作）")]
     Init {

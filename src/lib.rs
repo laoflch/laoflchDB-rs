@@ -19,7 +19,7 @@ pub use db_engine::{
 };
 pub use laoflchdb_engines::{SQLEngine, QueryResult};
 pub use laoflchdb_sql_df_engine::{DataFusionSQLEngine, DataFusionStorageEngine};
-pub use service::{DatabaseService, DatabaseServiceImpl, SchemaManager};
+pub use service::{DatabaseService, DatabaseServiceImpl, SchemaManager,IndexService, IndexServiceImpl};
 pub use access::{AccessService, GrpcService, RestService};
 pub use server::LaoflchDBServer;
 pub use cli::{Cli, Commands};

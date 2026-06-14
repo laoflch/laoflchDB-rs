@@ -1,0 +1,9 @@
+{
+  "index_settings": {
+    "docstore_compression": "lz4",
+    "docstore_blocksize": 16384
+  },
+  "segments": [],
+  "schema": [],
+  "opstamp": 0
+}

@@ -1,4 +1,5 @@
 use crate::service::DatabaseService;
+use crate::service::index::IndexService;
 use crate::access::{PermissionChecker, PermissionContext, TokenManager};
 use crate::config::PermissionAction;
 use protobuf::Enum;
@@ -15,9 +16,11 @@ use axum::{
     middleware::{self},
 };
 
+
 #[derive(Clone)]
 pub struct RestService {
     service: Arc<dyn DatabaseService>,
+    index_service: Option<Arc<dyn IndexService>>,
     permission_checker: Arc<PermissionChecker>,
     service_id: String,
     token_manager: Arc<TokenManager>,
@@ -27,6 +30,7 @@ impl RestService {
     pub fn new(service: Arc<dyn DatabaseService>) -> Self {
         Self {
             service,
+            index_service: None,
             permission_checker: Arc::new(PermissionChecker::new(true)),
             service_id: "default".to_string(),
             token_manager: Arc::new(TokenManager::default()),
@@ -36,6 +40,7 @@ impl RestService {
     pub fn with_permissions(service: Arc<dyn DatabaseService>, permission_checker: Arc<PermissionChecker>, service_id: String) -> Self {
         Self {
             service,
+            index_service: None,
             permission_checker,
             service_id,
             token_manager: Arc::new(TokenManager::default()),
@@ -45,47 +50,76 @@ impl RestService {
     pub fn with_token_manager(service: Arc<dyn DatabaseService>, permission_checker: Arc<PermissionChecker>, service_id: String, token_manager: Arc<TokenManager>) -> Self {
         Self {
             service,
+            index_service: None,
             permission_checker,
             service_id,
             token_manager,
         }
     }
 
+    /// 设置 IndexService
+    pub fn with_index_service(mut self, index_service: Arc<dyn IndexService>) -> Self {
+        self.index_service = Some(index_service);
+        self
+    }
+
     pub fn router(&self) -> Router {
         let state = (self.service.clone(), self.permission_checker.clone(), self.service_id.clone(), self.token_manager.clone());
         
-        Router::new()
+        // 构建需要认证的基础路由
+        let auth_router = Router::new()
+            .route("/logout", post(logout_handler))
+            // KV 操作
+            .route("/get", get(get_handler))
+            .route("/put", post(put_handler))
+            .route("/delete", post(delete_kv_handler))
+            // 表管理
+            .route("/tables", post(create_table_handler))
+            .route("/schemas/:schema/tables/:table", delete(drop_table_handler))
+            .route("/schemas/:schema/tables", get(list_tables_handler))
+            .route("/schemas/:schema/tables/:table/columns", get(list_table_cols_handler))
+            .route("/schemas/:schema/tables/:table", get(get_table_meta_handler))
+            // 行操作
+            .route("/schemas/:schema/tables/:table/rows", post(add_row_handler))
+            .route("/schemas/:schema/tables/:table/rows/:row_id", get(get_row_handler))
+            .route("/schemas/:schema/tables/:table/rows/:row_id", delete(delete_row_handler))
+            .route("/schemas/:schema/tables/:table/rows/:row_id", put(update_row_handler))
+            // 元数据查询
+            .route("/schemas/:schema/meta", get(get_all_meta_handler))
+            .route("/schemas/:schema/info", get(get_schema_info_handler))
+            // SQL 查询
+            .route("/sql_query", post(sql_query_handler))
+            .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware));
+        
+        let mut main_router = Router::new()
             // 公开路由（不需要认证）
             .route("/health", get(health_handler))
             .route("/api/v1/login", post(login_handler))
-            // 需要认证的路由
-            .nest(
-                "/api/v1",
-                Router::new()
-                    .route("/logout", post(logout_handler))
-                    // KV 操作
-                    .route("/get", get(get_handler))
-                    .route("/put", post(put_handler))
-                    .route("/delete", post(delete_kv_handler))
-                    // 表管理
-                    .route("/tables", post(create_table_handler))
-                    .route("/schemas/:schema/tables/:table", delete(drop_table_handler))
-                    .route("/schemas/:schema/tables", get(list_tables_handler))
-                    .route("/schemas/:schema/tables/:table/columns", get(list_table_cols_handler))
-                    .route("/schemas/:schema/tables/:table", get(get_table_meta_handler))
-                    // 行操作
-                    .route("/schemas/:schema/tables/:table/rows", post(add_row_handler))
-                    .route("/schemas/:schema/tables/:table/rows/:row_id", get(get_row_handler))
-                    .route("/schemas/:schema/tables/:table/rows/:row_id", delete(delete_row_handler))
-                    .route("/schemas/:schema/tables/:table/rows/:row_id", put(update_row_handler))
-                    // 元数据查询
-                    .route("/schemas/:schema/meta", get(get_all_meta_handler))
-                    .route("/schemas/:schema/info", get(get_schema_info_handler))
-                    // SQL 查询
-                    .route("/sql_query", post(sql_query_handler))
-                    .layer(axum::middleware::from_fn_with_state(state.clone(), auth_middleware)),
-            )
-            .with_state(state)
+            // 需要认证的基础路由
+            .nest("/api/v1", auth_router)
+            .with_state(state);
+        
+        // 如果设置了 IndexService，添加索引路由
+        if let Some(ref index_svc) = self.index_service {
+            let index_state = (Arc::clone(index_svc), self.permission_checker.clone(), self.service_id.clone(), self.token_manager.clone());
+            let index_router = Router::new()
+                .route("/indices", post(create_index_handler))
+                .route("/indices", get(list_indices_handler))
+                .route("/indices/:index_name", delete(drop_index_handler))
+                .route("/indices/:index_name/fields", get(get_index_fields_handler))
+                .route("/indices/:index_name/meta", get(get_index_meta_handler))
+                .route("/indices/:index_name/docs", post(add_document_handler))
+                .route("/indices/:index_name/docs/:doc_id", delete(delete_document_handler))
+                .route("/indices/:index_name/search", get(search_handler))
+                .route("/indices/:index_name/search/multi", post(search_multi_field_handler))
+                .route("/stats", get(get_index_stats_handler))
+                .layer(axum::middleware::from_fn_with_state(index_state.clone(), index_auth_middleware))
+                .with_state(index_state);
+            
+            main_router = main_router.nest("/api/v1/index", index_router);
+        }
+        
+        main_router
     }
 
     pub async fn start(&self, addr: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -944,6 +978,272 @@ async fn sql_query_handler(
             }
             
             Ok(Json(ApiResponse::success(SqlQueryResponse { columns, rows })))
+        }
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+// ==================== Index 相关结构和处理器 ====================
+
+type IndexSharedState = (Arc<dyn IndexService>, Arc<PermissionChecker>, String, Arc<TokenManager>);
+
+async fn index_auth_middleware(
+    State((_, _, _, token_manager)): State<IndexSharedState>,
+    req: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Result<axum::response::Response, ApiError> {
+    let auth_header = req.headers().get(axum::http::header::AUTHORIZATION);
+    
+    if let Some(header) = auth_header {
+        let header_str = header.to_str().map_err(|_| ApiError { 
+            message: "Invalid authorization header".to_string() 
+        })?;
+        
+        if header_str.starts_with("Bearer ") {
+            let token = &header_str[7..];
+            if token_manager.validate_token(token).await.is_some() {
+                return Ok(next.run(req).await);
+            }
+        }
+    }
+    
+    Err(ApiError { 
+        message: "Unauthorized: Invalid or missing token".to_string() 
+    })
+}
+
+#[derive(Deserialize, Debug)]
+pub struct CreateIndexRequest {
+    pub index_name: String,
+    pub fields: Vec<IndexFieldDefinition>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct IndexFieldDefinition {
+    pub name: String,
+    pub field_type: String,
+    pub comment: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct CreateIndexResponse {
+    pub index_id: u64,
+}
+
+#[derive(Serialize)]
+pub struct IndexListResponse {
+    pub indices: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct IndexFieldResponse {
+    pub column_id: u64,
+    pub column_name: String,
+    pub column_type: i32,
+}
+
+#[derive(Serialize)]
+pub struct IndexMetaResponse {
+    pub table_id: u64,
+    pub table_name: String,
+    pub column_count: u32,
+    pub comment: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct AddDocumentRequest {
+    pub doc_id: String,
+    pub fields: std::collections::HashMap<String, String>,
+}
+
+#[derive(Serialize)]
+pub struct AddDocumentResponse {
+    pub doc_id: u64,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct SearchQuery {
+    pub q: String,
+    pub limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct SearchResponse {
+    pub results: Vec<SearchResultResponse>,
+}
+
+#[derive(Serialize)]
+pub struct SearchResultResponse {
+    pub doc_id: String,
+    pub score: f32,
+    pub fields: std::collections::HashMap<String, String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct MultiFieldSearchRequest {
+    pub field_queries: std::collections::HashMap<String, String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct IndexStatsResponse {
+    pub total_indices: usize,
+    pub index_names: Vec<String>,
+}
+
+async fn create_index_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+    Json(body): Json<CreateIndexRequest>,
+) -> Result<Json<ApiResponse<CreateIndexResponse>>, ApiError> {    
+    let columns: Vec<(u32, &str, ColumnType, Option<&str>)> = body.fields
+        .iter()
+        .enumerate()
+        .map(|(idx, field)| {
+            let ct = match field.field_type.to_uppercase().as_str() {
+                "STRING" => ColumnType::COLUMN_TYPE_STRING,
+                "INT64" | "INT" => ColumnType::COLUMN_TYPE_INT64,
+                "BYTES" | "BINARY" => ColumnType::COLUMN_TYPE_BYTES,
+                "FLOAT" | "DOUBLE" => ColumnType::COLUMN_TYPE_FLOAT,
+                _ => ColumnType::COLUMN_TYPE_STRING,
+            };
+            (idx as u32, field.name.as_str(), ct, field.comment.as_deref())
+        })
+        .collect();
+    println!("{:?}", body);
+    match index_service.create_index(&body.index_name, &columns).await {
+        Ok(index_id) => Ok(Json(ApiResponse::success(CreateIndexResponse { index_id }))),
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn list_indices_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+) -> Result<Json<ApiResponse<IndexListResponse>>, ApiError> {    
+    match index_service.list_indices().await {
+        Ok(indices) => Ok(Json(ApiResponse::success(IndexListResponse { indices }))),
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn drop_index_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+    Path(index_name): Path<String>,
+) -> Result<Json<ApiResponse<&'static str>>, ApiError> {    
+    match index_service.drop_index(&index_name).await {
+        Ok(()) => Ok(Json(ApiResponse::success("OK"))),
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn get_index_fields_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+    Path(index_name): Path<String>,
+) -> Result<Json<ApiResponse<Vec<IndexFieldResponse>>>, ApiError> {    
+    match index_service.get_index_fields(&index_name).await {
+        Ok(fields) => {
+            let responses: Vec<_> = fields.iter()
+                .map(|f| IndexFieldResponse {
+                    column_id: f.column_id,
+                    column_name: f.column_name.clone(),
+                    column_type: f.column_type.value(),
+                })
+                .collect();
+            Ok(Json(ApiResponse::success(responses)))
+        }
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn get_index_meta_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+    Path(index_name): Path<String>,
+) -> Result<Json<ApiResponse<IndexMetaResponse>>, ApiError> {    
+    match index_service.get_index_meta(&index_name).await {
+        Ok(Some(meta)) => {
+            let response = IndexMetaResponse {
+                table_id: meta.table_id,
+                table_name: meta.table_name,
+                column_count: meta.column_count,
+                comment: meta.comment,
+            };
+            Ok(Json(ApiResponse::success(response)))
+        }
+        Ok(None) => Ok(Json(ApiResponse::error("Index not found".to_string()))),
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn add_document_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+    Path(index_name): Path<String>,
+    Json(body): Json<AddDocumentRequest>,
+) -> Result<Json<ApiResponse<AddDocumentResponse>>, ApiError> {    
+    match index_service.add_document(&index_name, &body.doc_id, body.fields).await {
+        Ok(doc_id) => Ok(Json(ApiResponse::success(AddDocumentResponse { doc_id }))),
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn delete_document_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+    Path((index_name, doc_id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<&'static str>>, ApiError> {    
+    match index_service.delete_document(&index_name, &doc_id).await {
+        Ok(()) => Ok(Json(ApiResponse::success("OK"))),
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn search_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+    Path(index_name): Path<String>,
+    Query(query): Query<SearchQuery>,
+) -> Result<Json<ApiResponse<SearchResponse>>, ApiError> {    
+    match index_service.search(&index_name, &query.q, query.limit).await {
+        Ok(results) => {
+            let responses: Vec<_> = results.iter()
+                .map(|r| SearchResultResponse {
+                    doc_id: r.doc_id.clone(),
+                    score: r.score,
+                    fields: r.fields.clone(),
+                })
+                .collect();
+            Ok(Json(ApiResponse::success(SearchResponse { results: responses })))
+        }
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn search_multi_field_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+    Path(index_name): Path<String>,
+    Json(body): Json<MultiFieldSearchRequest>,
+) -> Result<Json<ApiResponse<SearchResponse>>, ApiError> {    
+    match index_service.search_multi_field(&index_name, body.field_queries, body.limit).await {
+        Ok(results) => {
+            let responses: Vec<_> = results.iter()
+                .map(|r| SearchResultResponse {
+                    doc_id: r.doc_id.clone(),
+                    score: r.score,
+                    fields: r.fields.clone(),
+                })
+                .collect();
+            Ok(Json(ApiResponse::success(SearchResponse { results: responses })))
+        }
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn get_index_stats_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+) -> Result<Json<ApiResponse<IndexStatsResponse>>, ApiError> {
+    match index_service.get_stats().await {
+        Ok(stats) => {
+            let response = IndexStatsResponse {
+                total_indices: stats.total_indices,
+                index_names: stats.index_names,
+            };
+            Ok(Json(ApiResponse::success(response)))
         }
         Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
     }

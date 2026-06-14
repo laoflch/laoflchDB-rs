@@ -30,16 +30,13 @@ impl LaoflchDBServer {
             }
         }
         
-        let access_service = AccessService::with_permissions(
-            service.clone(),
-            Arc::new(permission_checker.clone()),
-        );
+        let access_service = _access_service;
         
         Self {
             schema_manager,
             sql_engine,
             service,
-            access_service: Arc::new(access_service),
+            access_service,
         }
     }
 

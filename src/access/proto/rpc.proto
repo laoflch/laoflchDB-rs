@@ -47,6 +47,15 @@ service LaoflchDb {
   
   // 获取版本信息
   rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
+  
+  // 全文索引操作
+  rpc CreateIndex(CreateIndexRequest) returns (CreateIndexResponse);
+  rpc DropIndex(DropIndexRequest) returns (DropIndexResponse);
+  rpc ListIndices(ListIndicesRequest) returns (ListIndicesResponse);
+  rpc GetIndexFields(GetIndexFieldsRequest) returns (GetIndexFieldsResponse);
+  rpc GetIndexMeta(GetIndexMetaRequest) returns (GetIndexMetaResponse);
+  rpc SearchIndex(SearchIndexRequest) returns (SearchIndexResponse);
+  rpc GetIndexStats(GetIndexStatsRequest) returns (GetIndexStatsResponse);
 }
 
 message RefreshTablesRequest {
@@ -427,4 +436,92 @@ message UpdateColumnCommentRequest {
 message UpdateColumnCommentResponse {
   bool success = 1;
   string message = 2;
+}
+
+// 全文索引相关类型
+message CreateIndexRequest {
+  string index_name = 1;
+  repeated IndexFieldDef fields = 2;
+}
+
+message IndexFieldDef {
+  string name = 1;
+  int32 field_type = 2;
+  string comment = 3;
+}
+
+message CreateIndexResponse {
+  bool success = 1;
+  uint64 index_id = 2;
+  string message = 3;
+}
+
+message DropIndexRequest {
+  string index_name = 1;
+}
+
+message DropIndexResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListIndicesRequest {
+}
+
+message ListIndicesResponse {
+  bool success = 1;
+  repeated string index_names = 2;
+  string message = 3;
+}
+
+message GetIndexFieldsRequest {
+  string index_name = 1;
+}
+
+message GetIndexFieldsResponse {
+  bool success = 1;
+  repeated ColumnMeta fields = 2;
+  string message = 3;
+}
+
+message GetIndexMetaRequest {
+  string index_name = 1;
+}
+
+message GetIndexMetaResponse {
+  bool success = 1;
+  uint64 index_id = 2;
+  string index_name = 3;
+  uint32 column_count = 4;
+  string comment = 5;
+  string message = 6;
+}
+
+message SearchIndexRequest {
+  string index_name = 1;
+  string query = 2;
+  optional uint32 limit = 3;
+  map<string, string> field_queries = 4;  // 多字段搜索
+}
+
+message SearchIndexResponse {
+  bool success = 1;
+  repeated SearchResultItem results = 2;
+  string message = 3;
+}
+
+message SearchResultItem {
+  string doc_id = 1;
+  float score = 2;
+  map<string, string> fields = 3;
+}
+
+message GetIndexStatsRequest {
+}
+
+message GetIndexStatsResponse {
+  bool success = 1;
+  uint32 total_indices = 2;
+  repeated string index_names = 3;
+  string message = 4;
 }

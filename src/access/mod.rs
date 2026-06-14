@@ -1,4 +1,5 @@
 use crate::service::DatabaseService;
+use crate::service::index::IndexService;
 use crate::pb::rpc::{
     laoflch_db_server::LaoflchDb,
     GetRequest, GetResponse,
@@ -28,6 +29,15 @@ use crate::pb::rpc::{
     Row as RpcRow,
     LoginRequest, LoginResponse,
     LogoutRequest, LogoutResponse,
+    // Index related types
+    CreateIndexRequest, CreateIndexResponse,
+    DropIndexRequest, DropIndexResponse,
+    ListIndicesRequest, ListIndicesResponse,
+    GetIndexFieldsRequest, GetIndexFieldsResponse,
+    GetIndexMetaRequest, GetIndexMetaResponse,
+    SearchIndexRequest, SearchIndexResponse,
+    SearchResultItem,
+    GetIndexStatsRequest, GetIndexStatsResponse,
 };
 use crate::config::PermissionAction;
 use sha2::{Sha256, Digest};
@@ -55,6 +65,7 @@ pub use auth::TokenManager;
 #[derive(Clone)]
 pub struct GrpcService {
     service: Arc<dyn DatabaseService>,
+    index_service: Option<Arc<dyn IndexService>>,
     permission_checker: Option<Arc<PermissionChecker>>,
     service_id: String,
     token_manager: Arc<TokenManager>,
@@ -64,10 +75,17 @@ impl GrpcService {
     pub fn new(service: Arc<dyn DatabaseService>) -> Self {
         Self {
             service,
+            index_service: None,
             permission_checker: None,
             service_id: "default".to_string(),
             token_manager: Arc::new(TokenManager::default()),
         }
+    }
+
+    /// 设置 IndexService
+    pub fn with_index_service(mut self, index_service: Arc<dyn IndexService>) -> Self {
+        self.index_service = Some(index_service);
+        self
     }
     
     async fn get_user_id_from_metadata(&self, metadata: &tonic::metadata::MetadataMap) -> Option<i64> {
@@ -97,6 +115,7 @@ impl GrpcService {
     ) -> Self {
         Self {
             service,
+            index_service: None,
             permission_checker: Some(permission_checker),
             service_id,
             token_manager: Arc::new(TokenManager::default()),
@@ -111,6 +130,7 @@ impl GrpcService {
     ) -> Self {
         Self {
             service,
+            index_service: None,
             permission_checker,
             service_id,
             token_manager,
@@ -224,6 +244,7 @@ impl GrpcService {
 
 pub struct AccessService {
     service: Arc<dyn DatabaseService>,
+    index_service: Option<Arc<dyn IndexService>>,
     permission_checker: Option<Arc<PermissionChecker>>,
     token_manager: Arc<TokenManager>,
 }
@@ -232,6 +253,7 @@ impl AccessService {
     pub fn new(service: Arc<dyn DatabaseService>) -> Self {
         Self {
             service,
+            index_service: None,
             permission_checker: None,
             token_manager: Arc::new(TokenManager::default()),
         }
@@ -240,6 +262,16 @@ impl AccessService {
     pub fn with_permissions(service: Arc<dyn DatabaseService>, permission_checker: Arc<PermissionChecker>) -> Self {
         Self {
             service,
+            index_service: None,
+            permission_checker: Some(permission_checker),
+            token_manager: Arc::new(TokenManager::default()),
+        }
+    }
+
+    pub fn with_permissions_and_index(service: Arc<dyn DatabaseService>, permission_checker: Arc<PermissionChecker>, index_service: Arc<dyn IndexService>) -> Self {
+        Self {
+            service,
+            index_service: Some(index_service),
             permission_checker: Some(permission_checker),
             token_manager: Arc::new(TokenManager::default()),
         }
@@ -248,49 +280,88 @@ impl AccessService {
     pub fn with_token_manager(service: Arc<dyn DatabaseService>, permission_checker: Option<Arc<PermissionChecker>>, token_manager: Arc<TokenManager>) -> Self {
         Self {
             service,
+            index_service: None,
             permission_checker,
             token_manager,
         }
     }
 
+    /// 设置 IndexService
+    pub fn with_index_service(mut self, index_service: Arc<dyn IndexService>) -> Self {
+        self.index_service = Some(index_service);
+        self
+    }
+
     pub fn get_grpc_service(&self, service_id: Option<String>) -> GrpcService {
         let sid = service_id.unwrap_or_else(|| "default".to_string());
-        if let Some(ref checker) = self.permission_checker {
+        let grpc_service = if let Some(ref checker) = self.permission_checker {
             if let Some(perm) = checker.get_service_policy(&sid) {
-                return GrpcService::with_token_manager(
+                GrpcService::with_token_manager(
                     Arc::clone(&self.service),
                     Some(Arc::clone(checker)),
                     perm.service_id.clone(),
                     Arc::clone(&self.token_manager),
-                );
+                )
+            } else {
+                GrpcService::with_token_manager(
+                    Arc::clone(&self.service),
+                    Some(Arc::new(PermissionChecker::new(true))),
+                    sid,
+                    Arc::clone(&self.token_manager),
+                )
             }
-        }
-        GrpcService::with_token_manager(
-            Arc::clone(&self.service),
-            Some(Arc::new(PermissionChecker::new(true))),
-            sid,
-            Arc::clone(&self.token_manager),
-        )
+        } else {
+            GrpcService::with_token_manager(
+                Arc::clone(&self.service),
+                Some(Arc::new(PermissionChecker::new(true))),
+                sid,
+                Arc::clone(&self.token_manager),
+            )
+        };
+        
+        // 如果设置了 IndexService，添加到 gRPC 服务
+        let grpc_service = if let Some(ref idx) = self.index_service {
+            grpc_service.with_index_service(Arc::clone(idx))
+        } else {
+            grpc_service
+        };
+        grpc_service
     }
 
     pub fn get_rest_service(&self, service_id: Option<String>) -> RestService {
         let sid = service_id.unwrap_or_else(|| "default".to_string());
-        if let Some(ref checker) = self.permission_checker {
+        let rest_service = if let Some(ref checker) = self.permission_checker {
             if let Some(perm) = checker.get_service_policy(&sid) {
-                return RestService::with_token_manager(
+                RestService::with_token_manager(
                     Arc::clone(&self.service),
                     Arc::clone(checker),
                     perm.service_id.clone(),
                     Arc::clone(&self.token_manager),
-                );
+                )
+            } else {
+                RestService::with_token_manager(
+                    Arc::clone(&self.service),
+                    Arc::new(PermissionChecker::new(true)),
+                    sid,
+                    Arc::clone(&self.token_manager),
+                )
             }
-        }
-        RestService::with_token_manager(
-            Arc::clone(&self.service),
-            Arc::new(PermissionChecker::new(true)),
-            sid,
-            Arc::clone(&self.token_manager),
-        )
+        } else {
+            RestService::with_token_manager(
+                Arc::clone(&self.service),
+                Arc::new(PermissionChecker::new(true)),
+                sid,
+                Arc::clone(&self.token_manager),
+            )
+        };
+        
+        // 如果设置了 IndexService，添加到 REST 服务
+        let rest_service = if let Some(ref idx) = self.index_service {
+            rest_service.with_index_service(Arc::clone(idx))
+        } else {
+            rest_service
+        };
+        rest_service
     }
 
     pub fn get_service(&self) -> Arc<dyn DatabaseService> {
@@ -927,6 +998,182 @@ impl LaoflchDb for GrpcService {
             Ok(tables) => Ok(Response::new(RefreshTablesResponse {
                 success: true,
                 tables,
+                message: String::new(),
+            })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+    
+    // ==================== Index gRPC 接口 ====================
+    
+    async fn create_index(&self, request: Request<CreateIndexRequest>) -> Result<Response<CreateIndexResponse>, Status> {
+        let index_service = self.index_service.as_ref().ok_or_else(|| {
+            Status::unimplemented("Index service not configured")
+        })?;
+        
+        let req = request.into_inner();
+        let index_name = req.index_name.as_str();
+        
+        let columns: Vec<(u32, &str, ColumnType, Option<&str>)> = req.fields
+            .iter()
+            .enumerate()
+            .map(|(idx, field)| {
+                let ct = ColumnType::from_i32(field.field_type).unwrap_or(ColumnType::COLUMN_TYPE_STRING);
+                let comment = if field.comment.is_empty() { None } else { Some(field.comment.as_str()) };
+                (idx as u32, field.name.as_str(), ct, comment)
+            })
+            .collect();
+        
+        match index_service.create_index(index_name, &columns).await {
+            Ok(index_id) => Ok(Response::new(CreateIndexResponse {
+                success: true,
+                index_id,
+                message: String::new(),
+            })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+    
+    async fn drop_index(&self, request: Request<DropIndexRequest>) -> Result<Response<DropIndexResponse>, Status> {
+        let index_service = self.index_service.as_ref().ok_or_else(|| {
+            Status::unimplemented("Index service not configured")
+        })?;
+        
+        let req = request.into_inner();
+        
+        match index_service.drop_index(&req.index_name).await {
+            Ok(()) => Ok(Response::new(DropIndexResponse {
+                success: true,
+                message: String::new(),
+            })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+    
+    async fn list_indices(&self, request: Request<ListIndicesRequest>) -> Result<Response<ListIndicesResponse>, Status> {
+        let _req = request.into_inner();
+        let index_service = self.index_service.as_ref().ok_or_else(|| {
+            Status::unimplemented("Index service not configured")
+        })?;
+        
+        match index_service.list_indices().await {
+            Ok(indices) => Ok(Response::new(ListIndicesResponse {
+                success: true,
+                index_names: indices,
+                message: String::new(),
+            })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+    
+    async fn get_index_fields(&self, request: Request<GetIndexFieldsRequest>) -> Result<Response<GetIndexFieldsResponse>, Status> {
+        let index_service = self.index_service.as_ref().ok_or_else(|| {
+            Status::unimplemented("Index service not configured")
+        })?;
+        
+        let req = request.into_inner();
+        
+        match index_service.get_index_fields(&req.index_name).await {
+            Ok(fields) => {
+                let rpc_fields: Vec<RpcColumnMeta> = fields.iter()
+                    .map(|f| RpcColumnMeta {
+                        table_id: f.table_id,
+                        column_id: f.column_id,
+                        column_name: f.column_name.clone(),
+                        column_type: f.column_type.value(),
+                        comment: f.comment.clone(),
+                    })
+                    .collect();
+                Ok(Response::new(GetIndexFieldsResponse {
+                    success: true,
+                    fields: rpc_fields,
+                    message: String::new(),
+                }))
+            },
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+    
+    async fn get_index_meta(&self, request: Request<GetIndexMetaRequest>) -> Result<Response<GetIndexMetaResponse>, Status> {
+        let index_service = self.index_service.as_ref().ok_or_else(|| {
+            Status::unimplemented("Index service not configured")
+        })?;
+        
+        let req = request.into_inner();
+        
+        match index_service.get_index_meta(&req.index_name).await {
+            Ok(Some(meta)) => Ok(Response::new(GetIndexMetaResponse {
+                success: true,
+                index_id: meta.table_id,
+                index_name: meta.table_name,
+                column_count: meta.column_count,
+                comment: meta.comment,
+                message: String::new(),
+            })),
+            Ok(None) => Err(Status::not_found(format!("Index '{}' not found", req.index_name))),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+    
+    async fn search_index(&self, request: Request<SearchIndexRequest>) -> Result<Response<SearchIndexResponse>, Status> {
+        let index_service = self.index_service.as_ref().ok_or_else(|| {
+            Status::unimplemented("Index service not configured")
+        })?;
+        
+        let req = request.into_inner();
+        let limit = req.limit.map(|l| l as usize);
+        
+        // 如果指定了多字段查询，使用多字段搜索
+        if !req.field_queries.is_empty() {
+            match index_service.search_multi_field(&req.index_name, req.field_queries.clone(), limit).await {
+                Ok(results) => {
+                    let items: Vec<SearchResultItem> = results.iter()
+                        .map(|r| SearchResultItem {
+                            doc_id: r.doc_id.clone(),
+                            score: r.score,
+                            fields: r.fields.clone(),
+                        })
+                        .collect();
+                    Ok(Response::new(SearchIndexResponse {
+                        success: true,
+                        results: items,
+                        message: String::new(),
+                    }))
+                },
+                Err(e) => Err(Status::internal(e.to_string())),
+            }
+        } else {
+            match index_service.search(&req.index_name, &req.query, limit).await {
+                Ok(results) => {
+                    let items: Vec<SearchResultItem> = results.iter()
+                        .map(|r| SearchResultItem {
+                            doc_id: r.doc_id.clone(),
+                            score: r.score,
+                            fields: r.fields.clone(),
+                        })
+                        .collect();
+                    Ok(Response::new(SearchIndexResponse {
+                        success: true,
+                        results: items,
+                        message: String::new(),
+                    }))
+                },
+                Err(e) => Err(Status::internal(e.to_string())),
+            }
+        }
+    }
+    
+    async fn get_index_stats(&self, request: Request<GetIndexStatsRequest>) -> Result<Response<GetIndexStatsResponse>, Status> {
+        let _req = request.into_inner();
+        let index_service = self.index_service.as_ref().ok_or_else(|| {
+            Status::unimplemented("Index service not configured")
+        })?;
+        
+        match index_service.get_stats().await {
+            Ok(stats) => Ok(Response::new(GetIndexStatsResponse {
+                success: true,
+                total_indices: stats.total_indices as u32,
+                index_names: stats.index_names,
                 message: String::new(),
             })),
             Err(e) => Err(Status::internal(e.to_string())),

@@ -1,20 +1,34 @@
-# laoflchDB config
+# laoflchDB Production Configuration
 
-db_path: /workspace/rust_space/laoflchDB-rust/target/release/laoflch_db_data
+# Database configuration
+db_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_data
+index_path: /workspace/rust_space/laoflchDB-rust/laoflch_index_data
+
+# Log configuration
 log_level: info
+
+# Default permission policy: allow or deny
 default_policy: allow
 
+# Runtime mode: multi_thread or single_thread
+# Use single_thread for environments with thread creation restrictions
+runtime_mode: multi_thread
+
+# Access protocols configuration
 access_protocols:
+  # gRPC Admin Service
   - protocol: grpc
     enabled: true
     addr: 0.0.0.0:19777
     service_id: grpc_admin
 
+  # REST Admin Service
   - protocol: rest
     enabled: true
     addr: 0.0.0.0:8080
     service_id: rest_admin
 
+# Permissions configuration
 permissions:
   - service_id: grpc_admin
     default_policy: allow

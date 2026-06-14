@@ -1,7 +1,9 @@
 use laoflchDB_rust::{
     Cli, Commands, DatabaseConfig, LaoflchDBServer, RuntimeMode,
     AccessService, init_data, engine_factory, DatabaseService,
+    IndexService, IndexServiceImpl,
 };
+use laoflchDB_rust::access::permission::PermissionChecker;
 use clap::Parser;
 use std::sync::Arc;
 use log::{info, warn};
@@ -31,8 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     
     runtime.block_on(async move {
         match cli.command {
-            Commands::Start { addr, db_path } => {
-                start_server(&config, addr.as_deref(), db_path.as_deref()).await
+            Commands::Start { addr, db_path,index_path } => {
+                start_server(&config, addr.as_deref(), db_path.as_deref(),index_path.as_deref()).await
             }
             Commands::Init { db_path, example } => {
                 init_database(&config, db_path.as_deref(), example).await
@@ -45,8 +47,10 @@ async fn start_server(
     config: &DatabaseConfig,
     addr: Option<&str>,
     db_path: Option<&str>,
+    index_path: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let effective_db_path = db_path.unwrap_or(&config.db_path);
+    let effective_index_path = index_path.unwrap_or(&config.index_path);
     let effective_addr = addr.unwrap_or(&config.addr);
     
     info!("启动 LaoflchDB 服务...");
@@ -56,8 +60,26 @@ async fn start_server(
     let service = engine_factory::create_default_database_service(effective_db_path).await?;
     let service_clone = service.clone();
     let sql_engine = service.sql_engine().clone();
+    info!("IndexService initialized at path: {}", effective_index_path);
+    let index_path = format!("{}/indexes", effective_index_path);
+    info!("尝试初始化全文索引服务，路径: {}", index_path);
     
-    let access_service = Arc::new(AccessService::new(service.clone()));
+    let access_service = match IndexServiceImpl::new(&index_path, "fulltext").await {
+        Ok(index_service) => {
+            info!("全文索引服务已成功初始化");
+            let permission_checker = Arc::new(PermissionChecker::new(true));
+            Arc::new(AccessService::with_permissions_and_index(
+                service.clone(),
+                permission_checker,
+                Arc::new(index_service)
+            ))
+        },
+        Err(e) => {
+            log::error!("全文索引服务初始化失败，路径: {}, 错误: {}", index_path, e);
+            log::warn!("将不启用索引功能，REST API 的索引端点将不可用");
+            Arc::new(AccessService::new(service.clone()))
+        }
+    };
     
     let server = LaoflchDBServer::new(
         service.schema_manager().clone(),
