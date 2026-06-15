@@ -114,7 +114,7 @@ impl RestService {
                 .route("/indices/:index_name/search", get(search_handler))
                 .route("/indices/:index_name/search/multi", post(search_multi_field_handler))
                 .route("/stats", get(get_index_stats_handler))
-                //.layer(axum::middleware::from_fn_with_state(index_state.clone(), index_auth_middleware))
+                .layer(axum::middleware::from_fn_with_state(index_state.clone(), index_auth_middleware))
                 .with_state(index_state);
             
             main_router = main_router.nest("/api/v1/index", index_router);

@@ -126,6 +126,13 @@ impl StorageEngine for TantivyStorageEngine {
         let table_id = Uuid::new_v4().as_u128() as u64;
         let column_count = columns.len() as u32;
 
+        let tables_guard = self.tables.read().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock tables: {}", e)))?;
+        if tables_guard.contains_key(table) {
+            drop(tables_guard);
+            return Ok(table_id);
+        }
+        drop(tables_guard);
+
         let tantivy_schema = self.create_tantivy_schema(columns);
         
         let mut field_map: HashMap<String, Field> = HashMap::new();
@@ -139,9 +146,10 @@ impl StorageEngine for TantivyStorageEngine {
         field_map.insert("_row_id".to_string(), row_id_field);
 
         let table_path = Path::new(&self.base_path).join(table);
-        if !table_path.exists() {
-            std::fs::create_dir_all(&table_path)?;
+        if table_path.exists() {
+            return Ok(table_id);
         }
+        std::fs::create_dir_all(&table_path)?;
 
         let directory = MmapDirectory::open(&table_path)?;
         let index = Index::create(directory, tantivy_schema.clone(), IndexSettings::default())?;
