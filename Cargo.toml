@@ -20,7 +20,6 @@ members = [
 
 [dependencies]
 laoflchdb_engines = { path = "./laoflchdb_engines" }
-index_tantivy = { path = "./index_tantivy" }
 multi_table_rocksdb = { path = "./multi_table_rocksdb" }
 laoflchdb_sql_df_engine = { path = "./laoflchdb_sql_df_engine" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}

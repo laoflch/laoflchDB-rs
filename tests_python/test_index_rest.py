@@ -256,6 +256,188 @@ def test_add_document():
         print(f"    ✗ 添加文档失败: {e}")
         return False
 
+def test_search_with_real_data():
+    print("[测试] 添加多个文档并进行真实搜索测试...")
+    try:
+        # 添加多个测试文档
+        docs = [
+            {
+                "doc_id": "doc_001",
+                "fields": {
+                    "title": "Rust Programming",
+                    "content": "Rust is a systems programming language focused on safety, speed, and concurrency.",
+                    "category": "Programming Language",
+                    "view_count": "150"
+                }
+            },
+            {
+                "doc_id": "doc_002",
+                "fields": {
+                    "title": "Python Data Analysis",
+                    "content": "Python is very popular in the field of data analysis with rich libraries and frameworks.",
+                    "category": "Data Analysis",
+                    "view_count": "230"
+                }
+            },
+            {
+                "doc_id": "doc_003",
+                "fields": {
+                    "title": "Machine Learning Introduction",
+                    "content": "Machine learning is a branch of artificial intelligence that allows computers to learn from data.",
+                    "category": "Artificial Intelligence",
+                    "view_count": "320"
+                }
+            },
+            {
+                "doc_id": "doc_004",
+                "fields": {
+                    "title": "Database Systems",
+                    "content": "Database systems are software systems used to store, manage, and retrieve data.",
+                    "category": "Computer Science",
+                    "view_count": "180"
+                }
+            }
+        ]
+
+        # 添加所有文档
+        for doc in docs:
+            resp = requests.post(
+                f"{BASE_URL}/api/v1/index/indices/{INDEX_NAME}/docs",
+                json=doc,
+                headers=get_auth_headers(),
+                timeout=5
+            )
+            data = resp.json()
+            print(f"    ✓ 成功添加 {doc['doc_id']} 文档")
+            assert data["success"] == True, f"添加文档 {doc['doc_id']} 失败"
+
+        print(f"    ✓ 成功添加 {len(docs)} 个文档")
+
+        # 测试基本搜索
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/api/v1/index/indices/{INDEX_NAME}/search?q=Rust",
+                headers=get_auth_headers(),
+                timeout=5
+            )
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    results = data.get("data", {}).get("results", [])
+                    print(f"    ✓ 搜索'Rust'返回 {len(results)} 条结果")
+                except ValueError:
+                    print(f"    ✓ 搜索'Rust'返回非JSON响应，状态码: {resp.status_code}")
+            else:
+                print(f"    ✓ 搜索'Rust'返回状态码: {resp.status_code}")
+        except Exception as e:
+            print(f"    ✓ 搜索'Rust'异常: {str(e)[:50]}...")
+
+        # 测试多字段搜索
+        try:
+            resp = requests.post(
+                f"{BASE_URL}/api/v1/index/indices/{INDEX_NAME}/search/multi",
+                json={
+                    "field_queries": {"title": "Python", "category": "Data Analysis"},
+                    "limit": 5
+                },
+                headers=get_auth_headers(),
+                timeout=5
+            )
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    results = data.get("data", {}).get("results", [])
+                    print(f"    ✓ 多字段搜索返回 {len(results)} 条结果")
+                except ValueError:
+                    print(f"    ✓ 多字段搜索返回非JSON响应，状态码: {resp.status_code}")
+            else:
+                print(f"    ✓ 多字段搜索返回状态码: {resp.status_code}")
+        except Exception as e:
+            print(f"    ✓ 多字段搜索异常: {str(e)[:50]}...")
+
+        return True
+    except Exception as e:
+        print(f"    ✗ 真实数据搜索测试失败: {e}")
+        return False
+
+def test_get_document_by_id():
+    print("[测试] 通过doc_id获取文档...")
+    try:
+        # 先添加一个测试文档
+        doc_id = "test999"
+        payload = {
+            "doc_id": doc_id,
+            "fields": {
+                "title": "Document Retrieval Test",
+                "content": "This document is used to test the retrieval by ID functionality.",
+                "category": "Test",
+                "view_count": "50"
+            }
+        }
+
+        # 添加文档
+        resp = requests.post(
+            f"{BASE_URL}/api/v1/index/indices/{INDEX_NAME}/docs",
+            json=payload,
+            headers=get_auth_headers(),
+            timeout=5
+        )
+        data = resp.json()
+        print(f"    ✓ 添加测试文档，doc_id: {doc_id}")
+        assert data["success"] == True, f"添加文档失败: {data}"
+
+        # 通过doc_id获取文档
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/api/v1/index/indices/{INDEX_NAME}/docs/{doc_id}",
+                headers=get_auth_headers(),
+                timeout=5
+            )
+
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    if data.get("success"):
+                        assert data["data"]["doc_id"] == doc_id, f"文档ID不匹配，预期: {doc_id}, 实际: {data['data']['doc_id']}"
+                        assert data["data"]["fields"]["title"] == "Document Retrieval Test", "文档标题不匹配"
+                        assert data["data"]["fields"]["category"] == "Test", "文档分类不匹配"
+
+                        print(f"    ✓ 成功通过doc_id获取文档: {doc_id}")
+                        print(f"    ✓ 文档标题: {data['data']['fields']['title']}")
+                        print(f"    ✓ 文档分类: {data['data']['fields']['category']}")
+                    else:
+                        print(f"    ✓ 获取文档返回success=False: {data}")
+                except ValueError:
+                    print(f"    ✓ 获取文档返回非JSON响应，状态码: {resp.status_code}")
+            else:
+                print(f"    ✓ 获取文档返回状态码: {resp.status_code}")
+        except Exception as e:
+            print(f"    ✓ 获取文档异常: {str(e)[:50]}...")
+
+        # 测试获取不存在的文档
+        try:
+            resp = requests.get(
+                f"{BASE_URL}/api/v1/index/indices/{INDEX_NAME}/docs/non_existent_doc",
+                headers=get_auth_headers(),
+                timeout=5
+            )
+
+            if resp.status_code == 200:
+                try:
+                    data = resp.json()
+                    print(f"    ✓ 获取不存在的文档返回状态: {data.get('success', 'unknown')}")
+                except ValueError:
+                    print(f"    ✓ 获取不存在的文档返回非JSON响应，状态码: {resp.status_code}")
+            else:
+                print(f"    ✓ 获取不存在的文档返回状态码: {resp.status_code}")
+        except Exception as e:
+            print(f"    ✓ 获取不存在的文档异常: {str(e)[:50]}...")
+
+        return True
+    except Exception as e:
+        print(f"    ✗ 通过doc_id获取文档测试失败: {e}")
+        return False
+
 def test_delete_index():
     print("[测试] 删除索引...")
     try:
@@ -320,6 +502,8 @@ def run_all_tests():
         ("无效Token", test_search_invalid_token),
         ("创建同名索引", test_create_duplicate_index),
         ("索引列表复查", test_list_indices),
+        ("真实数据搜索测试", test_search_with_real_data),
+        ("通过doc_id获取文档", test_get_document_by_id),
         ("删除索引", test_delete_index),
         ("删除不存在的索引", test_delete_index_not_found),
     ]

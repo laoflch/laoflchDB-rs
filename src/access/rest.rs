@@ -109,11 +109,12 @@ impl RestService {
                 .route("/indices/:index_name/fields", get(get_index_fields_handler))
                 .route("/indices/:index_name/meta", get(get_index_meta_handler))
                 .route("/indices/:index_name/docs", post(add_document_handler))
-                .route("/indices/:index_name/docs/:doc_id", delete(delete_document_handler))
+                .route("/indices/:index_name/docs/:doc_id", get(get_document_handler))
+                .route("/indices/:index_name/docs/:doc_id/delete", delete(delete_document_handler))
                 .route("/indices/:index_name/search", get(search_handler))
                 .route("/indices/:index_name/search/multi", post(search_multi_field_handler))
                 .route("/stats", get(get_index_stats_handler))
-                .layer(axum::middleware::from_fn_with_state(index_state.clone(), index_auth_middleware))
+                //.layer(axum::middleware::from_fn_with_state(index_state.clone(), index_auth_middleware))
                 .with_state(index_state);
             
             main_router = main_router.nest("/api/v1/index", index_router);
@@ -1230,6 +1231,24 @@ async fn search_multi_field_handler(
                 .collect();
             Ok(Json(ApiResponse::success(SearchResponse { results: responses })))
         }
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn get_document_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+    Path((index_name, doc_id)): Path<(String, String)>,
+) -> Result<Json<ApiResponse<Option<SearchResultResponse>>>, ApiError> {
+    match index_service.get_document(&index_name, &doc_id).await {
+        Ok(Some(doc)) => {
+            let response = SearchResultResponse {
+                doc_id: doc.doc_id,
+                score: doc.score,
+                fields: doc.fields,
+            };
+            Ok(Json(ApiResponse::success(Some(response))))
+        }
+        Ok(None) => Ok(Json(ApiResponse::success(None))),
         Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
     }
 }

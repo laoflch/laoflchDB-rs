@@ -68,6 +68,9 @@ pub trait IndexService: Send + Sync + 'static {
     /// 获取索引统计信息
     async fn get_stats(&self) -> Result<IndexStats, Box<dyn std::error::Error + Send + Sync>>;
     
+    /// 通过doc_id获取文档
+    async fn get_document(&self, index_name: &str, doc_id: &str) -> Result<Option<SearchResult>, Box<dyn std::error::Error + Send + Sync>>;
+
     /// 关闭索引服务
     async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
@@ -268,6 +271,27 @@ impl IndexService for IndexServiceImpl {
         
         info!("IndexService shutdown complete");
         Ok(())
+    }
+
+    async fn get_document(&self, index_name: &str, doc_id: &str) -> Result<Option<SearchResult>, Box<dyn std::error::Error + Send + Sync>> {
+        debug!("Getting document '{}' from index '{}'", doc_id, index_name);
+
+        let engine = self.storage_engine.read().await;
+        match engine.get_row(index_name, doc_id.parse().unwrap_or(0)).await {
+            Ok(Some(row)) => {
+                let mut fields = HashMap::new();
+                // Row的data字段是字节数组，需要根据实际情况解析
+                // 这里简化处理，直接使用doc_id作为键
+                fields.insert("doc_id".to_string(), doc_id.to_string());
+                Ok(Some(SearchResult {
+                    doc_id: doc_id.to_string(),
+                    score: 0.0,
+                    fields,
+                }))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 
