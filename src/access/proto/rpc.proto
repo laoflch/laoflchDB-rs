@@ -56,6 +56,9 @@ service LaoflchDb {
   rpc GetIndexMeta(GetIndexMetaRequest) returns (GetIndexMetaResponse);
   rpc SearchIndex(SearchIndexRequest) returns (SearchIndexResponse);
   rpc GetIndexStats(GetIndexStatsRequest) returns (GetIndexStatsResponse);
+  rpc AddDocument(AddDocumentRequest) returns (AddDocumentResponse);
+  rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
+  rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
 }
 
 message RefreshTablesRequest {
@@ -524,4 +527,38 @@ message GetIndexStatsResponse {
   uint32 total_indices = 2;
   repeated string index_names = 3;
   string message = 4;
+}
+
+message AddDocumentRequest {
+  string index_name = 1;
+  string doc_id = 2;
+  map<string, string> fields = 3;
+}
+
+message AddDocumentResponse {
+  bool success = 1;
+  string doc_id = 2;
+  string message = 3;
+}
+
+message GetDocumentRequest {
+  string index_name = 1;
+  string doc_id = 2;
+}
+
+message GetDocumentResponse {
+  bool success = 1;
+  string doc_id = 2;
+  map<string, string> fields = 3;
+  string message = 4;
+}
+
+message DeleteDocumentRequest {
+  string index_name = 1;
+  string doc_id = 2;
+}
+
+message DeleteDocumentResponse {
+  bool success = 1;
+  string message = 2;
 }

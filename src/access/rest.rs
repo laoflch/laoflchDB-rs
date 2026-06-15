@@ -1053,13 +1053,13 @@ pub struct IndexMetaResponse {
 
 #[derive(Deserialize, Debug)]
 pub struct AddDocumentRequest {
-    pub doc_id: String,
+    pub doc_id: Option<String>,
     pub fields: std::collections::HashMap<String, String>,
 }
 
 #[derive(Serialize)]
 pub struct AddDocumentResponse {
-    pub doc_id: u64,
+    pub doc_id: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -1179,7 +1179,9 @@ async fn add_document_handler(
     Path(index_name): Path<String>,
     Json(body): Json<AddDocumentRequest>,
 ) -> Result<Json<ApiResponse<AddDocumentResponse>>, ApiError> {    
-    match index_service.add_document(&index_name, &body.doc_id, body.fields).await {
+    let doc_id = body.doc_id.unwrap_or_default();
+    
+    match index_service.add_document(&index_name, &doc_id, body.fields).await {
         Ok(doc_id) => Ok(Json(ApiResponse::success(AddDocumentResponse { doc_id }))),
         Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
     }

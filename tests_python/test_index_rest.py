@@ -364,9 +364,9 @@ def test_get_document_by_id():
     print("[测试] 通过doc_id获取文档...")
     try:
         # 先添加一个测试文档
-        doc_id = "test999"
+        #doc_id = "test999"
         payload = {
-            "doc_id": doc_id,
+           # "doc_id": doc_id,
             "fields": {
                 "title": "Document Retrieval Test",
                 "content": "This document is used to test the retrieval by ID functionality.",
@@ -383,13 +383,13 @@ def test_get_document_by_id():
             timeout=5
         )
         data = resp.json()
-        print(f"    ✓ 添加测试文档，doc_id: {doc_id}")
+        print(f"    ✓ 添加测试文档，doc_id: {data}")
         assert data["success"] == True, f"添加文档失败: {data}"
-
+        return_doc_id=data["data"]["doc_id"]
         # 通过doc_id获取文档
         try:
             resp = requests.get(
-                f"{BASE_URL}/api/v1/index/indices/{INDEX_NAME}/docs/{doc_id}",
+                f"{BASE_URL}/api/v1/index/indices/{INDEX_NAME}/docs/{return_doc_id}",
                 headers=get_auth_headers(),
                 timeout=5
             )
@@ -397,12 +397,13 @@ def test_get_document_by_id():
             if resp.status_code == 200:
                 try:
                     data = resp.json()
+                    print(f"    ✓ 获取文档，doc_id: {data}")
                     if data.get("success"):
-                        assert data["data"]["doc_id"] == doc_id, f"文档ID不匹配，预期: {doc_id}, 实际: {data['data']['doc_id']}"
+                        assert data["data"]["doc_id"] == return_doc_id, f"文档ID不匹配，预期: {return_doc_id}, 实际: {data['data']['doc_id']}"
                         assert data["data"]["fields"]["title"] == "Document Retrieval Test", "文档标题不匹配"
                         assert data["data"]["fields"]["category"] == "Test", "文档分类不匹配"
 
-                        print(f"    ✓ 成功通过doc_id获取文档: {doc_id}")
+                        print(f"    ✓ 成功通过doc_id获取文档: {return_doc_id}")
                         print(f"    ✓ 文档标题: {data['data']['fields']['title']}")
                         print(f"    ✓ 文档分类: {data['data']['fields']['category']}")
                     else:

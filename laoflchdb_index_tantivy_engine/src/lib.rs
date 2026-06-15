@@ -4,6 +4,7 @@ use std::path::Path;
 
 use async_trait::async_trait;
 use log::{info, warn, debug};
+use snowflake_me::Snowflake;
 use tantivy::{
     collector::TopDocs,
     directory::MmapDirectory,
@@ -54,6 +55,7 @@ pub struct TantivyStorageEngine {
     tables: RwLock<HashMap<String, TableMeta>>,
     table_indices: RwLock<HashMap<String, Mutex<TableIndex>>>,
     next_row_id: RwLock<HashMap<String, u64>>,
+    snowflake: Mutex<Snowflake>,
 }
 
 impl TantivyStorageEngine {
@@ -63,12 +65,15 @@ impl TantivyStorageEngine {
             std::fs::create_dir_all(path)?;
         }
 
+        let snowflake = Snowflake::new()?;
+
         Ok(Self {
             base_path: base_path.to_string(),
             schema_name: schema_name.to_string(),
             tables: RwLock::new(HashMap::new()),
             table_indices: RwLock::new(HashMap::new()),
             next_row_id: RwLock::new(HashMap::new()),
+            snowflake: Mutex::new(snowflake),
         })
     }
 
@@ -112,11 +117,35 @@ impl TantivyStorageEngine {
     }
 
     fn get_next_row_id(&self, table: &str) -> u64 {
-        let mut next_row_id_guard = self.next_row_id.write().unwrap();
-        let next_id = next_row_id_guard.entry(table.to_string()).or_insert(1);
-        let current_id = *next_id;
-        *next_id += 1;
-        current_id
+        match self.snowflake.lock() {
+            Ok(mut snowflake_guard) => {
+                match snowflake_guard.next_id() {
+                    Ok(id) => {
+                        info!("Generated Snowflake ID: {} for table: {}", id, table);
+                        id
+                    },
+                    Err(e) => {
+                        let error_msg = format!("{:?}", e);
+                        info!("Snowflake ID generation failed: {}, falling back to auto-increment ID", error_msg);
+                        let mut next_row_id_guard = self.next_row_id.write().unwrap();
+                        let next_id = next_row_id_guard.entry(table.to_string()).or_insert(1);
+                        let current_id = *next_id;
+                        *next_id += 1;
+                        info!("Generated auto-increment ID: {} for table: {}", current_id, table);
+                        current_id
+                    }
+                }
+            },
+            Err(e) => {
+                info!("Failed to lock Snowflake mutex: {:?}, falling back to auto-increment ID", e);
+                let mut next_row_id_guard = self.next_row_id.write().unwrap();
+                let next_id = next_row_id_guard.entry(table.to_string()).or_insert(1);
+                let current_id = *next_id;
+                *next_id += 1;
+                info!("Generated auto-increment ID: {} for table: {}", current_id, table);
+                current_id
+            }
+        }
     }
 }
 

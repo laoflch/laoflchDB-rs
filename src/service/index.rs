@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use log::{info, debug, warn};
 
-use laoflchdb_engines::{ColumnType, ColumnMeta, TableMeta, StorageEngine};
+use laoflchdb_engines::{ColumnType, ColumnMeta, TableMeta, StorageEngine, Row, SpecialFields, EnumOrUnknown, RowType};
 use laoflchdb_index_tantivy_engine::TantivyStorageEngine;
 
 /// 全文索引服务 trait
@@ -36,7 +36,7 @@ pub trait IndexService: Send + Sync + 'static {
         index_name: &str, 
         doc_id: &str,
         fields: HashMap<String, String>
-    ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>;
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>>;
     
     /// 更新文档
     async fn update_document(
@@ -189,14 +189,41 @@ impl IndexService for IndexServiceImpl {
         index_name: &str, 
         doc_id: &str,
         fields: HashMap<String, String>
-    ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         debug!("Adding document '{}' to index '{}'", doc_id, index_name);
         
-        // TODO: 实现文档添加逻辑
-        // 需要将 HashMap<String, String> 转换为 Row 结构
-        warn!("add_document not fully implemented yet");
+        let mut engine = self.storage_engine.write().await;
         
-        Ok(0)
+        let cols = engine.list_table_cols(index_name).await?;
+        
+        let mut row_data: Vec<Vec<u8>> = Vec::new();
+        for col in &cols {
+            if col.column_name == "_row_id" {
+                continue;
+            }
+            if let Some(value) = fields.get(&col.column_name) {
+                row_data.push(value.as_bytes().to_vec());
+            } else {
+                row_data.push(Vec::new());
+            }
+        }
+        
+        let row = Row {
+            row_type: EnumOrUnknown::from(laoflchdb_engines::RowType::ROW_TYPE_NORMAL),
+            version: 1,
+            data: row_data,
+            special_fields: SpecialFields::new(),
+        };
+        
+        let row_id = engine.add_row(index_name, &row).await?;
+        
+        let result_doc_id = if doc_id.is_empty() {
+            row_id.to_string()
+        } else {
+            doc_id.to_string()
+        };
+        
+        Ok(result_doc_id)
     }
     
     async fn update_document(
@@ -207,8 +234,40 @@ impl IndexService for IndexServiceImpl {
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         debug!("Updating document '{}' in index '{}'", doc_id, index_name);
         
-        // TODO: 实现文档更新逻辑
-        warn!("update_document not fully implemented yet");
+        let mut engine = self.storage_engine.write().await;
+        
+        let cols = engine.list_table_cols(index_name).await?;
+        let doc_id_u64 = doc_id.parse::<u64>().unwrap_or(0);
+        
+        let existing_row = engine.get_row(index_name, doc_id_u64).await?;
+        if existing_row.is_none() {
+            return Ok(());
+        }
+        
+        let existing_row = existing_row.unwrap();
+        let mut row_data = existing_row.data.clone();
+        
+        let mut col_index = 0;
+        for col in &cols {
+            if col.column_name == "_row_id" {
+                continue;
+            }
+            if let Some(value) = fields.get(&col.column_name) {
+                if col_index < row_data.len() {
+                    row_data[col_index] = value.as_bytes().to_vec();
+                }
+            }
+            col_index += 1;
+        }
+        
+        let row = Row {
+            row_type: EnumOrUnknown::from(laoflchdb_engines::RowType::ROW_TYPE_NORMAL),
+            version: existing_row.version + 1,
+            data: row_data,
+            special_fields: SpecialFields::new(),
+        };
+        
+        engine.update_row(index_name, doc_id_u64, &row).await?;
         
         Ok(())
     }
@@ -216,8 +275,10 @@ impl IndexService for IndexServiceImpl {
     async fn delete_document(&self, index_name: &str, doc_id: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         debug!("Deleting document '{}' from index '{}'", doc_id, index_name);
         
-        // TODO: 实现文档删除逻辑
-        warn!("delete_document not fully implemented yet");
+        let mut engine = self.storage_engine.write().await;
+        
+        let doc_id_u64 = doc_id.parse::<u64>().unwrap_or(0);
+        engine.delete_row(index_name, doc_id_u64).await?;
         
         Ok(())
     }
@@ -277,12 +338,26 @@ impl IndexService for IndexServiceImpl {
         debug!("Getting document '{}' from index '{}'", doc_id, index_name);
 
         let engine = self.storage_engine.read().await;
+        
+        let cols = engine.list_table_cols(index_name).await?;
+        
         match engine.get_row(index_name, doc_id.parse().unwrap_or(0)).await {
             Ok(Some(row)) => {
                 let mut fields = HashMap::new();
-                // Row的data字段是字节数组，需要根据实际情况解析
-                // 这里简化处理，直接使用doc_id作为键
                 fields.insert("doc_id".to_string(), doc_id.to_string());
+                
+                let mut col_index = 0;
+                for col in &cols {
+                    if col.column_name == "_row_id" {
+                        continue;
+                    }
+                    if col_index < row.data.len() {
+                        let value = String::from_utf8_lossy(&row.data[col_index]).to_string();
+                        fields.insert(col.column_name.clone(), value);
+                    }
+                    col_index += 1;
+                }
+                
                 Ok(Some(SearchResult {
                     doc_id: doc_id.to_string(),
                     score: 0.0,

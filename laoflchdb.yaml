@@ -2,7 +2,7 @@
 
 # Database configuration
 db_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_data
-index_path: /workspace/rust_space/laoflchDB-rust/laoflch_index_data
+index_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_index
 
 # Log configuration
 log_level: info

@@ -38,6 +38,9 @@ use crate::pb::rpc::{
     SearchIndexRequest, SearchIndexResponse,
     SearchResultItem,
     GetIndexStatsRequest, GetIndexStatsResponse,
+    AddDocumentRequest, AddDocumentResponse,
+    GetDocumentRequest, GetDocumentResponse,
+    DeleteDocumentRequest, DeleteDocumentResponse,
 };
 use crate::config::PermissionAction;
 use sha2::{Sha256, Digest};
@@ -1174,6 +1177,58 @@ impl LaoflchDb for GrpcService {
                 success: true,
                 total_indices: stats.total_indices as u32,
                 index_names: stats.index_names,
+                message: String::new(),
+            })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+    
+    async fn add_document(&self, request: Request<AddDocumentRequest>) -> Result<Response<AddDocumentResponse>, Status> {
+        let index_service = self.index_service.as_ref().ok_or_else(|| {
+            Status::unimplemented("Index service not configured")
+        })?;
+        
+        let req = request.into_inner();
+        
+        match index_service.add_document(&req.index_name, &req.doc_id, req.fields).await {
+            Ok(doc_id) => Ok(Response::new(AddDocumentResponse {
+                success: true,
+                doc_id: doc_id.to_string(),
+                message: String::new(),
+            })),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+    
+    async fn get_document(&self, request: Request<GetDocumentRequest>) -> Result<Response<GetDocumentResponse>, Status> {
+        let index_service = self.index_service.as_ref().ok_or_else(|| {
+            Status::unimplemented("Index service not configured")
+        })?;
+        
+        let req = request.into_inner();
+        
+        match index_service.get_document(&req.index_name, &req.doc_id).await {
+            Ok(Some(doc)) => Ok(Response::new(GetDocumentResponse {
+                success: true,
+                doc_id: doc.doc_id,
+                fields: doc.fields,
+                message: String::new(),
+            })),
+            Ok(None) => Err(Status::not_found(format!("Document '{}' not found in index '{}'", req.doc_id, req.index_name))),
+            Err(e) => Err(Status::internal(e.to_string())),
+        }
+    }
+    
+    async fn delete_document(&self, request: Request<DeleteDocumentRequest>) -> Result<Response<DeleteDocumentResponse>, Status> {
+        let index_service = self.index_service.as_ref().ok_or_else(|| {
+            Status::unimplemented("Index service not configured")
+        })?;
+        
+        let req = request.into_inner();
+        
+        match index_service.delete_document(&req.index_name, &req.doc_id).await {
+            Ok(_) => Ok(Response::new(DeleteDocumentResponse {
+                success: true,
                 message: String::new(),
             })),
             Err(e) => Err(Status::internal(e.to_string())),
