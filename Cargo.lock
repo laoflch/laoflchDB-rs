@@ -2514,27 +2514,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "index_tantivy"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "arrow-array",
- "arrow-schema",
- "async-trait",
- "bytes",
- "datafusion",
- "futures",
- "laoflchdb_engines",
- "log",
- "serde",
- "serde_json",
- "tantivy",
- "tempfile",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2683,6 +2662,7 @@ dependencies = [
  "env_logger",
  "hex",
  "laoflchdb_engines",
+ "laoflchdb_index_tantivy_engine",
  "laoflchdb_sql_df_engine",
  "log",
  "multi_table_rocksdb",
@@ -2723,6 +2703,28 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "laoflchdb_index_tantivy_engine"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "async-trait",
+ "bytes",
+ "datafusion",
+ "futures",
+ "laoflchdb_engines",
+ "log",
+ "serde",
+ "serde_json",
+ "tantivy",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

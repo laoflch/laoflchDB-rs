@@ -15,13 +15,14 @@ members = [
     "laoflchdb_engines",
     "multi_table_rocksdb",
     "laoflchdb_sql_df_engine",
-    "index_tantivy",
+    "laoflchdb_index_tantivy_engine",
 ]
 
 [dependencies]
 laoflchdb_engines = { path = "./laoflchdb_engines" }
 multi_table_rocksdb = { path = "./multi_table_rocksdb" }
 laoflchdb_sql_df_engine = { path = "./laoflchdb_sql_df_engine" }
+laoflchdb_index_tantivy_engine = { path = "./laoflchdb_index_tantivy_engine" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}
 prost = "0.12"
 protobuf = "3.7"

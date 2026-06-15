@@ -1,4 +1,4 @@
-use index_tantivy::TantivyStorageEngine;
+use laoflchdb_index_tantivy_engine::TantivyStorageEngine;
 use laoflchdb_engines::{ColumnType, StorageEngine};
 use tempfile::TempDir;
 

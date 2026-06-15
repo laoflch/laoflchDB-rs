@@ -1,7 +1,6 @@
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))']
 rustflags = [
     "-C", "opt-level=s",
-    "-C", "panic=abort",
     "-C", "strip=symbols",
     "-C", "debuginfo=0",
 ]
@@ -15,3 +14,6 @@ panic = "abort"
 codegen-units = 1
 lto = "fat"
 incremental = false
+
+[profile.test]
+panic = "unwind"

@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use log::{info, debug, warn};
 
 use laoflchdb_engines::{ColumnType, ColumnMeta, TableMeta, StorageEngine};
-use index_tantivy::TantivyStorageEngine;
+use laoflchdb_index_tantivy_engine::TantivyStorageEngine;
 
 /// 全文索引服务 trait
 #[async_trait::async_trait]
