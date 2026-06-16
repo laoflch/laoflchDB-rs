@@ -44,7 +44,6 @@ pub enum TantivyEngineError {
 struct TableIndex {
     index: Index,
     writer: IndexWriter,
-    reader: IndexReader,
     schema: Schema,
     field_map: HashMap<String, Field>,
 }
@@ -183,12 +182,10 @@ impl StorageEngine for TantivyStorageEngine {
         let directory = MmapDirectory::open(&table_path)?;
         let index = Index::create(directory, tantivy_schema.clone(), IndexSettings::default())?;
         let writer = index.writer(50_000_000)?;
-        let reader = index.reader()?;
 
         let table_index = TableIndex {
             index,
             writer,
-            reader,
             schema: tantivy_schema,
             field_map,
         };
@@ -316,13 +313,6 @@ impl StorageEngine for TantivyStorageEngine {
             table_index.writer.commit()?;
         }
         
-        {
-            let table_indices_guard = self.table_indices.write().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock table indices: {}", e)))?;
-            let table_index_mutex = table_indices_guard.get(table).ok_or(TantivyEngineError::TableNotFound(table.to_string()))?;
-            let mut table_index = table_index_mutex.lock().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock table index: {}", e)))?;
-            table_index.reader = table_index.index.reader()?;
-        }
-
         debug!("Added row {} to table '{}'", row_id, table);
         Ok(row_id)
     }
@@ -340,7 +330,8 @@ impl StorageEngine for TantivyStorageEngine {
                 Err(_) => return Ok(None),
             };
 
-            let searcher = table_index.reader.searcher();
+            let reader = table_index.index.reader()?;
+            let searcher = reader.searcher();
             let term = tantivy::Term::from_field_u64(row_id_field, row_id);
             let term_query = tantivy::query::TermQuery::new(term, IndexRecordOption::Basic);
             
@@ -361,7 +352,8 @@ impl StorageEngine for TantivyStorageEngine {
             let table_indices_guard = self.table_indices.read().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock table indices: {}", e)))?;
             let table_index_mutex = table_indices_guard.get(table).ok_or(TantivyEngineError::TableNotFound(table.to_string()))?;
             let table_index = table_index_mutex.lock().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock table index: {}", e)))?;
-            let searcher = table_index.reader.searcher();
+            let reader = table_index.index.reader()?;
+            let searcher = reader.searcher();
             
             match searcher.doc::<tantivy::TantivyDocument>(doc_address.unwrap()) {
                 Ok(retrieved_doc) => {
@@ -447,8 +439,6 @@ impl StorageEngine for TantivyStorageEngine {
             let term = tantivy::Term::from_field_u64(row_id_field, row_id);
             table_index.writer.delete_term(term);
             table_index.writer.commit()?;
-            
-            table_index.reader = table_index.index.reader()?;
         }
 
         debug!("Deleted row {} from table '{}'", row_id, table);
@@ -552,7 +542,8 @@ impl StorageEngine for TantivyStorageEngine {
                     Box::new(tantivy::query::BooleanQuery::new(subqueries))
                 };
 
-                let searcher = table_index.reader.searcher();
+                let reader = table_index.index.reader()?;
+            let searcher = reader.searcher();
                 top_docs = searcher.search(&*combined_query, &TopDocs::with_limit(100).order_by_score())?;
             }
 
@@ -565,7 +556,8 @@ impl StorageEngine for TantivyStorageEngine {
                     None => continue,
                 };
                 let table_index = table_index_mutex.lock().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock table index: {}", e)))?;
-                let searcher = table_index.reader.searcher();
+                let reader = table_index.index.reader()?;
+            let searcher = reader.searcher();
                 
                 match searcher.doc::<tantivy::TantivyDocument>(doc_address) {
                     Ok(retrieved_doc) => {
@@ -739,6 +731,99 @@ impl StorageEngine for TantivyStorageEngine {
 
     fn get_schema_name(&self) -> &str {
         &self.schema_name
+    }
+}
+
+impl TantivyStorageEngine {
+    pub async fn search(
+        &self, 
+        table: &str, 
+        query: &str, 
+        fields: Option<&[&str]>,
+        limit: usize
+    ) -> Result<Vec<(u64, f32, HashMap<String, String>)>, Box<dyn std::error::Error + Send + Sync>> {
+        let cols = self.list_table_cols(table).await?;
+        
+        let table_indices_guard = self.table_indices.read().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock table indices: {}", e)))?;
+        let table_index_mutex = table_indices_guard.get(table).ok_or(TantivyEngineError::TableNotFound(table.to_string()))?;
+        let table_index = table_index_mutex.lock().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock table index: {}", e)))?;
+
+        let reader = table_index.index.reader()?;
+        let searcher = reader.searcher();
+
+        let search_fields: Vec<Field> = match fields {
+            Some(fs) => fs
+                .iter()
+                .filter_map(|f| table_index.field_map.get(*f).copied())
+                .collect(),
+            None => table_index.schema.fields().map(|(field, _)| field).collect(),
+        };
+
+        if search_fields.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let query_parser = QueryParser::for_index(&table_index.index, search_fields);
+        
+        let tantivy_query = query_parser.parse_query(query)?;
+        
+        let top_docs = searcher.search(&tantivy_query, &TopDocs::with_limit(limit).order_by_score())?;
+        
+        let mut results: Vec<(u64, f32, HashMap<String, String>)> = Vec::new();
+        
+        for (score, doc_address) in top_docs {
+            match searcher.doc::<tantivy::TantivyDocument>(doc_address) {
+                Ok(retrieved_doc) => {
+                    let mut row_data: HashMap<String, String> = HashMap::new();
+                    let mut row_id: u64 = doc_address.doc_id as u64;
+                    
+                    for col in &cols {
+                        if let Some(field) = table_index.field_map.get(&col.column_name) {
+                            if col.column_name == "_row_id" {
+                                if let Some(value) = retrieved_doc.get_first(*field) {
+                                    row_id = value.as_u64().unwrap_or(doc_address.doc_id as u64);
+                                }
+                            } else {
+                                let field_entry = table_index.schema.get_field_entry(*field);
+                                let field_type = field_entry.field_type();
+                                
+                                if let Some(value) = retrieved_doc.get_first(*field) {
+                                    let s = match field_type {
+                                        schema::FieldType::Str(_) => {
+                                            match value.as_str() {
+                                                Some(s) => s.to_string(),
+                                                None => {
+                                                    let bytes = value.as_bytes().unwrap_or_default();
+                                                    String::from_utf8_lossy(bytes).to_string()
+                                                }
+                                            }
+                                        }
+                                        schema::FieldType::I64(_) => {
+                                            format!("{}", value.as_i64().unwrap_or(0))
+                                        }
+                                        schema::FieldType::U64(_) => {
+                                            format!("{}", value.as_u64().unwrap_or(0))
+                                        }
+                                        schema::FieldType::F64(_) => {
+                                            format!("{}", value.as_f64().unwrap_or(0.0))
+                                        }
+                                        _ => {
+                                            format!("{:?}", value).trim_matches('"').to_string()
+                                        }
+                                    };
+                                    row_data.insert(col.column_name.clone(), s);
+                                }
+                            }
+                        }
+                    }
+                    
+                    results.push((row_id, score, row_data));
+                }
+                Err(e) => warn!("Failed to retrieve document {}: {}", doc_address.doc_id, e),
+            }
+        }
+        
+        Ok(results)
     }
 }
 

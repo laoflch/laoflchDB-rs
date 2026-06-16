@@ -291,11 +291,21 @@ impl IndexService for IndexServiceImpl {
     ) -> Result<Vec<SearchResult>, Box<dyn std::error::Error + Send + Sync>> {
         info!("Searching index '{}' with query: '{}'", index_name, query);
         
-        // TODO: 实现全文搜索逻辑
-        // 需要使用 Tantivy 的查询功能
-        warn!("search not fully implemented yet");
+        let engine = self.storage_engine.read().await;
         
-        Ok(vec![])
+        let results = engine.search(index_name, query, None, limit.unwrap_or(10)).await?;
+        
+        let search_results: Vec<SearchResult> = results
+            .into_iter()
+            .map(|(row_id, score, fields)| SearchResult {
+                doc_id: row_id.to_string(),
+                score,
+                fields,
+            })
+            .collect();
+        
+        info!("Search completed, found {} results", search_results.len());
+        Ok(search_results)
     }
     
     async fn search_multi_field(
@@ -306,10 +316,34 @@ impl IndexService for IndexServiceImpl {
     ) -> Result<Vec<SearchResult>, Box<dyn std::error::Error + Send + Sync>> {
         info!("Multi-field search in index '{}' with {} field queries", index_name, field_queries.len());
         
-        // TODO: 实现多字段搜索逻辑
-        warn!("search_multi_field not fully implemented yet");
+        if field_queries.is_empty() {
+            return Ok(vec![]);
+        }
         
-        Ok(vec![])
+        let engine = self.storage_engine.read().await;
+        
+        let field_names: Vec<String> = field_queries.keys().cloned().collect();
+        let fields: Vec<&str> = field_names.iter().map(|s| s.as_str()).collect();
+        
+        let query_str: String = field_queries
+            .into_iter()
+            .map(|(field, value)| format!("{}:{}", field, value))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        
+        let results = engine.search(index_name, &query_str, Some(&fields), limit.unwrap_or(10)).await?;
+        
+        let search_results: Vec<SearchResult> = results
+            .into_iter()
+            .map(|(row_id, score, fields)| SearchResult {
+                doc_id: row_id.to_string(),
+                score,
+                fields,
+            })
+            .collect();
+        
+        info!("Multi-field search completed, found {} results", search_results.len());
+        Ok(search_results)
     }
     
     async fn get_stats(&self) -> Result<IndexStats, Box<dyn std::error::Error + Send + Sync>> {
