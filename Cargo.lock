@@ -2652,7 +2652,7 @@ dependencies = [
 
 [[package]]
 name = "laoflchDB-rust"
-version = "0.1.5+af6c814ea889803ba2383324d79e4fb0eae1dc1b"
+version = "0.1.6+952317a5661fdd0f5b2493806d6f3b5017216f3c"
 dependencies = [
  "async-trait",
  "axum 0.7.9",

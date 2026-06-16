@@ -754,9 +754,13 @@ impl TantivyStorageEngine {
         let search_fields: Vec<Field> = match fields {
             Some(fs) => fs
                 .iter()
+                .filter(|f| **f != "_row_id")
                 .filter_map(|f| table_index.field_map.get(*f).copied())
                 .collect(),
-            None => table_index.schema.fields().map(|(field, _)| field).collect(),
+            None => table_index.schema.fields()
+                .filter(|(_, field_entry)| field_entry.name() != "_row_id")
+                .map(|(field, _)| field)
+                .collect(),
         };
 
         if search_fields.is_empty() {

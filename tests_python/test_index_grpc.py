@@ -17,7 +17,7 @@ import rpc_pb2
 import rpc_pb2_grpc
 
 TEST_DB = "./laoflch_db_index_test"
-TEST_ADDR = "127.0.0.1:19778"
+TEST_ADDR = "127.0.0.1:29777"
 SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchdb")
 INDEX_NAME = "test_grpc_index"
 
@@ -246,7 +246,7 @@ def test_search_with_real_data():
                 )
                 resp = stub.AddDocument(req, metadata=get_metadata())
                 if resp.success:
-                    print(f"    ✓ 成功添加 {doc['doc_id']} 文档")
+                    print(f"    ✓ 成功添加 {doc['doc_id']} 文档 ")
                 else:
                     print(f"    ⚠ 添加文档 {doc['doc_id']} 返回失败: {resp.message}")
             except grpc.RpcError as e:
@@ -266,7 +266,7 @@ def test_search_with_real_data():
             req = rpc_pb2.SearchIndexRequest(index_name=INDEX_NAME, query="Rust", limit=5)
             resp = stub.SearchIndex(req, metadata=get_metadata())
             if resp.success:
-                print(f"    ✓ 搜索'Rust'返回 {len(resp.results)} 条结果")
+                print(f"    ✓ 搜索'Rust'返回 {len(resp.results)} 条结果: {resp.results}")
             else:
                 print(f"    ✓ 搜索'Rust'返回失败: {resp.message}")
         except Exception as e:
@@ -335,6 +335,7 @@ def test_search_index():
         resp = stub.SearchIndex(req, metadata=get_metadata())
         assert resp.success, f"SearchIndex failed: {resp.message}"
         print(f"    ✓ 搜索结果: {len(resp.results)} 条")
+        print(f"    ✓ 搜索结果: {resp.results} ")
         return True
     except Exception as e:
         print(f"    ✗ 搜索失败: {e}")
@@ -532,11 +533,11 @@ def main():
     subprocess.run([SERVER_BIN, "init", "--db-path", TEST_DB], cwd="..", capture_output=True)
     print("    ✓ 数据库初始化完成")
     
-    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "laoflchdb.yaml")
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prod.yaml")
     
-    # 检查配置文件中的 gRPC 端口是否已有服务运行
-    grpc_port = get_grpc_port_from_config(config_path) if os.path.exists(config_path) else int(TEST_ADDR.split(':')[1])
-    use_existing_service = check_port_in_use("127.0.0.1", grpc_port)
+    # 强制使用新编译的服务，不使用现有服务
+    grpc_port = int(TEST_ADDR.split(':')[1])
+    use_existing_service = False
     
     actual_addr = f"127.0.0.1:{grpc_port}"
     
