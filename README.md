@@ -190,6 +190,46 @@ SELECT * FROM users WHERE (age > 25 AND score > 90) OR name = 'Alice'
 
 ---
 
+## 新增：全文索引引擎 (Tantivy)
+
+### 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **全文搜索** | 基于 Tantivy 0.26 实现全文索引 |
+| **Schema 集成** | 自动为每个表创建对应的全文索引 |
+| **多字段搜索** | 支持在多个字段上进行搜索 |
+| **Snowflake ID** | 自动生成分布式唯一 ID |
+| **并发安全** | 使用 `RwLock` 和 `Mutex` 确保线程安全 |
+
+### 全文索引 API
+
+| 操作 | gRPC | REST |
+|------|------|------|
+| 创建索引 | `CreateIndex` | `POST /api/v1/index/indices` |
+| 删除索引 | `DropIndex` | `DELETE /api/v1/index/indices/{name}` |
+| 列出索引 | `ListIndices` | `GET /api/v1/index/indices` |
+| 添加文档 | `AddDocument` | `POST /api/v1/index/indices/{name}/docs` |
+| 获取文档 | `GetDocument` | `GET /api/v1/index/indices/{name}/docs/{doc_id}` |
+| 删除文档 | `DeleteDocument` | `DELETE /api/v1/index/indices/{name}/docs/{doc_id}` |
+| 搜索 | `SearchIndex` | `POST /api/v1/index/indices/{name}/search` |
+
+### 索引配置示例
+
+```json
+{
+  "name": "my_index",
+  "fields": [
+    {"name": "title", "type": "TEXT", "indexed": true, "stored": true},
+    {"name": "content", "type": "TEXT", "indexed": true, "stored": true},
+    {"name": "category", "type": "STRING", "indexed": true, "stored": true},
+    {"name": "view_count", "type": "INT", "indexed": true, "stored": true}
+  ]
+}
+```
+
+---
+
 ## 新增：优雅关闭功能
 
 ### 核心特性

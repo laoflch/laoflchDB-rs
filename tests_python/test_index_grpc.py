@@ -362,8 +362,12 @@ def test_search_no_auth():
     try:
         req = rpc_pb2.SearchIndexRequest(index_name=INDEX_NAME, query="test", limit=10)
         resp = stub.SearchIndex(req)
-        print(f"    ✓ 未认证请求返回: success={resp.success}")
-        return True
+        if not resp.success:
+            print(f"    ✓ 未认证请求被正确拒绝: success={resp.success}, message={resp.message}")
+            return True
+        else:
+            print(f"    ✗ 未认证请求应该返回 success=False，实际: success={resp.success}")
+            return False
     except grpc.RpcError as e:
         if e.code() == grpc.StatusCode.UNAUTHENTICATED:
             print("    ✓ 未认证请求被正确拒绝 (UNAUTHENTICATED)")
@@ -380,8 +384,12 @@ def test_search_invalid_token():
         req = rpc_pb2.SearchIndexRequest(index_name=INDEX_NAME, query="test", limit=10)
         metadata = [("authorization", "Bearer invalid_token_xyz")]
         resp = stub.SearchIndex(req, metadata=metadata)
-        print(f"    ✓ 无效Token请求返回: success={resp.success}")
-        return True
+        if not resp.success:
+            print(f"    ✓ 无效Token请求被正确拒绝: success={resp.success}, message={resp.message}")
+            return True
+        else:
+            print(f"    ✗ 无效Token请求应该返回 success=False，实际: success={resp.success}")
+            return False
     except grpc.RpcError as e:
         if e.code() == grpc.StatusCode.UNAUTHENTICATED or e.code() == grpc.StatusCode.PERMISSION_DENIED:
             print(f"    ✓ 无效Token请求被正确拒绝 ({e.code()})")
@@ -439,8 +447,12 @@ def test_unauthorized_create():
             fields=[rpc_pb2.IndexFieldDef(name="f1", field_type=0)]
         )
         resp = stub.CreateIndex(req)
-        print(f"    ✓ 未认证请求返回: success={resp.success}")
-        return True
+        if not resp.success:
+            print(f"    ✓ 未认证请求被正确拒绝: success={resp.success}, message={resp.message}")
+            return True
+        else:
+            print(f"    ✗ 未认证请求应该返回 success=False，实际: success={resp.success}")
+            return False
     except grpc.RpcError as e:
         if e.code() == grpc.StatusCode.UNAUTHENTICATED:
             print("    ✓ 未认证请求被正确拒绝 (UNAUTHENTICATED)")

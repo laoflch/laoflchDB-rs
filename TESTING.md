@@ -23,6 +23,7 @@ cargo test --test sql_advanced_tests
 cargo test --test init_idempotent_tests
 cargo test --test cli_tests
 cargo test --test cross_schema_join_tests  # 跨 Schema JOIN 测试
+cargo test --test index_tests              # 全文索引测试
 
 # Python 自动化测试
 python3 tests_python/test_e2e_grpc.py
@@ -37,6 +38,8 @@ python3 tests_python/test_sql_query_validation.py
 python3 tests_python/test_cross_schema_join.py  # 跨 Schema JOIN 测试
 python3 tests_python/test_table_structure.py    # 表结构测试
 python3 tests_python/test_final.py              # 完整回归测试
+python3 tests_python/test_index_rest.py         # REST 全文索引测试
+python3 tests_python/test_index_grpc.py         # gRPC 全文索引测试
 ```
 
 ---
@@ -139,6 +142,55 @@ python3 tests_python/test_e2e_rest.py
 python3 tests_python/test_lsql_sql.py
 ```
 
+#### 全文索引 REST API 测试
+- **文件**: `tests_python/test_index_rest.py`
+- **内容**: 测试全文索引 REST API 的完整功能
+- **测试场景**:
+  1. 创建全文索引
+  2. 列出所有索引
+  3. 获取索引字段信息
+  4. 获取索引元数据
+  5. 获取索引统计信息
+  6. 创建包含多种字段类型的索引
+  7. 添加文档（含自动生成 doc_id）
+  8. 搜索文档（全文搜索）
+  9. 多字段搜索
+  10. 通过 doc_id 获取文档
+  11. 删除文档
+  12. 删除索引
+  13. 未认证请求测试（应返回 403）
+  14. 无效 Token 请求测试（应返回 403）
+  15. 创建同名索引测试
+
+```bash
+python3 tests_python/test_index_rest.py
+```
+
+#### 全文索引 gRPC API 测试
+- **文件**: `tests_python/test_index_grpc.py`
+- **内容**: 测试全文索引 gRPC API 的完整功能
+- **测试场景**:
+  1. 创建全文索引
+  2. 列出所有索引
+  3. 获取索引字段信息
+  4. 获取索引元数据
+  5. 获取索引统计信息
+  6. 创建包含多种字段类型的索引
+  7. 添加文档
+  8. 搜索文档（全文搜索）
+  9. 多字段搜索
+  10. 通过 doc_id 获取文档
+  11. 删除文档
+  12. 删除索引
+  13. 未认证请求测试（应失败）
+  14. 无效 Token 请求测试（应失败）
+  15. 创建同名索引测试
+  16. 添加多个文档并进行真实搜索测试
+
+```bash
+python3 tests_python/test_index_grpc.py
+```
+
 ---
 
 ## 测试覆盖率
@@ -151,6 +203,13 @@ python3 tests_python/test_lsql_sql.py
 | **gRPC** | Get | ✅ |
 | **gRPC** | Delete | ✅ |
 | **gRPC** | CreateTable | ✅ |
+| **gRPC** | CreateIndex | ✅ |
+| **gRPC** | DropIndex | ✅ |
+| **gRPC** | ListIndices | ✅ |
+| **gRPC** | AddDocument | ✅ |
+| **gRPC** | GetDocument | ✅ |
+| **gRPC** | DeleteDocument | ✅ |
+| **gRPC** | SearchIndex | ✅ |
 | **REST** | `/health` | ✅ |
 | **REST** | `/api/v1/tables` | ✅ |
 | **REST** | `/api/v1/schemas/{schema}/tables` | ✅ |
@@ -158,6 +217,11 @@ python3 tests_python/test_lsql_sql.py
 | **REST** | `/api/v1/put` | ✅ |
 | **REST** | `/api/v1/get` | ✅ |
 | **REST** | `/api/v1/delete` | ✅ |
+| **REST** | `/api/v1/index/indices` | ✅ |
+| **REST** | `/api/v1/index/indices/{name}` | ✅ |
+| **REST** | `/api/v1/index/indices/{name}/docs` | ✅ |
+| **REST** | `/api/v1/index/indices/{name}/docs/{doc_id}` | ✅ |
+| **REST** | `/api/v1/index/indices/{name}/search` | ✅ |
 
 ### 功能覆盖率
 
@@ -174,6 +238,15 @@ python3 tests_python/test_lsql_sql.py
 | 用户认证 | ✅ |
 | 令牌管理 | ✅ |
 | 密码验证 | ✅ |
+| 全文索引创建 | ✅ |
+| 全文索引删除 | ✅ |
+| 文档添加 | ✅ |
+| 文档查询 | ✅ |
+| 文档删除 | ✅ |
+| 全文搜索 | ✅ |
+| 多字段搜索 | ✅ |
+| 自动ID生成 | ✅ |
+| 认证拦截 | ✅ |
 
 ---
 
@@ -222,13 +295,16 @@ python3 tests_python/test_lsql_sql.py
 | Rust lsql客户端测试 | 4 | ✅ |
 | Rust 幂等初始化测试 | 4 | ✅ |
 | Rust 跨Schema JOIN测试 | 4 | ✅ |
+| Rust 全文索引测试 | 4 | ✅ |
 | Python gRPC测试 | 1 | ✅ |
 | Python REST测试 | 10 | ✅ |
 | Python SQL测试 | 3 | ✅ |
 | Python 跨Schema JOIN测试 | 1 | ✅ |
 | Python 表结构测试 | 1 | ✅ |
 | Python 完整回归测试 | 1 | ✅ |
-| **总计** | **51** | **✅** |
+| Python 全文索引REST测试 | 1 | ✅ |
+| Python 全文索引gRPC测试 | 1 | ✅ |
+| **总计** | **57** | **✅** |
 
 ---
 

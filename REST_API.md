@@ -302,6 +302,215 @@ curl -X GET "http://localhost:38080/api/v1/get?schema=sys&table=user&key=1" \
 
 ---
 
+### 10. 全文索引操作
+
+#### 10.1 创建索引
+
+**端点**: `POST /api/v1/index/indices`
+
+**请求体**:
+```json
+{
+  "name": "test_index",
+  "fields": [
+    {"name": "title", "type": "TEXT", "indexed": true, "stored": true},
+    {"name": "content", "type": "TEXT", "indexed": true, "stored": true},
+    {"name": "category", "type": "STRING", "indexed": true, "stored": true},
+    {"name": "view_count", "type": "INT", "indexed": true, "stored": true}
+  ]
+}
+```
+
+**字段类型**:
+- `TEXT` - 文本字段（全文索引）
+- `STRING` - 字符串字段（精确匹配）
+- `INT` - 整数字段
+- `FLOAT` - 浮点数字段
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": {
+    "index_id": 9723294756888291148
+  }
+}
+```
+
+#### 10.2 删除索引
+
+**端点**: `DELETE /api/v1/index/indices/{INDEX_NAME}`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": "OK"
+}
+```
+
+#### 10.3 列出所有索引
+
+**端点**: `GET /api/v1/index/indices`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": ["test_index", "articles"]
+}
+```
+
+#### 10.4 获取索引字段
+
+**端点**: `GET /api/v1/index/indices/{INDEX_NAME}/fields`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": ["title", "content", "category", "view_count"]
+}
+```
+
+#### 10.5 获取索引元数据
+
+**端点**: `GET /api/v1/index/indices/{INDEX_NAME}/meta`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": {
+    "name": "test_index",
+    "columns": 4
+  }
+}
+```
+
+#### 10.6 获取索引统计
+
+**端点**: `GET /api/v1/index/stats`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": {
+    "total": 2,
+    "names": ["test_index", "articles"]
+  }
+}
+```
+
+#### 10.7 添加文档
+
+**端点**: `POST /api/v1/index/indices/{INDEX_NAME}/docs`
+
+**请求体**:
+```json
+{
+  "doc_id": "doc_001",
+  "fields": {
+    "title": "Introduction to Rust",
+    "content": "Rust is a systems programming language...",
+    "category": "Programming",
+    "view_count": "1000"
+  }
+}
+```
+
+**说明**: `doc_id` 为可选字段，如果不提供则自动生成 Snowflake ID。
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": {
+    "doc_id": "doc_001"
+  }
+}
+```
+
+#### 10.8 获取文档
+
+**端点**: `GET /api/v1/index/indices/{INDEX_NAME}/docs/{DOC_ID}`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": {
+    "doc_id": "doc_001",
+    "score": 0.0,
+    "fields": {
+      "title": "Introduction to Rust",
+      "content": "Rust is a systems programming language...",
+      "category": "Programming",
+      "view_count": "1000"
+    }
+  }
+}
+```
+
+#### 10.9 删除文档
+
+**端点**: `DELETE /api/v1/index/indices/{INDEX_NAME}/docs/{DOC_ID}`
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": "OK"
+}
+```
+
+#### 10.10 搜索文档
+
+**端点**: `POST /api/v1/index/indices/{INDEX_NAME}/search`
+
+**请求体**:
+```json
+{
+  "query": "Rust programming",
+  "fields": ["title", "content"],
+  "limit": 10,
+  "offset": 0
+}
+```
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "message": "",
+  "data": {
+    "total_hits": 5,
+    "results": [
+      {
+        "doc_id": "doc_001",
+        "score": 0.95,
+        "fields": {
+          "title": "Introduction to Rust",
+          "content": "Rust is a systems programming language..."
+        }
+      }
+    ]
+  }
+}
+```
+
+---
+
 ## 使用示例
 
 ### cURL 示例

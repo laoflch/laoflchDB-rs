@@ -1010,9 +1010,24 @@ impl LaoflchDb for GrpcService {
     // ==================== Index gRPC 接口 ====================
     
     async fn create_index(&self, request: Request<CreateIndexRequest>) -> Result<Response<CreateIndexResponse>, Status> {
-        let index_service = self.index_service.as_ref().ok_or_else(|| {
-            Status::unimplemented("Index service not configured")
-        })?;
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(CreateIndexResponse {
+                success: false,
+                index_id: 0,
+                message: e.message().to_string(),
+            }));
+        }
+        
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(CreateIndexResponse {
+                    success: false,
+                    index_id: 0,
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
         
         let req = request.into_inner();
         let index_name = req.index_name.as_str();
@@ -1033,14 +1048,31 @@ impl LaoflchDb for GrpcService {
                 index_id,
                 message: String::new(),
             })),
-            Err(e) => Err(Status::internal(e.to_string())),
+            Err(e) => Ok(Response::new(CreateIndexResponse {
+                success: false,
+                index_id: 0,
+                message: e.to_string(),
+            })),
         }
     }
     
     async fn drop_index(&self, request: Request<DropIndexRequest>) -> Result<Response<DropIndexResponse>, Status> {
-        let index_service = self.index_service.as_ref().ok_or_else(|| {
-            Status::unimplemented("Index service not configured")
-        })?;
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(DropIndexResponse {
+                success: false,
+                message: e.message().to_string(),
+            }));
+        }
+        
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(DropIndexResponse {
+                    success: false,
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
         
         let req = request.into_inner();
         
@@ -1049,15 +1081,33 @@ impl LaoflchDb for GrpcService {
                 success: true,
                 message: String::new(),
             })),
-            Err(e) => Err(Status::internal(e.to_string())),
+            Err(e) => Ok(Response::new(DropIndexResponse {
+                success: false,
+                message: e.to_string(),
+            })),
         }
     }
     
     async fn list_indices(&self, request: Request<ListIndicesRequest>) -> Result<Response<ListIndicesResponse>, Status> {
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(ListIndicesResponse {
+                success: false,
+                index_names: vec![],
+                message: e.message().to_string(),
+            }));
+        }
+        
         let _req = request.into_inner();
-        let index_service = self.index_service.as_ref().ok_or_else(|| {
-            Status::unimplemented("Index service not configured")
-        })?;
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(ListIndicesResponse {
+                    success: false,
+                    index_names: vec![],
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
         
         match index_service.list_indices().await {
             Ok(indices) => Ok(Response::new(ListIndicesResponse {
@@ -1065,14 +1115,33 @@ impl LaoflchDb for GrpcService {
                 index_names: indices,
                 message: String::new(),
             })),
-            Err(e) => Err(Status::internal(e.to_string())),
+            Err(e) => Ok(Response::new(ListIndicesResponse {
+                success: false,
+                index_names: vec![],
+                message: e.to_string(),
+            })),
         }
     }
     
     async fn get_index_fields(&self, request: Request<GetIndexFieldsRequest>) -> Result<Response<GetIndexFieldsResponse>, Status> {
-        let index_service = self.index_service.as_ref().ok_or_else(|| {
-            Status::unimplemented("Index service not configured")
-        })?;
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(GetIndexFieldsResponse {
+                success: false,
+                fields: vec![],
+                message: e.message().to_string(),
+            }));
+        }
+        
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(GetIndexFieldsResponse {
+                    success: false,
+                    fields: vec![],
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
         
         let req = request.into_inner();
         
@@ -1093,16 +1162,43 @@ impl LaoflchDb for GrpcService {
                     message: String::new(),
                 }))
             },
-            Err(e) => Err(Status::internal(e.to_string())),
+            Err(e) => Ok(Response::new(GetIndexFieldsResponse {
+                success: false,
+                fields: vec![],
+                message: e.to_string(),
+            })),
         }
     }
     
     async fn get_index_meta(&self, request: Request<GetIndexMetaRequest>) -> Result<Response<GetIndexMetaResponse>, Status> {
-        let index_service = self.index_service.as_ref().ok_or_else(|| {
-            Status::unimplemented("Index service not configured")
-        })?;
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(GetIndexMetaResponse {
+                success: false,
+                index_id: 0,
+                index_name: String::new(),
+                column_count: 0,
+                comment: String::new(),
+                message: e.message().to_string(),
+            }));
+        }
+        
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(GetIndexMetaResponse {
+                    success: false,
+                    index_id: 0,
+                    index_name: String::new(),
+                    column_count: 0,
+                    comment: String::new(),
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
         
         let req = request.into_inner();
+        let index_name_for_resp = req.index_name.clone();
+        let not_found_msg = format!("Index '{}' not found", index_name_for_resp);
         
         match index_service.get_index_meta(&req.index_name).await {
             Ok(Some(meta)) => Ok(Response::new(GetIndexMetaResponse {
@@ -1113,15 +1209,44 @@ impl LaoflchDb for GrpcService {
                 comment: meta.comment,
                 message: String::new(),
             })),
-            Ok(None) => Err(Status::not_found(format!("Index '{}' not found", req.index_name))),
-            Err(e) => Err(Status::internal(e.to_string())),
+            Ok(None) => Ok(Response::new(GetIndexMetaResponse {
+                success: false,
+                index_id: 0,
+                index_name: index_name_for_resp,
+                column_count: 0,
+                comment: String::new(),
+                message: not_found_msg,
+            })),
+            Err(e) => Ok(Response::new(GetIndexMetaResponse {
+                success: false,
+                index_id: 0,
+                index_name: index_name_for_resp,
+                column_count: 0,
+                comment: String::new(),
+                message: e.to_string(),
+            })),
         }
     }
     
     async fn search_index(&self, request: Request<SearchIndexRequest>) -> Result<Response<SearchIndexResponse>, Status> {
-        let index_service = self.index_service.as_ref().ok_or_else(|| {
-            Status::unimplemented("Index service not configured")
-        })?;
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(SearchIndexResponse {
+                success: false,
+                results: vec![],
+                message: e.message().to_string(),
+            }));
+        }
+        
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(SearchIndexResponse {
+                    success: false,
+                    results: vec![],
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
         
         let req = request.into_inner();
         let limit = req.limit.map(|l| l as usize);
@@ -1143,7 +1268,11 @@ impl LaoflchDb for GrpcService {
                         message: String::new(),
                     }))
                 },
-                Err(e) => Err(Status::internal(e.to_string())),
+                Err(e) => Ok(Response::new(SearchIndexResponse {
+                    success: false,
+                    results: vec![],
+                    message: e.to_string(),
+                })),
             }
         } else {
             match index_service.search(&req.index_name, &req.query, limit).await {
@@ -1161,16 +1290,37 @@ impl LaoflchDb for GrpcService {
                         message: String::new(),
                     }))
                 },
-                Err(e) => Err(Status::internal(e.to_string())),
+                Err(e) => Ok(Response::new(SearchIndexResponse {
+                    success: false,
+                    results: vec![],
+                    message: e.to_string(),
+                })),
             }
         }
     }
     
     async fn get_index_stats(&self, request: Request<GetIndexStatsRequest>) -> Result<Response<GetIndexStatsResponse>, Status> {
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(GetIndexStatsResponse {
+                success: false,
+                total_indices: 0,
+                index_names: vec![],
+                message: e.message().to_string(),
+            }));
+        }
+        
         let _req = request.into_inner();
-        let index_service = self.index_service.as_ref().ok_or_else(|| {
-            Status::unimplemented("Index service not configured")
-        })?;
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(GetIndexStatsResponse {
+                    success: false,
+                    total_indices: 0,
+                    index_names: vec![],
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
         
         match index_service.get_stats().await {
             Ok(stats) => Ok(Response::new(GetIndexStatsResponse {
@@ -1179,14 +1329,34 @@ impl LaoflchDb for GrpcService {
                 index_names: stats.index_names,
                 message: String::new(),
             })),
-            Err(e) => Err(Status::internal(e.to_string())),
+            Err(e) => Ok(Response::new(GetIndexStatsResponse {
+                success: false,
+                total_indices: 0,
+                index_names: vec![],
+                message: e.to_string(),
+            })),
         }
     }
     
     async fn add_document(&self, request: Request<AddDocumentRequest>) -> Result<Response<AddDocumentResponse>, Status> {
-        let index_service = self.index_service.as_ref().ok_or_else(|| {
-            Status::unimplemented("Index service not configured")
-        })?;
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(AddDocumentResponse {
+                success: false,
+                doc_id: String::new(),
+                message: e.message().to_string(),
+            }));
+        }
+        
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(AddDocumentResponse {
+                    success: false,
+                    doc_id: String::new(),
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
         
         let req = request.into_inner();
         
@@ -1196,16 +1366,39 @@ impl LaoflchDb for GrpcService {
                 doc_id: doc_id.to_string(),
                 message: String::new(),
             })),
-            Err(e) => Err(Status::internal(e.to_string())),
+            Err(e) => Ok(Response::new(AddDocumentResponse {
+                success: false,
+                doc_id: String::new(),
+                message: e.to_string(),
+            })),
         }
     }
     
     async fn get_document(&self, request: Request<GetDocumentRequest>) -> Result<Response<GetDocumentResponse>, Status> {
-        let index_service = self.index_service.as_ref().ok_or_else(|| {
-            Status::unimplemented("Index service not configured")
-        })?;
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(GetDocumentResponse {
+                success: false,
+                doc_id: String::new(),
+                fields: std::collections::HashMap::new(),
+                message: e.message().to_string(),
+            }));
+        }
+        
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(GetDocumentResponse {
+                    success: false,
+                    doc_id: String::new(),
+                    fields: std::collections::HashMap::new(),
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
         
         let req = request.into_inner();
+        let doc_id_for_resp = req.doc_id.clone();
+        let not_found_msg = format!("Document '{}' not found in index '{}'", req.doc_id, req.index_name);
         
         match index_service.get_document(&req.index_name, &req.doc_id).await {
             Ok(Some(doc)) => Ok(Response::new(GetDocumentResponse {
@@ -1214,15 +1407,38 @@ impl LaoflchDb for GrpcService {
                 fields: doc.fields,
                 message: String::new(),
             })),
-            Ok(None) => Err(Status::not_found(format!("Document '{}' not found in index '{}'", req.doc_id, req.index_name))),
-            Err(e) => Err(Status::internal(e.to_string())),
+            Ok(None) => Ok(Response::new(GetDocumentResponse {
+                success: false,
+                doc_id: doc_id_for_resp,
+                fields: std::collections::HashMap::new(),
+                message: not_found_msg,
+            })),
+            Err(e) => Ok(Response::new(GetDocumentResponse {
+                success: false,
+                doc_id: doc_id_for_resp,
+                fields: std::collections::HashMap::new(),
+                message: e.to_string(),
+            })),
         }
     }
     
     async fn delete_document(&self, request: Request<DeleteDocumentRequest>) -> Result<Response<DeleteDocumentResponse>, Status> {
-        let index_service = self.index_service.as_ref().ok_or_else(|| {
-            Status::unimplemented("Index service not configured")
-        })?;
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(DeleteDocumentResponse {
+                success: false,
+                message: e.message().to_string(),
+            }));
+        }
+        
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(DeleteDocumentResponse {
+                    success: false,
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
         
         let req = request.into_inner();
         
@@ -1231,7 +1447,10 @@ impl LaoflchDb for GrpcService {
                 success: true,
                 message: String::new(),
             })),
-            Err(e) => Err(Status::internal(e.to_string())),
+            Err(e) => Ok(Response::new(DeleteDocumentResponse {
+                success: false,
+                message: e.to_string(),
+            })),
         }
     }
 }

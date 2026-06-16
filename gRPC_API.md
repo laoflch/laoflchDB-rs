@@ -63,6 +63,18 @@ service LaoflchDb {
   // 查询操作
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc SqlQuery(SqlQueryRequest) returns (SqlQueryResponse);
+  
+  // 全文索引操作
+  rpc CreateIndex(CreateIndexRequest) returns (CreateIndexResponse);
+  rpc DropIndex(DropIndexRequest) returns (DropIndexResponse);
+  rpc ListIndices(ListIndicesRequest) returns (ListIndicesResponse);
+  rpc GetIndexFields(GetIndexFieldsRequest) returns (GetIndexFieldsResponse);
+  rpc GetIndexMeta(GetIndexMetaRequest) returns (GetIndexMetaResponse);
+  rpc GetIndexStats(GetIndexStatsRequest) returns (GetIndexStatsResponse);
+  rpc AddDocument(AddDocumentRequest) returns (AddDocumentResponse);
+  rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
+  rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+  rpc SearchIndex(SearchIndexRequest) returns (SearchIndexResponse);
 }
 ```
 
@@ -773,6 +785,185 @@ python3 tests_python/test_final.py
 # 运行完整测试（REST + gRPC）
 cargo auto-test prod
 ```
+
+---
+
+## 全文索引消息类型
+
+### CreateIndexRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+| fields | repeated IndexField | 是 | 字段定义列表 |
+
+### IndexField
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | 是 | 字段名称 |
+| field_type | IndexFieldType | 是 | 字段类型 |
+| indexed | bool | 否 | 是否建立索引（默认 true） |
+| stored | bool | 否 | 是否存储（默认 true） |
+| tokenizer | string | 否 | 分词器名称（默认 "en_stem"） |
+
+### IndexFieldType（枚举）
+
+| 值 | 枚举值 | 说明 |
+|------|--------|------|
+| INDEX_FIELD_TYPE_UNSPECIFIED | 0 | 未指定 |
+| INDEX_FIELD_TYPE_TEXT | 1 | 文本字段（全文索引） |
+| INDEX_FIELD_TYPE_STRING | 2 | 字符串字段（精确匹配） |
+| INDEX_FIELD_TYPE_INT | 3 | 整数字段 |
+| INDEX_FIELD_TYPE_FLOAT | 4 | 浮点数字段 |
+
+### CreateIndexResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| index_id | uint64 | 索引 ID（Snowflake ID） |
+| message | string | 错误信息 |
+
+### DropIndexRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+
+### DropIndexResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 错误信息 |
+
+### ListIndicesRequest
+
+无参数
+
+### ListIndicesResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| indices | repeated string | 索引名称列表 |
+| message | string | 错误信息 |
+
+### GetIndexFieldsRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+
+### GetIndexFieldsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| fields | repeated IndexField | 字段定义列表 |
+| message | string | 错误信息 |
+
+### GetIndexMetaRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+
+### GetIndexMetaResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| name | string | 索引名称 |
+| columns | uint32 | 字段数量 |
+| message | string | 错误信息 |
+
+### GetIndexStatsRequest
+
+无参数
+
+### GetIndexStatsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| total | uint64 | 索引总数 |
+| names | repeated string | 索引名称列表 |
+| message | string | 错误信息 |
+
+### AddDocumentRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+| doc_id | string | 否 | 文档 ID（不提供则自动生成 Snowflake ID） |
+| fields | map<string, string> | 是 | 文档字段键值对 |
+
+### AddDocumentResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| doc_id | string | 文档 ID（用户提供或自动生成） |
+| message | string | 错误信息 |
+
+### GetDocumentRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+| doc_id | string | 是 | 文档 ID |
+
+### GetDocumentResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| doc_id | string | 文档 ID |
+| fields | map<string, string> | 文档字段 |
+| message | string | 错误信息 |
+
+### DeleteDocumentRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+| doc_id | string | 是 | 文档 ID |
+
+### DeleteDocumentResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 错误信息 |
+
+### SearchIndexRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+| query | string | 是 | 搜索查询字符串 |
+| fields | repeated string | 否 | 指定搜索的字段列表（为空则搜索所有文本字段） |
+| limit | uint32 | 否 | 返回结果数量限制（默认 10） |
+| offset | uint32 | 否 | 跳过的结果数量（默认 0） |
+
+### SearchIndexResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| results | repeated SearchResult | 搜索结果列表 |
+| total_hits | uint64 | 总命中数 |
+| message | string | 错误信息 |
+
+### SearchResult
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| doc_id | string | 文档 ID |
+| score | float | 匹配分数 |
+| fields | map<string, string> | 文档字段 |
 
 ---
 

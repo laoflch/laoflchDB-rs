@@ -849,7 +849,139 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 ---
 
-## 12. 核心依赖
+## 12. 全文索引引擎设计
+
+### 12.1 架构概述
+
+全文索引引擎基于 **Tantivy 0.26** 实现，提供高性能的全文搜索能力。
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    LaoflchDBServer                            │
+│                           │                                   │
+│                           ▼                                   │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              Access 层                                   │  │
+│  │  ┌────────────────────────────────────────────────────┐ │  │
+│  │  │          IndexService (gRPC/REST)                 │ │  │
+│  │  │  - CreateIndex / DropIndex / ListIndices          │ │  │
+│  │  │  - AddDocument / GetDocument / DeleteDocument     │ │  │
+│  │  │  - SearchIndex                                    │ │  │
+│  │  └────────────────────────────────────────────────────┘ │  │
+│  └───────────────────────────┬──────────────────────────────┘  │
+│                              ▼                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              Service 层                                  │  │
+│  │  ┌────────────────────────────────────────────────────┐ │  │
+│  │  │            IndexServiceImpl                        │ │  │
+│  │  │  - 索引元数据管理                                  │ │  │
+│  │  │  - 认证检查                                        │ │  │
+│  │  │  - 请求转发                                        │ │  │
+│  │  └────────────────────────────────────────────────────┘ │  │
+│  └───────────────────────────┬──────────────────────────────┘  │
+│                              ▼                                 │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │           StorageEngine 层                               │  │
+│  │  ┌────────────────────────────────────────────────────┐ │  │
+│  │  │      TantivyStorageEngine                          │ │  │
+│  │  │  ┌─────────┐ ┌─────────┐ ┌─────────┐           │ │  │
+│  │  │  │ Index 1 │ │ Index 2 │ │ Index N │ ...       │ │  │
+│  │  │  └────┬────┘ └────┬────┘ └────┬────┘           │ │  │
+│  │  │       │           │           │                 │ │  │
+│  │  │       └───────────┴───────────┘                 │ │  │
+│  │  │           ↓                                      │ │  │
+│  │  │  ┌──────────────────────────────────────────┐    │ │  │
+│  │  │  │           Snowflake ID Generator         │    │ │  │
+│  │  │  │  - 分布式唯一ID生成                      │    │ │  │
+│  │  │  │  - 线程安全 (Mutex)                      │    │ │  │
+│  │  │  └──────────────────────────────────────────┘    │ │  │
+│  │  └────────────────────────────────────────────────────┘ │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 12.2 StorageEngine Trait
+
+**位置**: [laoflchdb_engines/src/lib.rs](laoflchdb_engines/src/lib.rs)
+
+```rust
+#[async_trait::async_trait]
+pub trait StorageEngine: Send + Sync + 'static {
+    async fn create_index(&mut self, index_name: &str, fields: &[IndexField]) -> Result<u64, Box<dyn Error + Send + Sync>>;
+    async fn drop_index(&mut self, index_name: &str) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn list_indices(&self) -> Result<Vec<String>, Box<dyn Error + Send + Sync>>;
+    async fn get_index_fields(&self, index_name: &str) -> Result<Vec<String>, Box<dyn Error + Send + Sync>>;
+    async fn get_index_meta(&self, index_name: &str) -> Result<Option<IndexMeta>, Box<dyn Error + Send + Sync>>;
+    async fn get_index_stats(&self) -> Result<IndexStats, Box<dyn Error + Send + Sync>>;
+    
+    async fn add_document(&mut self, index_name: &str, doc_id: Option<&str>, fields: &std::collections::HashMap<String, String>) -> Result<String, Box<dyn Error + Send + Sync>>;
+    async fn get_document(&self, index_name: &str, doc_id: &str) -> Result<Option<Document>, Box<dyn Error + Send + Sync>>;
+    async fn delete_document(&mut self, index_name: &str, doc_id: &str) -> Result<(), Box<dyn Error + Send + Sync>>;
+    async fn search(&self, index_name: &str, query: &str, fields: &[&str], limit: usize, offset: usize) -> Result<SearchResult, Box<dyn Error + Send + Sync>>;
+    
+    async fn shutdown(&self) -> Result<(), Box<dyn Error + Send + Sync>>;
+}
+```
+
+### 12.3 TantivyStorageEngine
+
+**位置**: [laoflchdb_index_tantivy_engine/src/lib.rs](laoflchdb_index_tantivy_engine/src/lib.rs)
+
+#### 核心结构
+
+```rust
+pub struct TantivyStorageEngine {
+    indices: RwLock<HashMap<String, Arc<RwLock<TantivyIndex>>>>,
+    index_path: String,
+    snowflake: Mutex<Snowflake>,
+}
+
+struct TantivyIndex {
+    index: Index,
+    reader: Arc<IndexReader>,
+    searcher: Searcher,
+}
+```
+
+#### 设计要点
+
+| 设计点 | 说明 |
+|--------|------|
+| **并发安全** | 使用 `RwLock` 保护索引集合，`Mutex` 保护 Snowflake ID 生成器 |
+| **延迟加载** | 索引按需创建和打开 |
+| **持久化** | 索引数据存储在 `index_path` 目录下 |
+| **Snowflake ID** | 自动生成分布式唯一 ID，用户不提供 doc_id 时使用 |
+
+### 12.4 索引 Schema 设计
+
+每个索引对应一个 Tantivy Schema：
+
+| 字段类型 | Tantivy 类型 | 说明 |
+|---------|-------------|------|
+| `TEXT` | `TextField` | 全文索引字段，支持分词 |
+| `STRING` | `StrField` | 字符串字段，精确匹配 |
+| `INT` | `I64Field` | 整数字段 |
+| `FLOAT` | `F64Field` | 浮点数字段 |
+
+### 12.5 文档 ID 处理
+
+- **用户提供**: 如果用户在 `AddDocumentRequest` 中提供了 `doc_id`，直接使用该 ID
+- **自动生成**: 如果用户未提供 `doc_id`，使用 Snowflake ID 生成器生成唯一 ID
+- **存储方式**: doc_id 作为 Tantivy 文档的一个字段存储，便于后续检索
+
+### 12.6 搜索流程
+
+```
+搜索请求 → IndexService → TantivyStorageEngine.search()
+    → 创建 QueryParser → 解析查询字符串
+    → 获取 Searcher → 执行搜索
+    → 遍历结果 → 构建 SearchResult
+    → 返回响应
+```
+
+---
+
+## 13. 核心依赖
 
 | Rust Crate | 版本 | 用途 |
 |------------|------|------|
@@ -870,6 +1002,7 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 | arrow-array | 58.3.0 | Arrow Array 实现 |
 | futures | 0.3 | 异步流处理 |
 | snowflake_me | 0.5 | Snowflake ID 生成 |
+| tantivy | 0.26 | 全文索引引擎 |
 
 ---
 
