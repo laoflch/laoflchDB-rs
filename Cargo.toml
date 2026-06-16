@@ -1,6 +1,6 @@
 [package]
 name = "laoflchDB-rust"
-version = "0.1.5+dbab8fd62a18b5272152468c8717183e544cf55d"
+version = "0.1.5+af6c814ea889803ba2383324d79e4fb0eae1dc1b"
 edition = "2021"
 
 [[bin]]
