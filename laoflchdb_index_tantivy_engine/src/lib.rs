@@ -821,7 +821,6 @@ impl TantivyStorageEngine {
                                     row_data.insert(col.column_name.clone(), s);
                                 }
                             }
-                        }
                     }
                     
                     results.push((row_id, score, row_data));
