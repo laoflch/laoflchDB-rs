@@ -783,13 +783,14 @@ impl TantivyStorageEngine {
                     let mut row_data: HashMap<String, String> = HashMap::new();
                     let mut row_id: u64 = doc_address.doc_id as u64;
                     
+                    if let Some(row_id_field) = table_index.field_map.get("_row_id") {
+                        if let Some(value) = retrieved_doc.get_first(*row_id_field) {
+                            row_id = value.as_u64().unwrap_or(doc_address.doc_id as u64);
+                        }
+                    }
+                    
                     for col in &cols {
                         if let Some(field) = table_index.field_map.get(&col.column_name) {
-                            if col.column_name == "_row_id" {
-                                if let Some(value) = retrieved_doc.get_first(*field) {
-                                    row_id = value.as_u64().unwrap_or(doc_address.doc_id as u64);
-                                }
-                            } else {
                                 let field_entry = table_index.schema.get_field_entry(*field);
                                 let field_type = field_entry.field_type();
                                 
