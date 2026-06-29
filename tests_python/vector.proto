@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package laoflchdb.vector;
+
+option go_package = "laoflchdb/vector";
+option java_package = "com.laoflchdb.vector";
+
+message EmbeddingRequest {
+  string model_name = 1;
+  repeated string texts = 2;
+  int32 dim = 3;
+}
+
+message EmbeddingResponse {
+  bool success = 1;
+  string message = 2;
+  repeated EmbeddingResult results = 3;
+}
+
+message EmbeddingResult {
+  string text = 1;
+  repeated float embedding = 2;
+  int32 dim = 3;
+}
+
+message SimilarityRequest {
+  string model_name = 1;
+  repeated float query_embedding = 2;
+  repeated EmbeddingResult candidates = 3;
+  int32 top_k = 4;
+}
+
+message SimilarityResponse {
+  bool success = 1;
+  string message = 2;
+  repeated SimilarityResult results = 3;
+}
+
+message SimilarityResult {
+  string text = 1;
+  repeated float embedding = 2;
+  float score = 3;
+  int32 rank = 4;
+}
+
+message ModelInfoRequest {
+  string model_name = 1;
+}
+
+message ModelInfoResponse {
+  bool success = 1;
+  string message = 2;
+  string model_name = 3;
+  int32 embedding_dim = 4;
+  string model_path = 5;
+  string device = 6;
+  bool loaded = 7;
+}
+
+message ListModelsRequest {}
+
+message ListModelsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ModelInfoResponse models = 3;
+}
+
+message LoadModelRequest {
+  string model_name = 1;
+  string model_path = 2;
+  int32 embedding_dim = 3;
+}
+
+message LoadModelResponse {
+  bool success = 1;
+  string message = 2;
+  string model_name = 3;
+}
+
+message UnloadModelRequest {
+  string model_name = 1;
+}
+
+message UnloadModelResponse {
+  bool success = 1;
+  string message = 2;
+  string model_name = 3;
+}
+
+service VectorService {
+  rpc CreateEmbedding(EmbeddingRequest) returns (EmbeddingResponse);
+  rpc ComputeSimilarity(SimilarityRequest) returns (SimilarityResponse);
+  rpc GetModelInfo(ModelInfoRequest) returns (ModelInfoResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+  rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
+  rpc UnloadModel(UnloadModelRequest) returns (UnloadModelResponse);
+}

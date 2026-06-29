@@ -50,6 +50,9 @@ impl LaoflchDBServer {
     pub async fn start(&self, config: &DatabaseConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.init().await?;
 
+        // 创建向量化服务实例
+        let vector_service = laoflchdb_vector_service::VectorServiceImpl::new();
+
         if config.access_protocols.is_empty() {
             let addr = config.addr.clone();
             
@@ -59,7 +62,7 @@ impl LaoflchDBServer {
             let grpc_service: crate::GrpcService = self.access_service.get_grpc_service(None);
             
             tokio::spawn(async move {
-                if let Err(e) = start_grpc_server(grpc_service, &addr).await {
+                if let Err(e) = start_grpc_server(grpc_service, vector_service, &addr).await {
                     log::error!("gRPC 服务错误: {}", e);
                 }
             });
@@ -81,9 +84,10 @@ impl LaoflchDBServer {
                         started_protocols.push((protocol.to_string(), addr.to_string()));
                         let grpc_service = self.access_service.get_grpc_service(service_id);
                         let addr_owned = addr.to_string();
+                        let vector_service_clone = laoflchdb_vector_service::VectorServiceImpl::new();
                         
                         tokio::spawn(async move {
-                            if let Err(e) = start_grpc_server(grpc_service, &addr_owned).await {
+                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, &addr_owned).await {
                                 log::error!("gRPC 服务错误: {}", e);
                             }
                         });
@@ -124,18 +128,21 @@ impl LaoflchDBServer {
     }
 }
 
-async fn start_grpc_server<S>(service: S, addr: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> 
-where
-    S: crate::pb::rpc::laoflch_db_server::LaoflchDb,
-{
+async fn start_grpc_server(
+    laoflchdb_service: impl crate::pb::rpc::laoflch_db_server::LaoflchDb,
+    vector_service: impl laoflchdb_vector_service::proto::vector_service_server::VectorService,
+    addr: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tonic::transport::Server;
     use crate::pb::rpc::laoflch_db_server::LaoflchDbServer;
+    use laoflchdb_vector_service::proto::vector_service_server::VectorServiceServer;
     
     let addr_copy = addr.to_string();
     info!("gRPC 服务监听: {}", addr_copy);
 
     Server::builder()
-        .add_service(LaoflchDbServer::new(service))
+        .add_service(LaoflchDbServer::new(laoflchdb_service))
+        .add_service(VectorServiceServer::new(vector_service))
         .serve(addr_copy.parse()?)
         .await?;
 
