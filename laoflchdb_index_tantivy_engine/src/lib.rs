@@ -174,8 +174,10 @@ impl StorageEngine for TantivyStorageEngine {
         field_map.insert("_row_id".to_string(), row_id_field);
 
         let table_path = Path::new(&self.base_path).join(table);
+        
         if table_path.exists() {
-            return Ok(table_id);
+            warn!("Directory for table '{}' already exists but not registered, removing stale data", table);
+            std::fs::remove_dir_all(&table_path)?;
         }
         std::fs::create_dir_all(&table_path)?;
 

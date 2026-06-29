@@ -17,10 +17,15 @@ BASE_VERSION=$(echo "$VERSION" | sed 's/+\([a-f0-9]*\)$//')
 # 构建新的版本号
 NEW_VERSION="${BASE_VERSION}+${COMMIT_HASH}"
 
-# 更新 Cargo.toml
+# 更新主项目 Cargo.toml
 sed -i "s/^version = \"[^\"]*\"/version = \"${NEW_VERSION}\"/" Cargo.toml
 
-echo "✅ 版本号已更新为: ${NEW_VERSION}"
+echo "✅ 主项目版本号已更新为: ${NEW_VERSION}"
+
+# 更新 lsql Cargo.toml
+sed -i "s/^version = \"[^\"]*\"/version = \"${NEW_VERSION}\"/" lsql/Cargo.toml
+
+echo "✅ lsql 版本号已更新为: ${NEW_VERSION}"
 
 # 更新 Dockerfile.prod 中的版本号（使用版本号前半段）
 sed -i "s/^ARG VERSION=[0-9.]*$/ARG VERSION=${BASE_VERSION}/" Dockerfile.prod

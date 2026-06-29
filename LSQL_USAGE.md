@@ -22,6 +22,7 @@
 - 交互式 SQL 执行环境
 - Schema 管理（查看、切换）
 - 表管理（查看表列表、表结构）
+- **全文索引管理**（查看索引、搜索索引）
 - 命令历史记录
 - 友好的错误提示
 
@@ -116,6 +117,88 @@ lsql --help
 | `\dt` | - | 列出当前 Schema 中的所有表 |
 | `\c <schema>` | `\connect <schema>` | 切换到指定的 Schema |
 | `\d <table>` | - | 显示表结构（列名、类型等） |
+| `\di` | `\indices` | 列出所有全文索引 |
+| `\dix <index>` | - | 显示索引详细信息（字段、元数据等） |
+| `\search <index> <query>` | - | 在指定索引中执行全文搜索 |
+| `\dstats` | - | 显示索引统计信息 |
+、
+### 全文索引命令
+
+lsql 提供了完整的全文索引管理功能：
+
+#### 1. 列出所有索引
+
+使用 `\di` 或 `\indices` 命令列出所有已创建的全文索引：
+
+```bash
+lsql@sys> \di
+所有全文索引:
+  - fulltext
+  - documents
+```
+
+#### 2. 查看索引详情
+
+使用 `\dix <index_name>` 命令查看指定索引的详细信息，包括索引元数据和字段定义：
+
+```bash
+lsql@sys> \dix fulltext
+索引 "fulltext"
+  索引ID: 1
+  列数: 3
+  字段:
+  +---------+--------+-------+
+  | 字段名  |  类型  | 注释  |
+  +---------+--------+-------+
+  | title   | STRING | 标题  |
+  | content | STRING | 内容  |
+  | author  | STRING | 作者  |
+  +---------+--------+-------+
+```
+
+#### 3. 搜索索引
+
+使用 `\search <index_name> <query>` 命令在指定索引中执行全文搜索：
+
+```bash
+lsql@sys> \search fulltext rust database
+在索引 "fulltext" 中搜索 "rust database":
+找到 3 个结果:
+
+结果 1:
+  文档ID: doc_001
+  评分: 0.9234
+  字段:
+    title: Rust Database Tutorial
+    content: Learn how to build a database with Rust...
+    author: John Doe
+
+结果 2:
+  文档ID: doc_002
+  评分: 0.7856
+  字段:
+    title: Introduction to Rust
+    content: Rust is a systems programming language...
+    author: Jane Smith
+```
+
+**特性说明**：
+- 搜索结果按相关性评分（score）降序排列
+- 支持多字段搜索
+- 长文本内容自动截断（最多显示100字符）
+
+#### 4. 查看索引统计
+
+使用 `\dstats` 命令查看所有索引的统计信息：
+
+```bash
+lsql@sys> \dstats
+索引统计信息:
+  索引总数: 2
+  索引列表:
+    - fulltext
+    - documents
+```
 
 ### SQL 命令
 
@@ -375,12 +458,12 @@ lsql@sys> SELECT * FROM users;  -- 可以继续执行
 
 ## 版本信息
 
-- **版本**: v0.1.3
+- **版本**: v0.1.6
 - **协议**: gRPC
 - **依赖**: `rustyline` (命令行交互), `tonic` (gRPC), `clap` (参数解析)
 
 ---
 
-**文档版本**: v0.1.3  
-**最后更新**: 2026-06-08  
+**文档版本**: v0.1.6  
+**最后更新**: 2026-06-18  
 **项目**: laoflchDB-rust

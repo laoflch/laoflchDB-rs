@@ -6,6 +6,8 @@ use laoflchDB_rust::pb::rpc::laoflch_db_client::LaoflchDbClient;
 use laoflchDB_rust::pb::rpc::{
     ListTablesRequest, ListSchemasRequest, SqlQueryRequest,
     GetVersionRequest, ListTableColsRequest, LoginRequest, LogoutRequest,
+    ListIndicesRequest, GetIndexMetaRequest, GetIndexFieldsRequest,
+    SearchIndexRequest, GetIndexStatsRequest,
 };
 
 #[derive(Parser, Debug)]
@@ -244,6 +246,24 @@ async fn handle_meta_command(
             handle_logout(client).await?;
             Ok(None)
         }
+        "\\di" | "\\indices" => {
+            list_indices(client).await?;
+            Ok(None)
+        }
+        "\\dix" if parts.len() == 2 => {
+            describe_index(client, parts[1]).await?;
+            Ok(None)
+        }
+        "\\search" if parts.len() >= 3 => {
+            let index_name = parts[1];
+            let query = parts[2..].join(" ");
+            search_index(client, index_name, &query).await?;
+            Ok(None)
+        }
+        "\\dstats" => {
+            get_index_stats(client).await?;
+            Ok(None)
+        }
         _ => {
             println!("未知命令: '{}'. 输入 '\\help' 查看帮助。", cmd);
             Ok(None)
@@ -262,6 +282,10 @@ fn print_help() {
     println!("  \\c, \\connect <schema>    切换到指定的 Schema");
     println!("  \\dt                     列出当前 schema 中的所有表");
     println!("  \\d <table>              显示表结构");
+    println!("  \\di, \\indices           列出所有全文索引");
+    println!("  \\dix <index>            显示索引详细信息");
+    println!("  \\search <index> <query> 搜索索引");
+    println!("  \\dstats                 显示索引统计信息");
     println!("  <sql>                   执行 SQL 查询");
     println!();
 }
@@ -614,8 +638,8 @@ fn print_query_result(response: &laoflchDB_rust::pb::rpc::SqlQueryResponse) {
         for (i, field) in row.values.iter().enumerate() {
             let width = match &field.value {
                 Some(sql_field::Value::StringValue(v)) => {
-                    // 限制字符串显示长度，最多50个字符
-                    if v.len() > 50 { 53 } else { v.len() } // 50 + "..."的长度
+                    // 限制字符串显示长度，最多50个字符（使用字符数）
+                    if v.chars().count() > 50 { 53 } else { v.chars().count() } // 50 + "..."的长度
                 }
                 Some(sql_field::Value::Int64Value(v)) => v.to_string().len(),
                 Some(sql_field::Value::FloatValue(v)) => {
@@ -652,9 +676,9 @@ fn print_query_result(response: &laoflchDB_rust::pb::rpc::SqlQueryResponse) {
         for (i, field) in row.values.iter().enumerate() {
             let (value_str, is_numeric) = match &field.value {
                 Some(sql_field::Value::StringValue(v)) => {
-                    // 截断超长字符串
-                    if v.len() > 50 {
-                        (format!("{}...", &v[..50]), false)
+                    // 截断超长字符串（使用字符边界安全处理）
+                    if v.chars().count() > 50 {
+                        (v.chars().take(50).collect::<String>() + "...", false)
                     } else {
                         (v.clone(), false)
                     }
@@ -704,4 +728,275 @@ fn print_separator(col_widths: &[usize]) {
         print!("-{:-<width$}-+", "", width = width);
     }
     println!();
+}
+
+async fn list_indices(
+    client: &mut LaoflchDbClient<Channel>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tonic::Request;
+    
+    let request = ListIndicesRequest {};
+    
+    let mut req = Request::new(request);
+    if let Some(token) = get_auth_token() {
+        let metadata = req.metadata_mut();
+        metadata.insert("authorization", token.parse().unwrap());
+    }
+    
+    match client.list_indices(req).await {
+        Ok(response) => {
+            let response = response.into_inner();
+            if response.success {
+                if response.index_names.is_empty() {
+                    println!("没有找到索引");
+                } else {
+                    println!("所有全文索引:");
+                    for index_name in response.index_names {
+                        println!("  - {}", index_name);
+                    }
+                }
+            } else {
+                println!("错误: {}", response.message);
+            }
+        }
+        Err(e) => {
+            println!("❌ 获取索引列表失败: {}", e);
+            println!("⚠️  全文索引服务可能未启用或需要登录");
+        }
+    }
+    
+    Ok(())
+}
+
+async fn describe_index(
+    client: &mut LaoflchDbClient<Channel>,
+    index_name: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tonic::Request;
+    
+    let meta_request = GetIndexMetaRequest {
+        index_name: index_name.to_string(),
+    };
+    
+    let mut meta_req = Request::new(meta_request);
+    if let Some(token) = get_auth_token() {
+        let metadata = meta_req.metadata_mut();
+        metadata.insert("authorization", token.parse().unwrap());
+    }
+    
+    match client.get_index_meta(meta_req).await {
+        Ok(response) => {
+            let response = response.into_inner();
+            if !response.success {
+                println!("错误: {}", response.message);
+                return Ok(());
+            }
+            
+            println!("索引 \"{}\"", index_name);
+            println!("  索引ID: {}", response.index_id);
+            println!("  列数: {}", response.column_count);
+            if !response.comment.is_empty() {
+                println!("  注释: {}", response.comment);
+            }
+        }
+        Err(e) => {
+            println!("❌ 获取索引元数据失败: {}", e);
+            println!("⚠️  可能需要登录或索引不存在");
+            return Ok(());
+        }
+    }
+    
+    let fields_request = GetIndexFieldsRequest {
+        index_name: index_name.to_string(),
+    };
+    
+    let mut fields_req = Request::new(fields_request);
+    if let Some(token) = get_auth_token() {
+        let metadata = fields_req.metadata_mut();
+        metadata.insert("authorization", token.parse().unwrap());
+    }
+    
+    match client.get_index_fields(fields_req).await {
+        Ok(response) => {
+            let response = response.into_inner();
+            if !response.success {
+                println!("错误: {}", response.message);
+                return Ok(());
+            }
+            
+            if response.fields.is_empty() {
+                println!("  字段: (无)");
+                return Ok(());
+            }
+            
+            let mut col_name_width = 8;
+            let mut col_type_width = 8;
+            let mut col_comment_width = 8;
+            
+            for field in &response.fields {
+                if field.column_name.len() > col_name_width {
+                    col_name_width = field.column_name.len();
+                }
+                let type_str = column_type_to_string(field.column_type);
+                if type_str.len() > col_type_width {
+                    col_type_width = type_str.len();
+                }
+                if field.comment.len() > col_comment_width {
+                    col_comment_width = field.comment.len();
+                }
+            }
+            
+            println!();
+            println!("  字段:");
+            
+            print!("  +");
+            for _ in 0..col_name_width + 2 { print!("-"); }
+            print!("+");
+            for _ in 0..col_type_width + 2 { print!("-"); }
+            print!("+");
+            for _ in 0..col_comment_width + 2 { print!("-"); }
+            println!("+");
+            
+            println!("  | {:^width1$} | {:^width2$} | {:^width3$} |",
+                "字段名", "类型", "注释",
+                width1 = col_name_width,
+                width2 = col_type_width,
+                width3 = col_comment_width
+            );
+            
+            print!("  +");
+            for _ in 0..col_name_width + 2 { print!("-"); }
+            print!("+");
+            for _ in 0..col_type_width + 2 { print!("-"); }
+            print!("+");
+            for _ in 0..col_comment_width + 2 { print!("-"); }
+            println!("+");
+            
+            for field in &response.fields {
+                let type_str = column_type_to_string(field.column_type);
+                println!("  | {:<width1$} | {:<width2$} | {:<width3$} |",
+                    field.column_name,
+                    type_str,
+                    field.comment,
+                    width1 = col_name_width,
+                    width2 = col_type_width,
+                    width3 = col_comment_width
+                );
+            }
+            
+            print!("  +");
+            for _ in 0..col_name_width + 2 { print!("-"); }
+            print!("+");
+            for _ in 0..col_type_width + 2 { print!("-"); }
+            print!("+");
+            for _ in 0..col_comment_width + 2 { print!("-"); }
+            println!("+");
+        }
+        Err(e) => {
+            println!("❌ 获取索引字段失败: {}", e);
+        }
+    }
+    
+    Ok(())
+}
+
+async fn search_index(
+    client: &mut LaoflchDbClient<Channel>,
+    index_name: &str,
+    query: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tonic::Request;
+    
+    let request = SearchIndexRequest {
+        index_name: index_name.to_string(),
+        query: query.to_string(),
+        limit: Some(10),
+        field_queries: Default::default(),
+    };
+    
+    let mut req = Request::new(request);
+    if let Some(token) = get_auth_token() {
+        let metadata = req.metadata_mut();
+        metadata.insert("authorization", token.parse().unwrap());
+    }
+    
+    match client.search_index(req).await {
+        Ok(response) => {
+            let response = response.into_inner();
+            if !response.success {
+                println!("错误: {}", response.message);
+                return Ok(());
+            }
+            
+            if response.results.is_empty() {
+                println!("没有找到匹配的文档");
+                return Ok(());
+            }
+            
+            println!("在索引 \"{}\" 中搜索 \"{}\":", index_name, query);
+            println!("找到 {} 个结果:", response.results.len());
+            println!();
+            
+            for (i, result) in response.results.iter().enumerate() {
+                println!("结果 {}:", i + 1);
+                println!("  文档ID: {}", result.doc_id);
+                println!("  评分: {:.4}", result.score);
+                println!("  字段:");
+                for (field_name, field_value) in &result.fields {
+                    let display_value = if field_value.chars().count() > 100 {
+                        field_value.chars().take(100).collect::<String>() + "..."
+                    } else {
+                        field_value.clone()
+                    };
+                    println!("    {}: {}", field_name, display_value);
+                }
+                println!();
+            }
+        }
+        Err(e) => {
+            println!("❌ 搜索索引失败: {}", e);
+            println!("⚠️  全文索引服务可能未启用或索引不存在");
+        }
+    }
+    
+    Ok(())
+}
+
+async fn get_index_stats(
+    client: &mut LaoflchDbClient<Channel>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use tonic::Request;
+    
+    let request = GetIndexStatsRequest {};
+    
+    let mut req = Request::new(request);
+    if let Some(token) = get_auth_token() {
+        let metadata = req.metadata_mut();
+        metadata.insert("authorization", token.parse().unwrap());
+    }
+    
+    match client.get_index_stats(req).await {
+        Ok(response) => {
+            let response = response.into_inner();
+            if !response.success {
+                println!("错误: {}", response.message);
+                return Ok(());
+            }
+            
+            println!("索引统计信息:");
+            println!("  索引总数: {}", response.total_indices);
+            if !response.index_names.is_empty() {
+                println!("  索引列表:");
+                for index_name in response.index_names {
+                    println!("    - {}", index_name);
+                }
+            }
+        }
+        Err(e) => {
+            println!("❌ 获取索引统计信息失败: {}", e);
+            println!("⚠️  全文索引服务可能未启用");
+        }
+    }
+    
+    Ok(())
 }
