@@ -1,19 +1,2 @@
-[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))']
-rustflags = [
-    "-C", "opt-level=s",
-    "-C", "strip=symbols",
-    "-C", "debuginfo=0",
-]
-
-[profile.release]
-opt-level = "s"
-debug = false
-debug-assertions = false
-strip = "symbols"
-panic = "abort"
-codegen-units = 1
-lto = "fat"
-incremental = false
-
-[profile.test]
-panic = "unwind"
+[env]
+CUDAHOSTCXX = "/usr/bin/g++-10"

@@ -3,7 +3,7 @@ pub mod proto {
 }
 
 use candle_core::Device;
-use log::info;
+use log::{info, warn};
 use std::collections::HashMap;
 use tokio::sync::RwLock as AsyncRwLock;
 use proto::*;
@@ -36,24 +36,22 @@ impl VectorServiceImpl {
     fn detect_device() -> Device {
         #[cfg(feature = "cuda")]
         {
-            if Device::cuda_is_available() {
-                match Device::new_cuda(0) {
-                    Ok(device) => {
-                        info!("CUDA GPU 可用，使用 GPU 设备: RTX 2070S");
-                        return device;
-                    }
-                    Err(e) => {
-                        warn!("CUDA 设备初始化失败: {}，回退到 CPU", e);
-                    }
+            info!("CUDA feature 已启用，检测 GPU...");
+            match Device::cuda_if_available(0) {
+                Ok(device) => {
+                    info!("CUDA GPU 可用，使用 GPU 设备: RTX 2070S");
+                    return device;
                 }
-            } else {
-                info!("CUDA 不可用，使用 CPU 设备");
+                Err(e) => {
+                    warn!("CUDA 设备初始化失败: {}，回退到 CPU", e);
+                }
             }
         }
 
         #[cfg(not(feature = "cuda"))]
         {
-            info!("CUDA 特性未启用，使用 CPU 设备");
+            info!("CUDA feature 未启用，使用 CPU 设备");
+            info!("提示: 如需启用 GPU 加速，请使用: cargo build --release --features cuda");
         }
 
         Device::Cpu
