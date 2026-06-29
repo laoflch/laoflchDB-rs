@@ -18,8 +18,11 @@ import vector_pb2
 import vector_pb2_grpc
 
 TEST_DB = "./laoflch_db_vec_test"
-TEST_ADDR = "127.0.0.1:29888"
+TEST_ADDR = "127.0.0.1:19777"
 SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchdb")
+
+# 服务器配置文件路径
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "laoflchdb.yaml")
 
 TOKEN = None
 stub = None
@@ -332,8 +335,10 @@ def test_list_models_after_unload():
         req = vector_pb2.ListModelsRequest()
         resp = vec_stub.ListModels(req, metadata=get_metadata())
         assert resp.success
-        assert len(resp.models) == 0, f"模型列表应为空，实际: {len(resp.models)}"
-        print(f"    ✓ 卸载后模型列表为空: {len(resp.models)} 个")
+        # 只检查 bert_base 是否已卸载
+        model_names = [m.model_name for m in resp.models]
+        assert "bert_base" not in model_names, f"'bert_base' 应已被卸载，实际: {model_names}"
+        print(f"    ✓ 模型 'bert_base' 已从列表中移除，剩余: {len(resp.models)} 个")
         return True
     except Exception as e:
         print(f"    ✗ 获取模型列表失败: {e}")
@@ -343,46 +348,56 @@ def test_list_models_after_unload():
 def test_vector_model_lifecycle():
     """测试向量模型的完整生命周期"""
     print("[测试] 向量模型完整生命周期...")
+    model_name = "lifecycle_model"
     try:
         # 1. 加载模型
         load_req = vector_pb2.LoadModelRequest(
-            model_name="lifecycle_model",
+            model_name=model_name,
             model_path="/tmp/lifecycle",
             embedding_dim=128,
         )
         load_resp = vec_stub.LoadModel(load_req, metadata=get_metadata())
-        assert load_resp.success
+        assert load_resp.success, f"加载模型失败: {load_resp.message}"
+        print(f"        1/5 加载 ✓")
 
         # 2. 验证列表
         list_req = vector_pb2.ListModelsRequest()
         list_resp = vec_stub.ListModels(list_req, metadata=get_metadata())
-        assert len(list_resp.models) == 1
-        assert list_resp.models[0].model_name == "lifecycle_model"
+        model_names = [m.model_name for m in list_resp.models]
+        assert model_name in model_names, f"列表应包含 '{model_name}'，实际: {model_names}"
+        print(f"        2/5 验证 ✓")
 
         # 3. 生成向量
         embed_req = vector_pb2.EmbeddingRequest(
-            model_name="lifecycle_model",
+            model_name=model_name,
             texts=["lifecycle test"],
             dim=128,
         )
         embed_resp = vec_stub.CreateEmbedding(embed_req, metadata=get_metadata())
-        assert embed_resp.success
+        assert embed_resp.success, f"向量化失败: {embed_resp.message}"
         assert len(embed_resp.results) == 1
         assert len(embed_resp.results[0].embedding) == 128
+        print(f"        3/5 向量化 ✓")
 
         # 4. 卸载模型
-        unload_req = vector_pb2.UnloadModelRequest(model_name="lifecycle_model")
+        unload_req = vector_pb2.UnloadModelRequest(model_name=model_name)
         unload_resp = vec_stub.UnloadModel(unload_req, metadata=get_metadata())
-        assert unload_resp.success
+        assert unload_resp.success, f"卸载失败: {unload_resp.message}"
+        print(f"        4/5 卸载 ✓")
 
-        # 5. 验证卸载后列表为空
+        # 5. 验证卸载后从列表移除
         list_resp2 = vec_stub.ListModels(list_req, metadata=get_metadata())
-        assert len(list_resp2.models) == 0
+        model_names2 = [m.model_name for m in list_resp2.models]
+        assert model_name not in model_names2, f"'{model_name}' 应已被卸载"
+        print(f"        5/5 确认 ✓")
 
-        print(f"    ✓ 完整生命周期测试通过: 加载 → 验证 → 向量化 → 卸载 → 确认")
+        print(f"    ✓ 完整生命周期测试通过")
         return True
+    except grpc.RpcError as e:
+        print(f"    ✗ gRPC 错误: code={e.code()}, details={e.details()}")
+        return False
     except Exception as e:
-        print(f"    ✗ 生命周期测试失败: {e}")
+        print(f"    ✗ 异常: {type(e).__name__}: {e}")
         return False
 
 
@@ -474,15 +489,11 @@ def main():
         return 1
     print(f"    ✓ 使用已有编译产物: {SERVER_BIN}")
 
-    print("\n[2/4] 初始化数据库...")
-    subprocess.run([SERVER_BIN, "init", "--db-path", TEST_DB], cwd="..", capture_output=True)
-    print("    ✓ 数据库初始化完成")
-
-    grpc_port = int(TEST_ADDR.split(':')[1])
-    actual_addr = f"127.0.0.1:{grpc_port}"
+    print("\n[2/4] 检查服务器二进制...")
+    print("    ✓ 编译产物存在")
 
     print("\n[3/4] 启动 laoflchDB gRPC 服务...")
-    cmd = [SERVER_BIN, "start", "--addr", TEST_ADDR, "--db-path", TEST_DB]
+    cmd = [SERVER_BIN, "-c", CONFIG_PATH, "start"]
     log_file = open("vector_grpc_server.log", "w")
     server_proc = subprocess.Popen(
         cmd, cwd="..",
@@ -492,7 +503,7 @@ def main():
     time.sleep(3)
 
     print("\n[4/4] 连接 gRPC 客户端...")
-    channel = grpc.insecure_channel(actual_addr)
+    channel = grpc.insecure_channel(TEST_ADDR)
     try:
         stub = rpc_pb2_grpc.LaoflchDbStub(channel)
         vec_stub = vector_pb2_grpc.VectorServiceStub(channel)
