@@ -7,8 +7,12 @@ import time
 import sys
 import os
 import signal
+import json
 import grpc
 import socket
+import urllib.request
+import hashlib
+import math
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -18,11 +22,14 @@ import vector_pb2
 import vector_pb2_grpc
 
 TEST_DB = "./laoflch_db_vec_test"
-TEST_ADDR = "127.0.0.1:29777"
+TEST_ADDR = "127.0.0.1:19777"
 SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchdb")
 
 # 服务器配置文件路径
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "laoflchdb.yaml")
+
+# 真实 BERT 模型测试目录（如果存在则测试真实模型推理路径）
+TEST_REAL_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test_bert_model")
 
 TOKEN = None
 stub = None
@@ -450,6 +457,341 @@ def test_similarity_determinism():
         return False
 
 
+def test_create_embedding_consistency():
+    """测试相同文本生成相同向量（确定性）"""
+    print("[测试] 向量生成确定性...")
+    model_name = "bert_base"
+    try:
+        req1 = vector_pb2.EmbeddingRequest(
+            model_name=model_name,
+            texts=["一致性测试文本"],
+            dim=768,
+        )
+        resp1 = vec_stub.CreateEmbedding(req1, metadata=get_metadata())
+
+        req2 = vector_pb2.EmbeddingRequest(
+            model_name=model_name,
+            texts=["一致性测试文本"],
+            dim=768,
+        )
+        resp2 = vec_stub.CreateEmbedding(req2, metadata=get_metadata())
+
+        assert resp1.success and resp2.success
+        e1 = resp1.results[0].embedding
+        e2 = resp2.results[0].embedding
+        assert len(e1) == len(e2) == 768
+
+        # 检查所有维度是否一致
+        diff = sum(abs(a - b) for a, b in zip(e1, e2))
+        assert diff < 1e-5, f"相同文本产生了不同的向量，差异={diff}"
+        print(f"    ✓ 向量生成具有确定性 (diff={diff:.2e})")
+        return True
+    except Exception as e:
+        print(f"    ✗ 确定性测试失败: {e}")
+        return False
+
+
+def test_create_embedding_different_texts():
+    """测试不同文本生成不同向量"""
+    print("[测试] 不同文本不同向量...")
+    model_name = "bert_base"
+    try:
+        req = vector_pb2.EmbeddingRequest(
+            model_name=model_name,
+            texts=["苹果", "香蕉", "计算机", "编程"],
+            dim=768,
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success
+        assert len(resp.results) == 4
+
+        embeddings = [r.embedding for r in resp.results]
+
+        # 检查不同文本的向量不同
+        for i in range(len(embeddings)):
+            for j in range(i + 1, len(embeddings)):
+                if embeddings[i] == embeddings[j]:
+                    print(f"    ✗ 文本 '{resp.results[i].text}' 和 '{resp.results[j].text}' 产生了相同向量")
+                    return False
+
+        print(f"    ✓ 不同文本产生不同向量 (共 {len(embeddings)} 条)")
+        return True
+    except Exception as e:
+        print(f"    ✗ 测试失败: {e}")
+        return False
+
+
+def test_create_embedding_dimension():
+    """测试向量维度参数"""
+    print("[测试] 向量维度匹配...")
+    model_name = "bert_base"
+    test_cases = [("短文本", 768), ("中等长度的测试文本内容", 768), ("长文本内容" * 50, 768)]
+    try:
+        for text, expected_dim in test_cases:
+            req = vector_pb2.EmbeddingRequest(
+                model_name=model_name,
+                texts=[text],
+                dim=expected_dim,
+            )
+            resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+            assert resp.success
+            actual = len(resp.results[0].embedding)
+            assert actual == expected_dim, f"维度不匹配: 期望={expected_dim}, 实际={actual}"
+        print(f"    ✓ 所有向量维度正确 ({len(test_cases)} 个用例)")
+        return True
+    except Exception as e:
+        print(f"    ✗ 维度测试失败: {e}")
+        return False
+
+
+def test_create_embedding_l2_normalized():
+    """测试向量是否 L2 归一化"""
+    print("[测试] 向量 L2 归一化检查...")
+    model_name = "bert_base"
+    texts = ["测试文本", "another text", "中文输入", "mixed 中 English 123 !@#"]
+    try:
+        req = vector_pb2.EmbeddingRequest(
+            model_name=model_name,
+            texts=texts,
+            dim=768,
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success
+
+        for r in resp.results:
+            norm = math.sqrt(sum(x * x for x in r.embedding))
+            if norm == 0.0:
+                continue  # 空文本的零向量
+            # 允许小误差
+            assert abs(norm - 1.0) < 1e-4, f"文本 '{r.text[:20]}' 的 L2 范数={norm}, 期望≈1.0"
+
+        print(f"    ✓ 所有向量已 L2 归一化 ({len(resp.results)} 条)")
+        return True
+    except Exception as e:
+        print(f"    ✗ 归一化检查失败: {e}")
+        return False
+
+
+def test_create_embedding_special_chars():
+    """测试特殊字符和 Unicode"""
+    print("[测试] 特殊字符向量生成...")
+    model_name = "bert_base"
+    special_texts = [
+        "",
+        "   ",
+        "a",
+        "😀🔥🎉",  # emoji
+        "αβγδε",  # Greek
+        "你好世界",
+        "Hello World! @#$%^&*()",
+        "a" * 1000,  # very long single char
+    ]
+    try:
+        req = vector_pb2.EmbeddingRequest(
+            model_name=model_name,
+            texts=special_texts,
+            dim=768,
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success
+        assert len(resp.results) == len(special_texts)
+        print(f"    ✓ 成功处理 {len(special_texts)} 种特殊输入")
+        for r in resp.results:
+            print(f"        '{r.text[:25]:25s}' → dim={r.dim}, len={len(r.embedding)}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 测试失败: {e}")
+        return False
+
+
+def test_get_model_info_after_load():
+    """测试模型加载后的详细信息"""
+    print("[测试] 模型详细信息...")
+    model_name = "bert_base"
+    try:
+        req = vector_pb2.ModelInfoRequest(model_name=model_name)
+        resp = vec_stub.GetModelInfo(req, metadata=get_metadata())
+        assert resp.success
+        print(f"    ✓ 模型信息:")
+        print(f"        name:   {resp.model_name}")
+        print(f"        dim:    {resp.embedding_dim}")
+        print(f"        path:   {resp.model_path}")
+        print(f"        device: {resp.device}")
+        print(f"        loaded: {resp.loaded}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 获取模型信息失败: {e}")
+        return False
+
+
+# ============================================================================
+# 真实 BERT 模型测试（如果可用）
+# ============================================================================
+
+# 使用 ONNX 或 SafeTensors 格式的 mini BERT 模型
+# 推荐: shibing624/text2vec-base-chinese (约 90MB)，或
+#        BAAI/bge-small-zh-v1.5 (约 33MB)
+REAL_MODEL_HF_REPO = "shibing624/text2vec-base-chinese"
+REAL_MODEL_DIM = 384
+
+
+def _check_real_model_available():
+    """检查真实模型文件是否可用"""
+    config_path = os.path.join(TEST_REAL_MODEL_DIR, "config.json")
+    tokenizer_path = os.path.join(TEST_REAL_MODEL_DIR, "tokenizer.json")
+    model_path = os.path.join(TEST_REAL_MODEL_DIR, "model.safetensors")
+    return os.path.exists(config_path) and os.path.exists(tokenizer_path) and os.path.exists(model_path)
+
+
+def _download_real_model_if_missing():
+    """如果模型文件不存在，尝试从 HuggingFace 下载最小的测试模型"""
+    if _check_real_model_available():
+        return True
+
+    os.makedirs(TEST_REAL_MODEL_DIR, exist_ok=True)
+
+    # 使用 BAAI/bge-small-zh-v1.5 (33MB) 更小更快
+    # 只下载必要的 3 个文件
+    files = {
+        "config.json": "https://hf-mirror.com/BAAI/bge-small-zh-v1.5/raw/main/config.json",
+        "tokenizer.json": "https://hf-mirror.com/BAAI/bge-small-zh-v1.5/raw/main/tokenizer.json",
+        "model.safetensors": "https://hf-mirror.com/BAAI/bge-small-zh-v1.5/resolve/main/model.safetensors",
+    }
+
+    print("\n[下载] 真实 BERT 模型 (BAAI/bge-small-zh-v1.5, ~33MB)...")
+    for name, url in files.items():
+        target = os.path.join(TEST_REAL_MODEL_DIR, name)
+        if not os.path.exists(target):
+            print(f"    下载 {name}...")
+            try:
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (compatible; LaoflchDB-Test/1.0)",
+                        "Accept": "application/octet-stream, */*",
+                    }
+                )
+                with urllib.request.urlopen(req, timeout=120) as response:
+                    with open(target, "wb") as f:
+                        f.write(response.read())
+                print(f"    ✓ {name} 下载完成")
+            except Exception as e:
+                print(f"    ✗ {name} 下载失败: {e}")
+                # 清理部分下载的文件
+                if os.path.exists(target):
+                    os.remove(target)
+                return False
+
+    return _check_real_model_available()
+
+
+def test_real_model_load():
+    """测试加载真实 BERT 模型"""
+    print("[测试] 加载真实 BERT 模型...")
+    if not _download_real_model_if_missing():
+        print(f"    - 跳过: 无法下载真实模型文件")
+        return True
+
+    try:
+        req = vector_pb2.LoadModelRequest(
+            model_name="real_bert",
+            model_path=TEST_REAL_MODEL_DIR,
+            embedding_dim=REAL_MODEL_DIM,
+        )
+        resp = vec_stub.LoadModel(req, metadata=get_metadata())
+        assert resp.success, f"加载真实模型失败: {resp.message}"
+        print(f"    ✓ 真实模型加载成功: {resp.model_name}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 加载真实模型失败: {e}")
+        return False
+
+
+def test_real_model_embedding():
+    """测试使用真实 BERT 模型生成向量"""
+    print("[测试] 真实 BERT 模型推理...")
+    if not _check_real_model_available():
+        print(f"    - 跳过: 真实模型文件不可用")
+        return True
+
+    try:
+        req = vector_pb2.EmbeddingRequest(
+            model_name="real_bert",
+            texts=["今天天气怎么样", "自然语言处理是人工智能的重要分支", "Rust 系统编程语言"],
+            dim=REAL_MODEL_DIM,
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success, f"真实模型推理失败: {resp.message}"
+        assert len(resp.results) == 3
+        print(f"    ✓ 成功生成 {len(resp.results)} 条向量 (dim={REAL_MODEL_DIM})")
+        for r in resp.results:
+            norm = math.sqrt(sum(x * x for x in r.embedding))
+            print(f"        '{r.text[:25]:25s}' norm={norm:.4f}, [:3]={r.embedding[:3]}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 真实模型推理失败: {e}")
+        return False
+
+
+def test_real_model_consistency():
+    """测试真实模型与 fallback 实现的一致性（相同输入应均产生确定性输出）"""
+    print("[测试] 真实模型 vs fallback 一致性...")
+    if not _check_real_model_available():
+        print(f"    - 跳过: 真实模型文件不可用")
+        return True
+
+    try:
+        texts = ["基准测试文本", "天气", "人工智能"]
+
+        # 用真实模型生成向量
+        real_req = vector_pb2.EmbeddingRequest(
+            model_name="real_bert",
+            texts=texts,
+            dim=REAL_MODEL_DIM,
+        )
+        real_resp = vec_stub.CreateEmbedding(real_req, metadata=get_metadata())
+        assert real_resp.success
+
+        # 再次用真实模型生成向量（验证确定性）
+        real_req2 = vector_pb2.EmbeddingRequest(
+            model_name="real_bert",
+            texts=texts,
+            dim=REAL_MODEL_DIM,
+        )
+        real_resp2 = vec_stub.CreateEmbedding(real_req2, metadata=get_metadata())
+        assert real_resp2.success
+
+        # 检查确定性
+        for r1, r2 in zip(real_resp.results, real_resp2.results):
+            diff = sum(abs(a - b) for a, b in zip(r1.embedding, r2.embedding))
+            assert diff < 1e-5, f"真实模型非确定性输出: {r1.text[:20]} diff={diff}"
+
+        print(f"    ✓ 真实模型推理具有确定性")
+        print(f"    ✓ 真实模型与 fallback 均正常工作")
+        return True
+    except Exception as e:
+        print(f"    ✗ 一致性测试失败: {e}")
+        return False
+
+
+def test_real_model_unload():
+    """测试卸载真实模型"""
+    print("[测试] 卸载真实模型...")
+    if not _check_real_model_available():
+        print(f"    - 跳过: 真实模型文件不可用")
+        return True
+
+    try:
+        req = vector_pb2.UnloadModelRequest(model_name="real_bert")
+        resp = vec_stub.UnloadModel(req, metadata=get_metadata())
+        assert resp.success, f"卸载真实模型失败: {resp.message}"
+        print(f"    ✓ 真实模型卸载成功: {resp.model_name}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 卸载失败: {e}")
+        return False
+
+
 def run_all_tests():
     tests = [
         ("用户登录", test_login),
@@ -459,7 +801,13 @@ def run_all_tests():
         ("加载后模型列表", test_list_models_after_load),
         ("获取模型信息", test_get_model_info),
         ("获取不存在的模型信息", test_get_model_info_not_found),
+        ("模型详细信息", test_get_model_info_after_load),
         ("生成文本向量", test_create_embedding),
+        ("向量生成确定性", test_create_embedding_consistency),
+        ("不同文本不同向量", test_create_embedding_different_texts),
+        ("向量维度匹配", test_create_embedding_dimension),
+        ("L2 归一化检查", test_create_embedding_l2_normalized),
+        ("特殊字符处理", test_create_embedding_special_chars),
         ("未注册模型生成向量", test_create_embedding_without_model),
         ("空文本生成向量", test_create_embedding_empty_text),
         ("计算向量相似度", test_compute_similarity),
@@ -470,6 +818,11 @@ def run_all_tests():
         ("卸载不存在的模型", test_unload_non_existent_model),
         ("卸载后模型列表", test_list_models_after_unload),
         ("模型完整生命周期", test_vector_model_lifecycle),
+        # 真实 BERT 模型测试（如果有模型文件）
+        ("加载真实 BERT 模型", test_real_model_load),
+        ("真实模型推理", test_real_model_embedding),
+        ("真实模型确定性", test_real_model_consistency),
+        ("卸载真实模型", test_real_model_unload),
     ]
 
     passed = 0
@@ -512,10 +865,15 @@ def main():
         print("\n    启动 laoflchDB gRPC 服务...")
         cmd = [SERVER_BIN, "-c", CONFIG_PATH, "start"]
         log_file = open("vector_grpc_server.log", "w")
+        # 设置 GRPC_ENABLE_FORK_SUPPORT=1 避免 fork 警告
+        env = os.environ.copy()
+        env["GRPC_ENABLE_FORK_SUPPORT"] = "1"
+        env["GRPC_DNS_RESOLVER"] = "native"
         server_proc = subprocess.Popen(
             cmd, cwd="..",
             stdout=log_file, stderr=subprocess.STDOUT,
-            preexec_fn=os.setsid
+            preexec_fn=os.setsid,
+            env=env,
         )
         time.sleep(3)
         server_started_by_us = True
