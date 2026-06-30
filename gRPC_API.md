@@ -5,7 +5,7 @@
 - **服务地址**: `localhost:19777`
 - **协议**: gRPC (HTTP/2)
 - **语言**: Protocol Buffers 3
-- **版本**: v0.1.4
+- **版本**: v0.1.6
 
 ## 认证机制
 
@@ -13,7 +13,6 @@ LaoflchDB 使用 Token 认证机制。所有 API 请求（除登录、登出外�
 
 **获取 Token**:
 ```protobuf
-// 通过 Login 请求获取 Token
 rpc Login(LoginRequest) returns (LoginResponse);
 ```
 
@@ -25,12 +24,14 @@ authorization: Bearer <your_token>
 
 **默认用户**:
 - 用户名: `admin`
-- 密码: `admin123`
+- 密码: `laoflchdb`
 - 数据库初始化时自动创建
 
 ---
 
 ## 服务定义
+
+### 1. LaoflchDb 主服务
 
 ```protobuf
 service LaoflchDb {
@@ -48,6 +49,8 @@ service LaoflchDb {
   rpc DropTable(DropTableRequest) returns (DropTableResponse);
   rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
   rpc ListTableCols(ListTableColsRequest) returns (ListTableColsResponse);
+  rpc UpdateTableComment(UpdateTableCommentRequest) returns (UpdateTableCommentResponse);
+  rpc UpdateColumnComment(UpdateColumnCommentRequest) returns (UpdateColumnCommentResponse);
   
   // 行操作
   rpc AddRow(AddRowRequest) returns (AddRowResponse);
@@ -59,10 +62,13 @@ service LaoflchDb {
   rpc GetAllMeta(GetAllMetaRequest) returns (GetAllMetaResponse);
   rpc GetSchemaInfo(GetSchemaInfoRequest) returns (GetSchemaInfoResponse);
   rpc ListSchemas(ListSchemasRequest) returns (ListSchemasResponse);
+  rpc GetTableMeta(GetTableMetaRequest) returns (GetTableMetaResponse);
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
   
   // 查询操作
   rpc Query(QueryRequest) returns (QueryResponse);
   rpc SqlQuery(SqlQueryRequest) returns (SqlQueryResponse);
+  rpc RefreshTables(RefreshTablesRequest) returns (RefreshTablesResponse);
   
   // 全文索引操作
   rpc CreateIndex(CreateIndexRequest) returns (CreateIndexResponse);
@@ -75,6 +81,19 @@ service LaoflchDb {
   rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
   rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
   rpc SearchIndex(SearchIndexRequest) returns (SearchIndexResponse);
+}
+```
+
+### 2. VectorService 向量化服务
+
+```protobuf
+service VectorService {
+  rpc CreateEmbedding(EmbeddingRequest) returns (EmbeddingResponse);
+  rpc ComputeSimilarity(SimilarityRequest) returns (SimilarityResponse);
+  rpc GetModelInfo(ModelInfoRequest) returns (ModelInfoResponse);
+  rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
+  rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
+  rpc UnloadModel(UnloadModelRequest) returns (UnloadModelResponse);
 }
 ```
 
@@ -167,7 +186,7 @@ service LaoflchDb {
 
 ---
 
-### 2. 表管理
+### 3. 表管理
 
 #### CreateTableRequest
 
@@ -176,13 +195,15 @@ service LaoflchDb {
 | schema | string | 是 | 数据库 schema 名称 |
 | table_name | string | 是 | 表名 |
 | columns | repeated ColumnDef | 是 | 列定义列表 |
+| comment | string | 否 | 表注释 |
 
 #### ColumnDef
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | name | string | 是 | 列名 |
-| column_type | int32 | 是 | 列类型（1=Int64, 2=String, 3=Bytes, 4=Float, 5=List, 6=Image） |
+| column_type | int32 | 是 | 列类型（0=String, 1=Int64, 2=Bytes, 3=Float, 4=List, 5=Image） |
+| comment | string | 否 | 列注释 |
 
 #### CreateTableResponse
 
@@ -278,7 +299,7 @@ service LaoflchDb {
 
 ---
 
-### 3. 行操作
+### 4. 行操作
 
 #### AddRowRequest
 
@@ -345,7 +366,7 @@ service LaoflchDb {
 
 ---
 
-### 4. 元数据查询
+### 5. 元数据查询
 
 #### GetAllMetaRequest
 
@@ -389,7 +410,41 @@ service LaoflchDb {
 | schemas | repeated string | Schema 名称列表 |
 | message | string | 错误信息 |
 
+#### GetTableMetaRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| schema | string | 是 | 数据库 schema 名称 |
+| table_name | string | 是 | 表名 |
+
+#### GetTableMetaResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| table_id | uint64 | 表 ID |
+| table_name | string | 表名 |
+| column_count | uint32 | 字段数量 |
+| message | string | 错误信息 |
+
+#### GetVersionRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| (无) | - | - | 无参数 |
+
+#### GetVersionResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| version | string | 版本号 |
+| build_info | string | 构建信息（Git commit hash） |
+| message | string | 错误信息 |
+
 ---
+
+### 6. 查询操作
 
 #### QueryRequest
 
@@ -399,6 +454,7 @@ service LaoflchDb {
 | table_filters | repeated TableFilter | 是 | 表过滤器列表（AND 关系） |
 | limit | uint32 | 否 | 返回结果数量限制 |
 | offset | uint32 | 否 | 跳过的结果数量 |
+| projected_columns | repeated string | 否 | 投影列名列表（不填则返回所有列） |
 
 #### TableFilter
 
@@ -470,7 +526,7 @@ service LaoflchDb {
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| schema | string | 是 | 数据库 schema 名称（作为默认 schema，SQL 中可使用 `schema.table` 格式引用其他 schema） |
+| schema | string | 是 | 数据库 schema 名称（作为默认 schema） |
 | sql | string | 是 | SQL 查询语句（支持跨 schema JOIN） |
 
 #### SqlQueryResponse
@@ -479,7 +535,37 @@ service LaoflchDb {
 |------|------|------|
 | success | bool | 操作是否成功 |
 | columns | repeated string | 列名列表 |
-| rows | repeated QueryRow | 查询结果行 |
+| rows | repeated SqlQueryResultRow | SQL 查询结果行 |
+| message | string | 错误信息 |
+
+#### SqlQueryResultRow
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| values | repeated SqlField | 行数据值列表 |
+
+#### SqlField
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| string_value | string | 字符串值 |
+| int64_value | int64 | 64 位整数值 |
+| float_value | double | 浮点数值 |
+| bytes_value | bytes | 字节值 |
+| bool_value | bool | 布尔值 |
+
+#### RefreshTablesRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| schema | string | 否 | Schema 名称（可选，不填则刷新所有可用表） |
+
+#### RefreshTablesResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| tables | repeated string | 刷新的表名列表 |
 | message | string | 错误信息 |
 
 ##### SQL 查询支持
@@ -525,7 +611,7 @@ JOIN inventory.products ON sales.orders.product_id = inventory.products.product_
 
 ---
 
-### 6. 通用类型
+### 7. 通用类型
 
 #### Row
 
@@ -544,6 +630,289 @@ JOIN inventory.products ON sales.orders.product_id = inventory.products.product_
 
 ---
 
+### 8. 全文索引
+
+#### CreateIndexRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+| fields | repeated IndexFieldDef | 是 | 字段定义列表 |
+
+#### IndexFieldDef
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | 是 | 字段名称 |
+| field_type | int32 | 是 | 字段类型（0=STRING, 1=INT64, 2=BYTES, 3=FLOAT64） |
+| comment | string | 否 | 字段注释 |
+
+#### CreateIndexResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| index_id | uint64 | 索引 ID（Snowflake ID） |
+| message | string | 错误信息 |
+
+#### DropIndexRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+
+#### DropIndexResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 错误信息 |
+
+#### ListIndicesRequest
+
+无参数
+
+#### ListIndicesResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| index_names | repeated string | 索引名称列表 |
+| message | string | 错误信息 |
+
+#### GetIndexFieldsRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+
+#### GetIndexFieldsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| fields | repeated ColumnMeta | 字段定义列表 |
+| message | string | 错误信息 |
+
+#### GetIndexMetaRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+
+#### GetIndexMetaResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| index_id | uint64 | 索引 ID |
+| index_name | string | 索引名称 |
+| column_count | uint32 | 字段数量 |
+| comment | string | 索引注释 |
+| message | string | 错误信息 |
+
+#### GetIndexStatsRequest
+
+无参数
+
+#### GetIndexStatsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| total_indices | uint32 | 索引总数 |
+| index_names | repeated string | 索引名称列表 |
+| message | string | 错误信息 |
+
+#### AddDocumentRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+| doc_id | string | 否 | 文档 ID（不提供则自动生成 Snowflake ID） |
+| fields | map<string, string> | 是 | 文档字段键值对 |
+
+#### AddDocumentResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| doc_id | string | 文档 ID（用户提供或自动生成） |
+| message | string | 错误信息 |
+
+#### GetDocumentRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+| doc_id | string | 是 | 文档 ID |
+
+#### GetDocumentResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| doc_id | string | 文档 ID |
+| fields | map<string, string> | 文档字段 |
+| message | string | 错误信息 |
+
+#### DeleteDocumentRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+| doc_id | string | 是 | 文档 ID |
+
+#### DeleteDocumentResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 错误信息 |
+
+#### SearchIndexRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+| query | string | 是 | 搜索查询字符串 |
+| limit | uint32 | 否 | 返回结果数量限制（默认 10） |
+| field_queries | map<string, string> | 否 | 多字段搜索（字段名 -> 查询值） |
+
+#### SearchIndexResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| results | repeated SearchResultItem | 搜索结果列表 |
+| message | string | 错误信息 |
+
+#### SearchResultItem
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| doc_id | string | 文档 ID |
+| score | float | 匹配分数 |
+| fields | map<string, string> | 文档字段 |
+
+---
+
+### 9. 向量化服务
+
+#### EmbeddingRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| model_name | string | 是 | 模型名称（需先注册） |
+| texts | repeated string | 是 | 要生成向量的文本列表 |
+| dim | int32 | 是 | 向量维度 |
+
+#### EmbeddingResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| results | repeated EmbeddingResult | 向量化结果列表 |
+
+#### EmbeddingResult
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| text | string | 原始文本 |
+| embedding | repeated float | 生成的向量 |
+| dim | int32 | 向量维度 |
+
+#### SimilarityRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| model_name | string | 是 | 模型名称 |
+| query_embedding | repeated float | 是 | 查询向量 |
+| candidates | repeated EmbeddingResult | 是 | 候选向量列表 |
+| top_k | int32 | 是 | 返回最相似的 top_k 个结果 |
+
+#### SimilarityResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| results | repeated SimilarityResult | 相似度结果列表 |
+
+#### SimilarityResult
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| text | string | 文本内容 |
+| embedding | repeated float | 向量 |
+| score | float | 相似度分数 |
+| rank | int32 | 排名（1 为最相似） |
+
+#### ModelInfoRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| model_name | string | 是 | 模型名称 |
+
+#### ModelInfoResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| model_name | string | 模型名称 |
+| embedding_dim | int32 | 向量维度 |
+| model_path | string | 模型路径 |
+| device | string | 运行设备（Cpu / Cuda） |
+| loaded | bool | 是否已加载 |
+
+#### ListModelsRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| (无) | - | - | 无参数 |
+
+#### ListModelsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| models | repeated ModelInfoResponse | 已注册的模型列表 |
+
+#### LoadModelRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| model_name | string | 是 | 模型名称 |
+| model_path | string | 是 | 模型路径 |
+| embedding_dim | int32 | 是 | 向量维度 |
+
+#### LoadModelResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| model_name | string | 模型名称 |
+
+#### UnloadModelRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| model_name | string | 是 | 模型名称 |
+
+#### UnloadModelResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| model_name | string | 模型名称 |
+
+---
+
 ## 使用示例
 
 ### Python 示例
@@ -552,22 +921,30 @@ JOIN inventory.products ON sales.orders.product_id = inventory.products.product_
 import grpc
 import rpc_pb2
 import rpc_pb2_grpc
+import vector_pb2
+import vector_pb2_grpc
 
 # 建立连接
-channel = grpc.insecure_channel("localhost:29777")
+channel = grpc.insecure_channel("localhost:19777")
 stub = rpc_pb2_grpc.LaoflchDbStub(channel)
+vec_stub = vector_pb2_grpc.VectorServiceStub(channel)
 
 # 1. 用户登录（获取 Token）
 login_resp = stub.Login(rpc_pb2.LoginRequest(
     username="admin",
-    password="admin123"
+    password="laoflchdb"
 ))
-print(f"Login: {login_resp.success}, token={login_resp.token}")
+print(f"Login: {login_resp.success}, token={login_resp.token[:20]}...")
 
 # 创建认证元数据
 metadata = [('authorization', f'Bearer {login_resp.token}')]
 
-# 2. 创建表（需要认证）
+# 2. 获取版本信息
+ver_resp = stub.GetVersion(rpc_pb2.GetVersionRequest())
+print(f"Version: {ver_resp.version}")
+
+# ===== KV 操作 =====
+# 3. 创建表
 resp = stub.CreateTable(rpc_pb2.CreateTableRequest(
     schema="sys",
     table_name="users",
@@ -579,7 +956,7 @@ resp = stub.CreateTable(rpc_pb2.CreateTableRequest(
 ), metadata=metadata)
 print(f"Create table: {resp.success}")
 
-# 3. 插入数据（需要认证）
+# 4. 插入数据
 resp = stub.Put(rpc_pb2.PutRequest(
     schema="sys",
     table="users",
@@ -588,15 +965,13 @@ resp = stub.Put(rpc_pb2.PutRequest(
 ), metadata=metadata)
 print(f"Put: {resp.success}")
 
-# 4. 读取数据（需要认证）
+# 5. 读取数据
 resp = stub.Get(rpc_pb2.GetRequest(
-    schema="sys",
-    table="users",
-    key=b"user_001"
+    schema="sys", table="users", key=b"user_001"
 ), metadata=metadata)
 print(f"Get: {resp.success}, value={resp.value.decode()}")
 
-# 5. 查询数据（CNF 表达式，需要认证）
+# 6. 查询数据
 resp = stub.Query(rpc_pb2.QueryRequest(
     schema="sys",
     table_filters=[
@@ -608,34 +983,27 @@ resp = stub.Query(rpc_pb2.QueryRequest(
                     conditions=[
                         rpc_pb2.ColumnFilterCondition(
                             op=rpc_pb2.FILTER_OPERATOR_GT,
-                            value=rpc_pb2.Field(integer_value=rpc_pb2.IntegerValue(value=0))
+                            value=rpc_pb2.Field(
+                                integer_value=rpc_pb2.IntegerValue(value=0)
+                            )
                         )
                     ]
                 )
             ]
         )
     ],
-    limit=10,
-    offset=0
+    limit=10
 ), metadata=metadata)
 print(f"Query: {resp.success}, rows={len(resp.rows)}")
 
-# 6. 删除数据（需要认证）
-resp = stub.Delete(rpc_pb2.DeleteRequest(
-    schema="sys",
-    table="users",
-    key=b"user_001"
-), metadata=metadata)
-print(f"Delete: {resp.success}")
-
-# 7. SQL 查询（需要认证）
+# 7. SQL 查询
 resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
     schema="sys",
     sql="SELECT * FROM users WHERE id > 0 LIMIT 5"
 ), metadata=metadata)
 print(f"SQL Query: {resp.success}, rows={len(resp.rows)}")
 
-# 8. 跨 Schema JOIN 查询（需要认证）
+# 8. 跨 Schema JOIN 查询
 resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
     schema="sales",
     sql="""
@@ -647,17 +1015,78 @@ resp = stub.SqlQuery(rpc_pb2.SqlQueryRequest(
 ), metadata=metadata)
 print(f"Cross-schema JOIN: {resp.success}, rows={len(resp.rows)}")
 
-# 9. 删除表（需要认证）
+# ===== 全文索引操作 =====
+# 9. 创建索引
+resp = stub.CreateIndex(rpc_pb2.CreateIndexRequest(
+    index_name="my_index",
+    fields=[
+        rpc_pb2.IndexFieldDef(name="title", field_type=0),
+        rpc_pb2.IndexFieldDef(name="content", field_type=0),
+    ]
+), metadata=metadata)
+print(f"Create index: {resp.success}, id={resp.index_id}")
+
+# 10. 添加文档
+resp = stub.AddDocument(rpc_pb2.AddDocumentRequest(
+    index_name="my_index",
+    doc_id="doc_001",
+    fields={"title": "Hello", "content": "World"}
+), metadata=metadata)
+print(f"Add document: {resp.success}")
+
+# 11. 搜索索引
+resp = stub.SearchIndex(rpc_pb2.SearchIndexRequest(
+    index_name="my_index",
+    query="Hello",
+    limit=10
+), metadata=metadata)
+print(f"Search: {resp.success}, hits={len(resp.results)}")
+
+# ===== 向量化服务操作 =====
+# 12. 注册模型
+resp = vec_stub.LoadModel(vector_pb2.LoadModelRequest(
+    model_name="bert_base",
+    model_path="/tmp/models/bert_base",
+    embedding_dim=768,
+), metadata=metadata)
+print(f"Load model: {resp.success}")
+
+# 13. 生成向量
+resp = vec_stub.CreateEmbedding(vector_pb2.EmbeddingRequest(
+    model_name="bert_base",
+    texts=["Hello World", "Rust Programming"],
+    dim=768,
+), metadata=metadata)
+for r in resp.results:
+    print(f"  text='{r.text[:20]}' embedding[:3]={r.embedding[:3]}")
+
+# 14. 计算相似度
+candidates = [
+    vector_pb2.EmbeddingResult(text="Rust", embedding=[1.0, 0.0, 0.0], dim=3),
+    vector_pb2.EmbeddingResult(text="Python", embedding=[0.9, 0.1, 0.0], dim=3),
+]
+resp = vec_stub.ComputeSimilarity(vector_pb2.SimilarityRequest(
+    model_name="test",
+    query_embedding=[1.0, 0.0, 0.0],
+    candidates=candidates,
+    top_k=2,
+), metadata=metadata)
+for r in resp.results:
+    print(f"  rank={r.rank}: '{r.text}' score={r.score:.4f}")
+
+# 15. 列出模型
+resp = vec_stub.ListModels(vector_pb2.ListModelsRequest(), metadata=metadata)
+for m in resp.models:
+    print(f"  model: {m.model_name}, dim={m.embedding_dim}, device={m.device}")
+
+# 16. 删除表
 resp = stub.DropTable(rpc_pb2.DropTableRequest(
-    schema="sys",
-    table_name="users"
+    schema="sys", table_name="users"
 ), metadata=metadata)
 print(f"Drop table: {resp.success}")
 
-# 10. 用户登出
-resp = stub.Logout(rpc_pb2.LogoutRequest(
-    token=login_resp.token
-))
+# 17. 用户登出
+resp = stub.Logout(rpc_pb2.LogoutRequest(token=login_resp.token))
 print(f"Logout: {resp.success}")
 ```
 
@@ -688,7 +1117,7 @@ func main() {
     // 1. 用户登录
     loginResp, err := client.Login(context.Background(), &pb.LoginRequest{
         Username: "admin",
-        Password: "admin123",
+        Password: "laoflchdb",
     })
     if err != nil {
         log.Fatalf("Login failed: %v", err)
@@ -699,7 +1128,7 @@ func main() {
     ctx := metadata.AppendToOutgoingContext(context.Background(), 
         "authorization", "Bearer "+loginResp.Token)
 
-    // 2. 创建表（需要认证）
+    // 2. 创建表
     resp, err := client.CreateTable(ctx, &pb.CreateTableRequest{
         Schema:    "sys",
         TableName: "users",
@@ -720,250 +1149,18 @@ func main() {
 
 ---
 
-## 启动服务
-
-```bash
-# 构建项目
-cargo build --release
-
-# 启动服务
-./target/release/laoflchDB-rust start
-
-# Docker 部署
-cargo docker deploy
-```
-
-服务启动后监听：
-- **gRPC**: `0.0.0.0:29777`
-- **REST**: `0.0.0.0:38080`
-
----
-
-## 配置文件
-
-```yaml
-access_protocols:
-  - protocol: grpc
-    enabled: true
-    addr: 0.0.0.0:29777
-    service_id: grpc_admin
-
-  - protocol: rest
-    enabled: true
-    addr: 0.0.0.0:38080
-    service_id: rest_admin
-
-permissions:
-  - service_id: grpc_admin
-    default_policy: allow
-    allowed_actions:
-      - get
-      - put
-      - delete
-      - create_table
-      - drop_table
-      - list_tables
-      - list_table_cols
-      - add_row
-      - get_row
-      - update_row
-      - delete_row
-      - get_all_meta
-      - get_schema_info
-      - get_table_meta
-      - query
-```
-
----
-
 ## 自动测试
 
 ```bash
-# 运行 gRPC 测试
-python3 tests_python/test_final.py
+# 运行索引服务 gRPC 测试
+python3 tests_python/test_index_grpc.py
 
-# 运行完整测试（REST + gRPC）
+# 运行向量化服务 gRPC 测试
+python3 tests_python/test_vector_service_grpc.py
+
+# 运行完整测试
 cargo auto-test prod
 ```
-
----
-
-## 全文索引消息类型
-
-### CreateIndexRequest
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| index_name | string | 是 | 索引名称 |
-| fields | repeated IndexField | 是 | 字段定义列表 |
-
-### IndexField
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| name | string | 是 | 字段名称 |
-| field_type | IndexFieldType | 是 | 字段类型 |
-| indexed | bool | 否 | 是否建立索引（默认 true） |
-| stored | bool | 否 | 是否存储（默认 true） |
-| tokenizer | string | 否 | 分词器名称（默认 "en_stem"） |
-
-### IndexFieldType（枚举）
-
-| 值 | 枚举值 | 说明 |
-|------|--------|------|
-| INDEX_FIELD_TYPE_UNSPECIFIED | 0 | 未指定 |
-| INDEX_FIELD_TYPE_TEXT | 1 | 文本字段（全文索引） |
-| INDEX_FIELD_TYPE_STRING | 2 | 字符串字段（精确匹配） |
-| INDEX_FIELD_TYPE_INT | 3 | 整数字段 |
-| INDEX_FIELD_TYPE_FLOAT | 4 | 浮点数字段 |
-
-### CreateIndexResponse
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| success | bool | 操作是否成功 |
-| index_id | uint64 | 索引 ID（Snowflake ID） |
-| message | string | 错误信息 |
-
-### DropIndexRequest
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| index_name | string | 是 | 索引名称 |
-
-### DropIndexResponse
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| success | bool | 操作是否成功 |
-| message | string | 错误信息 |
-
-### ListIndicesRequest
-
-无参数
-
-### ListIndicesResponse
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| success | bool | 操作是否成功 |
-| indices | repeated string | 索引名称列表 |
-| message | string | 错误信息 |
-
-### GetIndexFieldsRequest
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| index_name | string | 是 | 索引名称 |
-
-### GetIndexFieldsResponse
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| success | bool | 操作是否成功 |
-| fields | repeated IndexField | 字段定义列表 |
-| message | string | 错误信息 |
-
-### GetIndexMetaRequest
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| index_name | string | 是 | 索引名称 |
-
-### GetIndexMetaResponse
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| success | bool | 操作是否成功 |
-| name | string | 索引名称 |
-| columns | uint32 | 字段数量 |
-| message | string | 错误信息 |
-
-### GetIndexStatsRequest
-
-无参数
-
-### GetIndexStatsResponse
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| success | bool | 操作是否成功 |
-| total | uint64 | 索引总数 |
-| names | repeated string | 索引名称列表 |
-| message | string | 错误信息 |
-
-### AddDocumentRequest
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| index_name | string | 是 | 索引名称 |
-| doc_id | string | 否 | 文档 ID（不提供则自动生成 Snowflake ID） |
-| fields | map<string, string> | 是 | 文档字段键值对 |
-
-### AddDocumentResponse
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| success | bool | 操作是否成功 |
-| doc_id | string | 文档 ID（用户提供或自动生成） |
-| message | string | 错误信息 |
-
-### GetDocumentRequest
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| index_name | string | 是 | 索引名称 |
-| doc_id | string | 是 | 文档 ID |
-
-### GetDocumentResponse
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| success | bool | 操作是否成功 |
-| doc_id | string | 文档 ID |
-| fields | map<string, string> | 文档字段 |
-| message | string | 错误信息 |
-
-### DeleteDocumentRequest
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| index_name | string | 是 | 索引名称 |
-| doc_id | string | 是 | 文档 ID |
-
-### DeleteDocumentResponse
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| success | bool | 操作是否成功 |
-| message | string | 错误信息 |
-
-### SearchIndexRequest
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| index_name | string | 是 | 索引名称 |
-| query | string | 是 | 搜索查询字符串 |
-| fields | repeated string | 否 | 指定搜索的字段列表（为空则搜索所有文本字段） |
-| limit | uint32 | 否 | 返回结果数量限制（默认 10） |
-| offset | uint32 | 否 | 跳过的结果数量（默认 0） |
-
-### SearchIndexResponse
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| success | bool | 操作是否成功 |
-| results | repeated SearchResult | 搜索结果列表 |
-| total_hits | uint64 | 总命中数 |
-| message | string | 错误信息 |
-
-### SearchResult
-
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| doc_id | string | 文档 ID |
-| score | float | 匹配分数 |
-| fields | map<string, string> | 文档字段 |
 
 ---
 
@@ -976,3 +1173,4 @@ cargo auto-test prod
 | INVALID_ARGUMENT (3) | 参数错误 |
 | PERMISSION_DENIED (7) | 权限不足 |
 | UNAUTHENTICATED (16) | 未认证（无效或缺失的 Token） |
+| NOT_FOUND (5) | 资源不存在（如模型未找到） |
