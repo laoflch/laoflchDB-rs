@@ -18,7 +18,7 @@ import vector_pb2
 import vector_pb2_grpc
 
 TEST_DB = "./laoflch_db_vec_test"
-TEST_ADDR = "127.0.0.1:19777"
+TEST_ADDR = "127.0.0.1:29777"
 SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchdb")
 
 # 服务器配置文件路径
@@ -28,6 +28,19 @@ TOKEN = None
 stub = None
 vec_stub = None
 server_proc = None
+server_started_by_us = False  # 标记服务是否由本测试启动
+
+
+def check_service_alive(addr, timeout=2):
+    """检查指定地址上是否有 gRPC 服务正在运行"""
+    try:
+        channel = grpc.insecure_channel(addr)
+        channel_ready = grpc.channel_ready_future(channel)
+        channel_ready.result(timeout=timeout)
+        channel.close()
+        return True
+    except Exception:
+        return False
 
 
 def test_login():
@@ -476,33 +489,45 @@ def run_all_tests():
 
 
 def main():
-    global server_proc, vec_stub, stub
+    global server_proc, server_started_by_us, vec_stub, stub
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
     print("=" * 60)
     print("VectorService gRPC 自动回归测试")
     print("=" * 60)
 
-    print("\n[1/4] 使用已有编译产物...")
-    if not os.path.exists(SERVER_BIN):
-        print(f"找不到服务端二进制: {SERVER_BIN}，请先手动编译")
-        return 1
-    print(f"    ✓ 使用已有编译产物: {SERVER_BIN}")
+    # 先检查目标地址上是否有服务已在运行
+    print("\n[1/4] 检查服务状态...")
+    if check_service_alive(TEST_ADDR):
+        print(f"    ✓ {TEST_ADDR} 上已有服务在运行，直接使用")
+        server_started_by_us = False
+    else:
+        print(f"    - {TEST_ADDR} 上无服务，准备启动新服务")
+        print("\n    检查编译产物...")
+        if not os.path.exists(SERVER_BIN):
+            print(f"    找不到服务端二进制: {SERVER_BIN}，请先手动编译")
+            return 1
+        print(f"    ✓ 使用已有编译产物: {SERVER_BIN}")
 
-    print("\n[2/4] 检查服务器二进制...")
-    print("    ✓ 编译产物存在")
+        print("\n    启动 laoflchDB gRPC 服务...")
+        cmd = [SERVER_BIN, "-c", CONFIG_PATH, "start"]
+        log_file = open("vector_grpc_server.log", "w")
+        server_proc = subprocess.Popen(
+            cmd, cwd="..",
+            stdout=log_file, stderr=subprocess.STDOUT,
+            preexec_fn=os.setsid
+        )
+        time.sleep(3)
+        server_started_by_us = True
 
-    print("\n[3/4] 启动 laoflchDB gRPC 服务...")
-    cmd = [SERVER_BIN, "-c", CONFIG_PATH, "start"]
-    log_file = open("vector_grpc_server.log", "w")
-    server_proc = subprocess.Popen(
-        cmd, cwd="..",
-        stdout=log_file, stderr=subprocess.STDOUT,
-        preexec_fn=os.setsid
-    )
-    time.sleep(3)
+        if not check_service_alive(TEST_ADDR, timeout=3):
+            print(f"    ✗ 服务启动失败，请检查 vector_grpc_server.log")
+            if server_proc:
+                os.killpg(os.getpgid(server_proc.pid), signal.SIGTERM)
+            return 1
+        print(f"    ✓ 服务已启动")
 
-    print("\n[4/4] 连接 gRPC 客户端...")
+    print("\n[2/4] 连接 gRPC 客户端...")
     channel = grpc.insecure_channel(TEST_ADDR)
     try:
         stub = rpc_pb2_grpc.LaoflchDbStub(channel)
@@ -520,11 +545,14 @@ def main():
         print(f"    ✗ 测试执行异常: {e}")
         success = False
     finally:
-        print("\n[清理] 停止服务...")
-        if server_proc:
-            os.killpg(os.getpgid(server_proc.pid), signal.SIGTERM)
-            server_proc.wait(timeout=5)
-        print("    ✓ 服务已停止")
+        if server_started_by_us:
+            print("\n[清理] 停止服务...")
+            if server_proc:
+                os.killpg(os.getpgid(server_proc.pid), signal.SIGTERM)
+                server_proc.wait(timeout=5)
+            print("    ✓ 服务已停止")
+        else:
+            print("\n[清理] 服务由外部管理，跳过停止")
 
     return 0 if success else 1
 

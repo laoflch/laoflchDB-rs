@@ -33,6 +33,6 @@ echo "✅ Dockerfile.prod 版本号已更新为: ${BASE_VERSION}"
 
 # 构建项目
 echo "🚀 开始构建项目..."
-cargo build --release --bin laoflchdb
+cargo build --release --features cuda --bin laoflchdb
 
 echo "✅ 构建完成！"

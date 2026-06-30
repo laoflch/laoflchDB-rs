@@ -780,6 +780,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "candle-nn"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9317a09d6530b758990ed7f625ac69ff43653bc9ee28b0464644ad1169ada87"
+dependencies = [
+ "candle-core",
+ "half",
+ "libc",
+ "num-traits",
+ "rayon",
+ "safetensors 0.7.0",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "candle-ug"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -976,6 +992,18 @@ name = "compression-core"
 version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc14f565cf027a105f7a44ccf9e5b424348421a1d8952a8fc9d499d313107789"
+
+[[package]]
+name = "console"
+version = "0.16.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d64e8af5551369d19cf50138de61f1c42074ab970f74e99be916646777f8fc87"
+dependencies = [
+ "encode_unicode",
+ "libc",
+ "unicode-width 0.2.2",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "const-random"
@@ -2021,6 +2049,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
 
 [[package]]
+name = "encode_unicode"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "34aa73646ffb006b8f5147f3dc182bd4bcb190227ce861fc4a4844bf8e3cb2c0"
+
+[[package]]
 name = "encoding_rs"
 version = "0.8.35"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2118,6 +2152,9 @@ name = "esaxx-rs"
 version = "0.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d817e038c30374a4bcb22f94d0a8a0e216958d4c3dcde369b1439fec4bdda6e6"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "fastdivide"
@@ -3059,6 +3096,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "indicatif"
+version = "0.18.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "993f007684f2e9727160da8b960ec161264703bfd1af084fd2e34d040c9a0dd4"
+dependencies = [
+ "console",
+ "portable-atomic",
+ "unicode-width 0.2.2",
+ "unit-prefix",
+ "web-time",
+]
+
+[[package]]
 name = "integer-encoding"
 version = "3.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3175,7 +3225,7 @@ dependencies = [
 
 [[package]]
 name = "laoflchDB-rust"
-version = "0.1.7+f0765e0c6e23a2dc77eb5e923feec7bc855101ac"
+version = "0.1.7+09724f48ab62a38eb82d9b8d176b63ea10b62a3d"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
@@ -3275,9 +3325,13 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "candle-core",
+ "candle-nn",
  "laoflchdb_engines",
  "log",
  "prost",
+ "serde",
+ "serde_json",
+ "tokenizers",
  "tokio",
  "tonic",
  "tonic-build",
@@ -3471,7 +3525,7 @@ dependencies = [
 
 [[package]]
 name = "lsql"
-version = "0.1.7+f0765e0c6e23a2dc77eb5e923feec7bc855101ac"
+version = "0.1.7+09724f48ab62a38eb82d9b8d176b63ea10b62a3d"
 dependencies = [
  "clap",
  "laoflchDB-rust",
@@ -5389,6 +5443,7 @@ dependencies = [
  "derive_builder",
  "esaxx-rs",
  "getrandom 0.3.4",
+ "indicatif",
  "itertools 0.14.0",
  "log",
  "macro_rules_attribute",
@@ -5734,6 +5789,12 @@ name = "unicode_categories"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39ec24b3121d976906ece63c9daad25b85969647682eee313cb5779fdd69e14e"
+
+[[package]]
+name = "unit-prefix"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
 
 [[package]]
 name = "unsafe-libyaml"

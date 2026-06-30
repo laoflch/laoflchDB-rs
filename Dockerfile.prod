@@ -9,13 +9,15 @@ LABEL version="${VERSION}"
 
 # Create app directories
 RUN mkdir -p /app/data && \
-    mkdir -p /app/config
+    mkdir -p /app/config && \
+    mkdir -p /usr/local/cuda
 
 # Set working directory
 WORKDIR /app
 
 # Copy binary
 COPY target/release/laoflchdb /app/laoflchdb
+#COPY /usr/lib/x86_64-linux-gnu/libcuda.so.1 /usr/lib/x86_64-linux-gnu/libcuda.so.1
 
 # Copy production configuration
 COPY config/prod.yaml /app/config/prod.yaml
@@ -27,6 +29,8 @@ EXPOSE 38080
 # Environment variables
 ENV RUST_LOG=info
 ENV DB_PATH=/app/data
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
 
 # Start command with production config
 CMD ["/app/laoflchdb", "-c", "/app/config/prod.yaml", "start"]
+#CMD ["ldd","/app/laoflchdb"]

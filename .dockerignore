@@ -1,0 +1,47 @@
+# Exclude all target/ directories (37GB of build artifacts)
+target/
+**/target/
+
+# But re-include the pre-compiled binary for Docker packaging
+!target/release/laoflchdb
+
+# Version control
+.git/
+.gitignore
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Project data directories (runtime data, not needed for building)
+laoflch_db_data*/
+laoflch_db_index*/
+laoflch_db_vec_test/
+laoflch_index_data/
+
+# Python test files
+tests_python/
+
+# Local config (prod.yaml is explicitly copied)
+laoflchdb.yaml
+laoflchdb.yaml.bak
+local.env
+
+# Documentation
+*.md
+design.md
+
+# Shell scripts
+*.sh
+*.env
+
+# Docker files
+Dockerfile
+Dockerfile.local
+docker-compose.yml
