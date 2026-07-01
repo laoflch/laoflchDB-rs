@@ -118,7 +118,9 @@ impl Default for RuntimeMode {
 #[derive(Debug, Deserialize, Clone)]
 pub struct DatabaseConfig {
     pub db_path: String,
-    pub index_path:String,
+    pub index_path: String,
+    #[serde(default = "default_model_path")]
+    pub model_path: String,
     #[serde(default = "default_addr")]
     pub addr: String,
     #[serde(default = "default_log_level")]
@@ -143,6 +145,10 @@ fn default_log_level() -> String {
 
 fn default_global_default_policy() -> String {
     "allow".to_string()
+}
+
+fn default_model_path() -> String {
+    "./laoflch_db_model".to_string()
 }
 
 impl DatabaseConfig {
@@ -179,6 +185,7 @@ impl DatabaseConfig {
         Self {
             db_path: "./laoflch_db_data".to_string(),
             index_path: "./laoflch_index_data".to_string(),
+            model_path: "./laoflch_db_model".to_string(),
             addr: default_addr(),
             log_level: default_log_level(),
             access_protocols: vec![],

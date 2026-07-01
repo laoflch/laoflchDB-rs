@@ -64,6 +64,11 @@ class VectorServiceStub(object):
                 request_serializer=vector__pb2.UnloadModelRequest.SerializeToString,
                 response_deserializer=vector__pb2.UnloadModelResponse.FromString,
                 _registered_method=True)
+        self.ListLoadableModels = channel.unary_unary(
+                '/laoflchdb.vector.VectorService/ListLoadableModels',
+                request_serializer=vector__pb2.ListLoadableModelsRequest.SerializeToString,
+                response_deserializer=vector__pb2.ListLoadableModelsResponse.FromString,
+                _registered_method=True)
 
 
 class VectorServiceServicer(object):
@@ -105,6 +110,12 @@ class VectorServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListLoadableModels(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_VectorServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -137,6 +148,11 @@ def add_VectorServiceServicer_to_server(servicer, server):
                     servicer.UnloadModel,
                     request_deserializer=vector__pb2.UnloadModelRequest.FromString,
                     response_serializer=vector__pb2.UnloadModelResponse.SerializeToString,
+            ),
+            'ListLoadableModels': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListLoadableModels,
+                    request_deserializer=vector__pb2.ListLoadableModelsRequest.FromString,
+                    response_serializer=vector__pb2.ListLoadableModelsResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -301,6 +317,33 @@ class VectorService(object):
             '/laoflchdb.vector.VectorService/UnloadModel',
             vector__pb2.UnloadModelRequest.SerializeToString,
             vector__pb2.UnloadModelResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListLoadableModels(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/laoflchdb.vector.VectorService/ListLoadableModels',
+            vector__pb2.ListLoadableModelsRequest.SerializeToString,
+            vector__pb2.ListLoadableModelsResponse.FromString,
             options,
             channel_credentials,
             insecure,

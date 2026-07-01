@@ -16,6 +16,7 @@ use tonic::{Request, Response, Status};
 pub struct VectorServiceImpl {
     models: AsyncRwLock<HashMap<String, ModelInstance>>,
     default_device: Device,
+    model_dir: String,
 }
 
 struct ModelInstance {
@@ -28,13 +29,117 @@ struct ModelInstance {
 }
 
 impl VectorServiceImpl {
+    /// 创建服务实例，使用默认模型目录
     pub fn new() -> Self {
+        Self::new_with_model_dir("./laoflch_db_model")
+    }
+
+    /// 创建服务实例，指定模型目录并自动加载其中的有效模型
+    pub fn new_with_model_dir(model_dir: &str) -> Self {
         let device = Self::detect_device();
-        
+        let model_dir = model_dir.to_string();
+        let models = Self::init_models_from_dir(&model_dir, &device);
+        info!(
+            "VectorService 初始化完成: device={:?}, model_dir='{}', 已加载 {} 个模型",
+            device,
+            model_dir,
+            models.len()
+        );
         VectorServiceImpl {
-            models: AsyncRwLock::new(HashMap::new()),
+            models: AsyncRwLock::new(models),
             default_device: device,
+            model_dir,
         }
+    }
+
+    /// 从模型目录扫描并加载所有有效模型
+    fn init_models_from_dir(model_dir: &str, device: &Device) -> HashMap<String, ModelInstance> {
+        let dir = Path::new(model_dir);
+        if !dir.exists() || !dir.is_dir() {
+            info!("模型目录 '{}' 不存在或不是目录，跳过自动加载", model_dir);
+            return HashMap::new();
+        }
+
+        info!("扫描模型目录: '{}'", model_dir);
+        let mut models = HashMap::new();
+
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) => {
+                warn!("读取模型目录失败: {}", e);
+                return HashMap::new();
+            }
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let model_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+
+            // 检查是否包含完整模型文件
+            let config_path = path.join("config.json");
+            let tokenizer_path = path.join("tokenizer.json");
+            let weights_path = path.join("model.safetensors");
+
+            let has_config = config_path.exists();
+            let has_tokenizer = tokenizer_path.exists();
+            let has_weights = weights_path.exists();
+
+            if !has_config || !has_tokenizer || !has_weights {
+                info!(
+                    "跳过不完整模型目录 '{}': config={}, tokenizer={}, weights={}",
+                    model_name, has_config, has_tokenizer, has_weights
+                );
+                continue;
+            }
+
+            // 从 config.json 读取 hidden_size 作为向量维度
+            let dim = std::fs::read_to_string(&config_path)
+                .ok()
+                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                .and_then(|j| {
+                    j.get("hidden_size")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as usize)
+                })
+                .unwrap_or(384);
+
+            info!("自动发现模型: '{}' (dim={})", model_name, dim);
+
+            let model_path_str = path.to_string_lossy().to_string();
+            let bert_model = try_load_bert_model(&model_path_str, device);
+            let loaded = bert_model.is_some();
+            let device_str = format!("{:?}", device);
+
+            if loaded {
+                info!("模型 '{}' 自动加载成功 (dim={})", model_name, dim);
+            } else {
+                warn!("模型 '{}' 检测到文件但加载失败，仍注册为可用", model_name);
+            }
+
+            models.insert(
+                model_name,
+                ModelInstance {
+                    embedding_dim: dim,
+                    model_path: model_path_str,
+                    loaded,
+                    device: device_str,
+                    bert_model,
+                },
+            );
+        }
+
+        info!(
+            "从目录 '{}' 加载了 {} 个模型",
+            model_dir,
+            models.len()
+        );
+        models
     }
 
     fn detect_device() -> Device {
@@ -323,6 +428,78 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                 req.model_name
             )))
         }
+    }
+
+    async fn list_loadable_models(
+        &self,
+        _request: Request<ListLoadableModelsRequest>,
+    ) -> Result<Response<ListLoadableModelsResponse>, Status> {
+        let dir = Path::new(&self.model_dir);
+        let loaded_models = self.models.read().await;
+
+        let mut loadable = Vec::new();
+
+        if dir.exists() && dir.is_dir() {
+            match std::fs::read_dir(dir) {
+                Ok(entries) => {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if !path.is_dir() {
+                            continue;
+                        }
+                        let model_name = match path.file_name().and_then(|n| n.to_str()) {
+                            Some(name) => name.to_string(),
+                            None => continue,
+                        };
+
+                        let config_path = path.join("config.json");
+                        let tokenizer_path = path.join("tokenizer.json");
+                        let weights_path = path.join("model.safetensors");
+
+                        let has_config = config_path.exists();
+                        let has_tokenizer = tokenizer_path.exists();
+                        let has_weights = weights_path.exists();
+
+                        // 从 config.json 读取维度
+                        let dim = if has_config {
+                            std::fs::read_to_string(&config_path)
+                                .ok()
+                                .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                                .and_then(|j| {
+                                    j.get("hidden_size")
+                                        .and_then(|v| v.as_u64())
+                                        .map(|v| v as i32)
+                                })
+                                .unwrap_or(0)
+                        } else {
+                            0
+                        };
+
+                        let is_loaded = loaded_models.contains_key(&model_name);
+
+                        loadable.push(LoadableModelInfo {
+                            model_name,
+                            model_path: path.to_string_lossy().to_string(),
+                            embedding_dim: dim,
+                            has_config,
+                            has_tokenizer,
+                            has_weights,
+                            is_loaded,
+                        });
+                    }
+                }
+                Err(e) => {
+                    warn!("读取模型目录 '{}' 失败: {}", self.model_dir, e);
+                }
+            }
+        }
+
+        Ok(Response::new(ListLoadableModelsResponse {
+            success: true,
+            message: format!("共 {} 个可加载模型", loadable.len()),
+            model_dir: self.model_dir.clone(),
+            models: loadable,
+        }))
     }
 }
 
@@ -1159,5 +1336,65 @@ mod tests {
         let result = try_load_bert_model(tmp_dir.to_str().unwrap(), &device);
         assert!(result.is_none());
         std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_list_loadable_models_empty_dir() {
+        // 空目录应返回空列表
+        let tmp_dir = std::env::temp_dir().join("loadable_test_empty");
+        std::fs::create_dir_all(&tmp_dir).ok();
+        let service = VectorServiceImpl::new_with_model_dir(tmp_dir.to_str().unwrap());
+        let req = Request::new(ListLoadableModelsRequest {});
+        let resp = service.list_loadable_models(req).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(inner.success);
+        assert_eq!(inner.models.len(), 0);
+        assert_eq!(inner.model_dir, tmp_dir.to_str().unwrap());
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_list_loadable_models_with_incomplete() {
+        // 不完整的模型目录（缺少文件）不应被列出
+        let tmp_dir = std::env::temp_dir().join("loadable_test_incomplete");
+        let model_sub_dir = tmp_dir.join("my_model");
+        std::fs::create_dir_all(&model_sub_dir).ok();
+        // 只创建 config.json，不创建 tokenizer.json 和 model.safetensors
+        std::fs::write(model_sub_dir.join("config.json"), r#"{"hidden_size": 384}"#).ok();
+        let service = VectorServiceImpl::new_with_model_dir(tmp_dir.to_str().unwrap());
+        let req = Request::new(ListLoadableModelsRequest {});
+        let resp = service.list_loadable_models(req).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(inner.success);
+        assert_eq!(inner.models.len(), 1, "不完整模型也应列出");
+        let m = &inner.models[0];
+        assert_eq!(m.model_name, "my_model");
+        assert!(m.has_config);
+        assert!(!m.has_tokenizer);
+        assert!(!m.has_weights);
+        assert!(!m.is_loaded);
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_list_loadable_models_non_existent() {
+        // 不存在的目录应返回空列表且不报错
+        let service = VectorServiceImpl::new_with_model_dir("/tmp/non_existent_path_12345");
+        let req = Request::new(ListLoadableModelsRequest {});
+        let resp = service.list_loadable_models(req).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(inner.success);
+        assert_eq!(inner.models.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_init_models_from_dir_empty() {
+        // 空目录初始化不应加载任何模型
+        let service = VectorServiceImpl::new_with_model_dir("/tmp/empty_dir_for_test_abc_123");
+        let req = Request::new(ListModelsRequest {});
+        let resp = service.list_models(req).await.unwrap();
+        let inner = resp.into_inner();
+        assert!(inner.success);
+        assert_eq!(inner.models.len(), 0);
     }
 }

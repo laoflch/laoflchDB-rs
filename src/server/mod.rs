@@ -50,8 +50,8 @@ impl LaoflchDBServer {
     pub async fn start(&self, config: &DatabaseConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.init().await?;
 
-        // 创建向量化服务实例
-        let vector_service = laoflchdb_vector_service::VectorServiceImpl::new();
+        // 创建向量化服务实例（从配置的模型目录自动加载模型）
+        let vector_service = laoflchdb_vector_service::VectorServiceImpl::new_with_model_dir(&config.model_path);
 
         if config.access_protocols.is_empty() {
             let addr = config.addr.clone();
@@ -84,7 +84,7 @@ impl LaoflchDBServer {
                         started_protocols.push((protocol.to_string(), addr.to_string()));
                         let grpc_service = self.access_service.get_grpc_service(service_id);
                         let addr_owned = addr.to_string();
-                        let vector_service_clone = laoflchdb_vector_service::VectorServiceImpl::new();
+                        let vector_service_clone = laoflchdb_vector_service::VectorServiceImpl::new_with_model_dir(&config.model_path);
                         
                         tokio::spawn(async move {
                             if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, &addr_owned).await {

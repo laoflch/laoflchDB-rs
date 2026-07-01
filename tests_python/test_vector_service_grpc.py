@@ -620,8 +620,87 @@ def test_get_model_info_after_load():
         print(f"        loaded: {resp.loaded}")
         return True
     except Exception as e:
-        print(f"    ✗ 获取模型信息失败: {e}")
+        print(f"    ✓ 获取模型信息失败: {e}")
         return False
+
+
+def test_list_loadable_models():
+    """测试列出可加载模型"""
+    print("[测试] 列出可加载模型...")
+    try:
+        req = vector_pb2.ListLoadableModelsRequest()
+        resp = vec_stub.ListLoadableModels(req, metadata=get_metadata())
+        assert resp.success
+        print(f"    ✓ 可加载模型列表:")
+        print(f"        model_dir: {resp.model_dir}")
+        print(f"        共 {len(resp.models)} 个:")
+        for m in resp.models:
+            status = []
+            if m.has_config:
+                status.append("config")
+            if m.has_tokenizer:
+                status.append("tokenizer")
+            if m.has_weights:
+                status.append("weights")
+            if m.is_loaded:
+                status.append("LOADED")
+            print(f"        - {m.model_name}: dim={m.embedding_dim}, {', '.join(status)}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 列出可加载模型失败: {e}")
+        return False
+
+
+def test_load_from_model_dir():
+    """测试从模型目录加载模型并验证可用性"""
+    print("[测试] 从模型目录加载...")
+    # 创建一个临时模型目录（不完整的模型，用于测试加载和列表）
+    model_dir = "/tmp/loadable_test_models"
+    model_sub = os.path.join(model_dir, "test_model_v1")
+    os.makedirs(model_sub, exist_ok=True)
+    config_path = os.path.join(model_sub, "config.json")
+    with open(config_path, "w") as f:
+        f.write('{"hidden_size": 128}')
+    # 仅创建 config.json，不创建 tokenizer/model.safetensors（模拟不完整模型）
+
+    try:
+        # 这里使用 gRPC 的动态加载
+        req = vector_pb2.LoadModelRequest(
+            model_name="test_model_v1",
+            model_path=model_sub,
+            embedding_dim=128,
+        )
+        resp = vec_stub.LoadModel(req, metadata=get_metadata())
+        assert resp.success, f"加载失败: {resp.message}"
+
+        # 验证可以通过 ListModels 看到
+        list_req = vector_pb2.ListModelsRequest()
+        list_resp = vec_stub.ListModels(list_req, metadata=get_metadata())
+        names = [m.model_name for m in list_resp.models]
+        assert "test_model_v1" in names
+
+        # 验证可以用该模型生成向量
+        emb_req = vector_pb2.EmbeddingRequest(
+            model_name="test_model_v1",
+            texts=["从测试目录加载的模型"],
+            dim=128,
+        )
+        emb_resp = vec_stub.CreateEmbedding(emb_req, metadata=get_metadata())
+        assert emb_resp.success
+        assert len(emb_resp.results[0].embedding) == 128
+
+        # 清理
+        unload_req = vector_pb2.UnloadModelRequest(model_name="test_model_v1")
+        vec_stub.UnloadModel(unload_req, metadata=get_metadata())
+
+        print(f"    ✓ 从模型目录加载、使用、卸载成功")
+        return True
+    except Exception as e:
+        print(f"    ✗ 测试失败: {e}")
+        return False
+    finally:
+        import shutil
+        shutil.rmtree(model_dir, ignore_errors=True)
 
 
 # ============================================================================
@@ -802,6 +881,8 @@ def run_all_tests():
         ("获取模型信息", test_get_model_info),
         ("获取不存在的模型信息", test_get_model_info_not_found),
         ("模型详细信息", test_get_model_info_after_load),
+        ("列出可加载模型", test_list_loadable_models),
+        ("从模型目录加载", test_load_from_model_dir),
         ("生成文本向量", test_create_embedding),
         ("向量生成确定性", test_create_embedding_consistency),
         ("不同文本不同向量", test_create_embedding_different_texts),
