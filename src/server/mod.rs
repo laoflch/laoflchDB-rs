@@ -51,7 +51,21 @@ impl LaoflchDBServer {
         self.init().await?;
 
         // 创建向量化服务实例（从配置的模型目录自动加载模型）
-        let vector_service = laoflchdb_vector_service::VectorServiceImpl::new_with_model_dir(&config.model_path);
+        let auto_load_models = config.vector_service.as_ref().map(|vc| {
+            if vc.auto_load {
+                if vc.load_models.is_empty() {
+                    None // 加载 candle 下所有
+                } else {
+                    Some(vc.load_models.clone()) // 加载指定的
+                }
+            } else {
+                Some(vec![]) // 不加载任何
+            }
+        }).flatten();
+        let vector_service = laoflchdb_vector_service::VectorServiceImpl::new_with_config(
+            &config.model_path,
+            auto_load_models,
+        );
 
         if config.access_protocols.is_empty() {
             let addr = config.addr.clone();
@@ -84,7 +98,10 @@ impl LaoflchDBServer {
                         started_protocols.push((protocol.to_string(), addr.to_string()));
                         let grpc_service = self.access_service.get_grpc_service(service_id);
                         let addr_owned = addr.to_string();
-                        let vector_service_clone = laoflchdb_vector_service::VectorServiceImpl::new_with_model_dir(&config.model_path);
+                        let vector_service_clone = laoflchdb_vector_service::VectorServiceImpl::new_with_config(
+                            &config.model_path,
+                            auto_load_models.clone(),
+                        );
                         
                         tokio::spawn(async move {
                             if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, &addr_owned).await {

@@ -5,6 +5,13 @@ db_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_data
 index_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_index
 model_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_model
 
+# Vector service configuration
+vector_service:
+  enabled: true
+  auto_load: true
+  # 可指定启动时加载的模型名称列表（空列表表示加载 candle 目录下所有有效模型）
+  load_models: []
+
 # Log configuration
 log_level: info
 

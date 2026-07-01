@@ -115,6 +115,24 @@ impl Default for RuntimeMode {
     }
 }
 
+/// 向量化服务配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct VectorServiceConfig {
+    /// 是否启用向量化服务
+    #[serde(default)]
+    pub enabled: bool,
+    /// 是否在启动时自动扫描加载模型
+    #[serde(default = "default_vector_auto_load")]
+    pub auto_load: bool,
+    /// 指定启动时加载的模型名称列表（空列表表示加载所有有效模型）
+    #[serde(default)]
+    pub load_models: Vec<String>,
+}
+
+fn default_vector_auto_load() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct DatabaseConfig {
     pub db_path: String,
@@ -133,6 +151,8 @@ pub struct DatabaseConfig {
     pub default_policy: String,
     #[serde(default)]
     pub runtime_mode: RuntimeMode,
+    #[serde(default)]
+    pub vector_service: Option<VectorServiceConfig>,
 }
 
 fn default_addr() -> String {
@@ -192,6 +212,7 @@ impl DatabaseConfig {
             permissions: None,
             default_policy: default_global_default_policy(),
             runtime_mode: RuntimeMode::default(),
+            vector_service: None,
         }
     }
 

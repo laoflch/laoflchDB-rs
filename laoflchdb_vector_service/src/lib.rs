@@ -29,20 +29,28 @@ struct ModelInstance {
 }
 
 impl VectorServiceImpl {
-    /// 创建服务实例，使用默认模型目录
+    /// 创建服务实例，使用默认模型目录，扫描 candle 子目录加载所有模型
     pub fn new() -> Self {
         Self::new_with_model_dir("./laoflch_db_model")
     }
 
-    /// 创建服务实例，指定模型目录并自动加载其中的有效模型
+    /// 创建服务实例，指定模型目录，扫描 `{model_dir}/candle/` 子目录加载所有有效模型
     pub fn new_with_model_dir(model_dir: &str) -> Self {
+        Self::new_with_config(model_dir, None)
+    }
+
+    /// 创建服务实例，指定模型目录和自动加载配置
+    /// - `model_dir`: 模型存储根目录
+    /// - `auto_load_models`: `None`=加载 candle 下所有有效模型, `Some(vec)`=只加载指定名称的模型, `Some(vec![])`=不加载任何模型
+    pub fn new_with_config(model_dir: &str, auto_load_models: Option<Vec<String>>) -> Self {
         let device = Self::detect_device();
         let model_dir = model_dir.to_string();
-        let models = Self::init_models_from_dir(&model_dir, &device);
+        let candle_dir = Path::new(&model_dir).join("candle");
+        let models = Self::init_models_from_dir(&candle_dir, &device, auto_load_models);
         info!(
-            "VectorService 初始化完成: device={:?}, model_dir='{}', 已加载 {} 个模型",
+            "VectorService 初始化完成: device={:?}, candle_dir='{}', 已加载 {} 个模型",
             device,
-            model_dir,
+            candle_dir.display(),
             models.len()
         );
         VectorServiceImpl {
@@ -53,23 +61,37 @@ impl VectorServiceImpl {
     }
 
     /// 从模型目录扫描并加载所有有效模型
-    fn init_models_from_dir(model_dir: &str, device: &Device) -> HashMap<String, ModelInstance> {
-        let dir = Path::new(model_dir);
-        if !dir.exists() || !dir.is_dir() {
-            info!("模型目录 '{}' 不存在或不是目录，跳过自动加载", model_dir);
+    /// 仅扫描 `{candle_dir}` 子目录中的模型
+    fn init_models_from_dir(
+        candle_dir: &Path,
+        device: &Device,
+        auto_load_models: Option<Vec<String>>,
+    ) -> HashMap<String, ModelInstance> {
+        if !candle_dir.exists() || !candle_dir.is_dir() {
+            info!(
+                "Candle 模型目录 '{}' 不存在或不是目录，跳过自动加载",
+                candle_dir.display()
+            );
             return HashMap::new();
         }
 
-        info!("扫描模型目录: '{}'", model_dir);
+        info!("扫描 Candle 模型目录: '{}'", candle_dir.display());
         let mut models = HashMap::new();
 
-        let entries = match std::fs::read_dir(dir) {
+        let entries = match std::fs::read_dir(candle_dir) {
             Ok(entries) => entries,
             Err(e) => {
                 warn!("读取模型目录失败: {}", e);
                 return HashMap::new();
             }
         };
+
+        // 确定要加载的模型名称集合
+        let load_targets: Option<Vec<String>> = auto_load_models.map(|m| {
+            m.into_iter()
+                .map(|s| s.to_lowercase())
+                .collect()
+        });
 
         for entry in entries.flatten() {
             let path = entry.path();
@@ -80,6 +102,21 @@ impl VectorServiceImpl {
                 Some(name) => name.to_string(),
                 None => continue,
             };
+
+            // 如果指定了加载列表，只加载列表中的模型
+            // Some(vec![]) = 不加载任何模型
+            // Some(vec!["a", "b"]) = 只加载 a, b
+            // None = 加载所有
+            if let Some(ref targets) = load_targets {
+                if targets.is_empty() {
+                    // 空列表 = 跳过所有模型
+                    continue;
+                }
+                if !targets.contains(&model_name.to_lowercase()) {
+                    info!("跳过模型 '{}'（不在 load_models 列表中）", model_name);
+                    continue;
+                }
+            }
 
             // 检查是否包含完整模型文件
             let config_path = path.join("config.json");
@@ -134,11 +171,7 @@ impl VectorServiceImpl {
             );
         }
 
-        info!(
-            "从目录 '{}' 加载了 {} 个模型",
-            model_dir,
-            models.len()
-        );
+        info!("从目录 '{}' 加载了 {} 个模型", candle_dir.display(), models.len());
         models
     }
 
@@ -434,13 +467,13 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
         &self,
         _request: Request<ListLoadableModelsRequest>,
     ) -> Result<Response<ListLoadableModelsResponse>, Status> {
-        let dir = Path::new(&self.model_dir);
+        let candle_dir = Path::new(&self.model_dir).join("candle");
         let loaded_models = self.models.read().await;
 
         let mut loadable = Vec::new();
 
-        if dir.exists() && dir.is_dir() {
-            match std::fs::read_dir(dir) {
+        if candle_dir.exists() && candle_dir.is_dir() {
+            match std::fs::read_dir(&candle_dir) {
                 Ok(entries) => {
                     for entry in entries.flatten() {
                         let path = entry.path();
@@ -497,7 +530,7 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
         Ok(Response::new(ListLoadableModelsResponse {
             success: true,
             message: format!("共 {} 个可加载模型", loadable.len()),
-            model_dir: self.model_dir.clone(),
+            model_dir: candle_dir.to_string_lossy().to_string(),
             models: loadable,
         }))
     }
@@ -1342,25 +1375,24 @@ mod tests {
     async fn test_list_loadable_models_empty_dir() {
         // 空目录应返回空列表
         let tmp_dir = std::env::temp_dir().join("loadable_test_empty");
-        std::fs::create_dir_all(&tmp_dir).ok();
+        std::fs::create_dir_all(tmp_dir.join("candle")).ok();
         let service = VectorServiceImpl::new_with_model_dir(tmp_dir.to_str().unwrap());
         let req = Request::new(ListLoadableModelsRequest {});
         let resp = service.list_loadable_models(req).await.unwrap();
         let inner = resp.into_inner();
         assert!(inner.success);
         assert_eq!(inner.models.len(), 0);
-        assert_eq!(inner.model_dir, tmp_dir.to_str().unwrap());
+        assert!(inner.model_dir.ends_with("candle"));
         std::fs::remove_dir_all(&tmp_dir).ok();
     }
 
     #[tokio::test]
     async fn test_list_loadable_models_with_incomplete() {
-        // 不完整的模型目录（缺少文件）不应被列出
+        // 不完整的模型目录（缺少文件）应被列出但标记为未加载
         let tmp_dir = std::env::temp_dir().join("loadable_test_incomplete");
-        let model_sub_dir = tmp_dir.join("my_model");
-        std::fs::create_dir_all(&model_sub_dir).ok();
-        // 只创建 config.json，不创建 tokenizer.json 和 model.safetensors
-        std::fs::write(model_sub_dir.join("config.json"), r#"{"hidden_size": 384}"#).ok();
+        let model_dir = tmp_dir.join("candle").join("my_model");
+        std::fs::create_dir_all(&model_dir).ok();
+        std::fs::write(model_dir.join("config.json"), r#"{"hidden_size": 384}"#).ok();
         let service = VectorServiceImpl::new_with_model_dir(tmp_dir.to_str().unwrap());
         let req = Request::new(ListLoadableModelsRequest {});
         let resp = service.list_loadable_models(req).await.unwrap();
@@ -1389,12 +1421,66 @@ mod tests {
 
     #[tokio::test]
     async fn test_init_models_from_dir_empty() {
-        // 空目录初始化不应加载任何模型
-        let service = VectorServiceImpl::new_with_model_dir("/tmp/empty_dir_for_test_abc_123");
+        // 空 candle 目录初始化不应加载任何模型
+        let tmp_dir = std::env::temp_dir().join("empty_candle_test");
+        std::fs::create_dir_all(tmp_dir.join("candle")).ok();
+        let service = VectorServiceImpl::new_with_model_dir(tmp_dir.to_str().unwrap());
         let req = Request::new(ListModelsRequest {});
         let resp = service.list_models(req).await.unwrap();
         let inner = resp.into_inner();
         assert!(inner.success);
         assert_eq!(inner.models.len(), 0);
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_new_with_config_none() {
+        // auto_load_models=None 应加载所有（但 candle 目录为空）
+        let tmp_dir = std::env::temp_dir().join("config_test_none");
+        std::fs::create_dir_all(tmp_dir.join("candle")).ok();
+        let service = VectorServiceImpl::new_with_config(tmp_dir.to_str().unwrap(), None);
+        let req = Request::new(ListModelsRequest {});
+        let resp = service.list_models(req).await.unwrap();
+        assert_eq!(resp.into_inner().models.len(), 0);
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_new_with_config_empty_list() {
+        // auto_load_models=Some(vec![]) 应跳过所有
+        let tmp_dir = std::env::temp_dir().join("config_test_empty_list");
+        let model_dir = tmp_dir.join("candle").join("test_model");
+        std::fs::create_dir_all(&model_dir).ok();
+        std::fs::write(model_dir.join("config.json"), r#"{"hidden_size": 128}"#).ok();
+        std::fs::write(model_dir.join("tokenizer.json"), "{}").ok();
+        std::fs::write(model_dir.join("model.safetensors"), "").ok();
+        let service = VectorServiceImpl::new_with_config(tmp_dir.to_str().unwrap(), Some(vec![]));
+        let req = Request::new(ListModelsRequest {});
+        let resp = service.list_models(req).await.unwrap();
+        assert_eq!(resp.into_inner().models.len(), 0, "空列表应跳过所有");
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_new_with_config_filter() {
+        // auto_load_models=Some(vec!["model_a"]) 应只加载 model_a
+        let tmp_dir = std::env::temp_dir().join("config_test_filter");
+        for name in &["model_a", "model_b", "model_c"] {
+            let d = tmp_dir.join("candle").join(name);
+            std::fs::create_dir_all(&d).ok();
+            std::fs::write(d.join("config.json"), r#"{"hidden_size": 128}"#).ok();
+            std::fs::write(d.join("tokenizer.json"), "{}").ok();
+            std::fs::write(d.join("model.safetensors"), "").ok();
+        }
+        let service = VectorServiceImpl::new_with_config(
+            tmp_dir.to_str().unwrap(),
+            Some(vec!["model_a".to_string()]),
+        );
+        let req = Request::new(ListModelsRequest {});
+        let resp = service.list_models(req).await.unwrap();
+        let models = resp.into_inner().models;
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].model_name, "model_a");
+        std::fs::remove_dir_all(&tmp_dir).ok();
     }
 }
