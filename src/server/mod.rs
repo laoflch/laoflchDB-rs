@@ -62,10 +62,6 @@ impl LaoflchDBServer {
                 Some(vec![]) // 不加载任何
             }
         }).flatten();
-        let vector_service = laoflchdb_vector_service::VectorServiceImpl::new_with_config(
-            &config.model_path,
-            auto_load_models.clone(),
-        );
 
         // 创建嵌入向量索引服务（如果配置启用）
         let embedding_service = match &config.embedding_index {
@@ -101,6 +97,10 @@ impl LaoflchDBServer {
         };
 
         if config.access_protocols.is_empty() {
+            let vector_service = laoflchdb_vector_service::VectorServiceImpl::new_with_config(
+                &config.model_path,
+                auto_load_models.clone(),
+            );
             let addr = config.addr.clone();
             
             info!("启动 gRPC 服务: {}", addr);
