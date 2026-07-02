@@ -1,0 +1,114 @@
+syntax = "proto3";
+package laoflchdb.hnsw;
+
+// ─────────────────────────────────────────────
+// HNSW 向量索引服务
+// ─────────────────────────────────────────────
+
+service HnswIndexService {
+  // 插入向量
+  rpc InsertVector(InsertVectorRequest) returns (InsertVectorResponse);
+  // 搜索最近邻
+  rpc SearchVector(SearchVectorRequest) returns (SearchVectorResponse);
+  // 删除向量
+  rpc DeleteVector(DeleteVectorRequest) returns (DeleteVectorResponse);
+  // 获取索引信息
+  rpc GetIndexInfo(GetIndexInfoRequest) returns (GetIndexInfoResponse);
+  // 手动保存快照
+  rpc SaveSnapshot(SaveSnapshotRequest) returns (SaveSnapshotResponse);
+  // 手动加载快照
+  rpc LoadSnapshot(LoadSnapshotRequest) returns (LoadSnapshotResponse);
+}
+
+// ── InsertVector ────────────────────────────
+
+message InsertVectorRequest {
+  uint64 id = 1;          // 向量唯一 ID
+  string index_name = 2;  // 索引名称（默认 "default"）
+  repeated float vector = 3;  // 向量数据
+}
+
+message InsertVectorResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ── SearchVector ────────────────────────────
+
+message SearchVectorRequest {
+  repeated float query_vector = 1;  // 查询向量
+  int32 top_k = 2;                  // 返回 top-K 结果
+  string index_name = 3;            // 索引名称（默认 "default"）
+}
+
+message SearchResult {
+  uint64 id = 1;
+  float distance = 2;
+  repeated float vector = 3;  // 向量数据（可选）
+}
+
+message SearchVectorResponse {
+  bool success = 1;
+  string message = 2;
+  repeated SearchResult results = 3;
+}
+
+// ── DeleteVector ────────────────────────────
+
+message DeleteVectorRequest {
+  uint64 id = 1;
+  string index_name = 2;
+}
+
+message DeleteVectorResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ── GetIndexInfo ────────────────────────────
+
+message GetIndexInfoRequest {
+  string index_name = 1;
+}
+
+message IndexStats {
+  uint64 num_elements = 1;
+  uint32 max_layers = 2;
+  float avg_connections = 3;
+  uint64 search_count = 4;
+  uint64 insert_count = 5;
+  uint64 delete_count = 6;
+  uint32 dim = 7;
+  string distance_metric = 8;
+  string snapshot_path = 9;
+}
+
+message GetIndexInfoResponse {
+  bool success = 1;
+  string message = 2;
+  IndexStats stats = 3;
+}
+
+// ── SaveSnapshot ────────────────────────────
+
+message SaveSnapshotRequest {
+  string index_name = 1;
+}
+
+message SaveSnapshotResponse {
+  bool success = 1;
+  string message = 2;
+  string path = 3;
+}
+
+// ── LoadSnapshot ────────────────────────────
+
+message LoadSnapshotRequest {
+  string index_name = 1;
+}
+
+message LoadSnapshotResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 num_elements = 3;
+}

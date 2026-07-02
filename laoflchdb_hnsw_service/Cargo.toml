@@ -1,0 +1,19 @@
+[package]
+name = "laoflchdb_hnsw_service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+laoflchdb_engines = { path = "../laoflchdb_engines" }
+laoflchdb_kv_rocksdb_engine = { path = "../laoflchdb_kv_rocksdb_engine" }
+anda_db_hnsw = "0.4"
+tonic = "0.11"
+prost = "0.12"
+tokio = { version = "1.0", features = ["full"] }
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+
+[build-dependencies]
+tonic-build = "0.11"

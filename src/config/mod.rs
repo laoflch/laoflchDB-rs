@@ -133,6 +133,58 @@ fn default_vector_auto_load() -> bool {
     true
 }
 
+/// HNSW 索引服务配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct HnswIndexConfig {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// 向量维度
+    #[serde(default = "default_hnsw_dim")]
+    pub dim: usize,
+    /// HNSW max connections (M)
+    #[serde(default = "default_hnsw_m")]
+    pub m: u32,
+    /// HNSW ef construction
+    #[serde(default = "default_hnsw_ef_construction")]
+    pub ef_construction: u32,
+    /// HNSW ef search
+    #[serde(default = "default_hnsw_ef_search")]
+    pub ef_search: u32,
+    /// 最大元素数
+    #[serde(default = "default_hnsw_max_elements")]
+    pub max_elements: usize,
+    /// KV RocksDB 数据路径
+    #[serde(default = "default_hnsw_kv_db_path")]
+    pub kv_db_path: String,
+    /// 图拓扑快照保存路径
+    #[serde(default = "default_hnsw_snapshot_path")]
+    pub snapshot_path: String,
+}
+
+fn default_hnsw_dim() -> usize { 512 }
+fn default_hnsw_m() -> u32 { 32 }
+fn default_hnsw_ef_construction() -> u32 { 200 }
+fn default_hnsw_ef_search() -> u32 { 50 }
+fn default_hnsw_max_elements() -> usize { 1_000_000 }
+fn default_hnsw_kv_db_path() -> String { "./laoflch_hnsw_data".to_string() }
+fn default_hnsw_snapshot_path() -> String { "./laoflch_hnsw_snapshots".to_string() }
+
+impl Default for HnswIndexConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dim: default_hnsw_dim(),
+            m: default_hnsw_m(),
+            ef_construction: default_hnsw_ef_construction(),
+            ef_search: default_hnsw_ef_search(),
+            max_elements: default_hnsw_max_elements(),
+            kv_db_path: default_hnsw_kv_db_path(),
+            snapshot_path: default_hnsw_snapshot_path(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Clone)]
 pub struct DatabaseConfig {
     pub db_path: String,
@@ -153,6 +205,8 @@ pub struct DatabaseConfig {
     pub runtime_mode: RuntimeMode,
     #[serde(default)]
     pub vector_service: Option<VectorServiceConfig>,
+    #[serde(default)]
+    pub hnsw_index: Option<HnswIndexConfig>,
 }
 
 fn default_addr() -> String {
@@ -213,6 +267,7 @@ impl DatabaseConfig {
             default_policy: default_global_default_policy(),
             runtime_mode: RuntimeMode::default(),
             vector_service: None,
+            hnsw_index: None,
         }
     }
 
