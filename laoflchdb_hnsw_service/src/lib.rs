@@ -402,10 +402,10 @@ impl HnswIndexService for HnswIndexServiceImpl {
 
         // 维度校验
         let dim = self.config.dim;
-        if req.vector.len() != dim {
+        if req.embedding.len() != dim {
             return Ok(Response::new(InsertVectorResponse {
                 success: false,
-                message: format!("向量维度不匹配: 需要 {}, 实际 {}", dim, req.vector.len()),
+                message: format!("向量维度不匹配: 需要 {}, 实际 {}", dim, req.embedding.len()),
             }));
         }
 
@@ -413,7 +413,7 @@ impl HnswIndexService for HnswIndexServiceImpl {
         self.ensure_table(index_name).await?;
         let table_name = format!("hnsw_{}", index_name);
         let key = format!("v:{}", req.id).into_bytes();
-        let value: Vec<u8> = req.vector.iter()
+        let value: Vec<u8> = req.embedding.iter()
             .flat_map(|f| f.to_le_bytes())
             .collect();
 
@@ -427,7 +427,7 @@ impl HnswIndexService for HnswIndexServiceImpl {
         // 2. 插入 HNSW 内存索引（构建图拓扑）
         let ts = Self::unix_ms();
         let index = self.index.read().await;
-        index.insert_f32(req.id, req.vector, ts).map_err(|e| {
+        index.insert_f32(req.id, req.embedding, ts).map_err(|e| {
             Status::internal(format!("HNSW 插入失败: {}", e))
         })?;
 
@@ -446,7 +446,7 @@ impl HnswIndexService for HnswIndexServiceImpl {
         let req = request.into_inner();
         let top_k = if req.top_k <= 0 { 10 } else { req.top_k as usize };
 
-        if req.query_vector.is_empty() {
+        if req.query_embedding.is_empty() {
             return Ok(Response::new(SearchVectorResponse {
                 success: false,
                 message: "查询向量为空".to_string(),
@@ -457,7 +457,7 @@ impl HnswIndexService for HnswIndexServiceImpl {
         // 执行 HNSW ANN 搜索
         let results = {
             let index = self.index.read().await;
-            index.search_f32(&req.query_vector, top_k).map_err(|e| {
+            index.search_f32(&req.query_embedding, top_k).map_err(|e| {
                 Status::internal(format!("HNSW 搜索失败: {}", e))
             })?
         };
@@ -494,7 +494,7 @@ impl HnswIndexService for HnswIndexServiceImpl {
             search_results.push(SearchResult {
                 id: *id,
                 distance: *distance,
-                vector: vector.unwrap_or_default(),
+                embedding: vector.unwrap_or_default(),
             });
         }
 

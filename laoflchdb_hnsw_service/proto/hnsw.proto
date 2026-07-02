@@ -25,7 +25,7 @@ service HnswIndexService {
 message InsertVectorRequest {
   uint64 id = 1;          // 向量唯一 ID
   string index_name = 2;  // 索引名称（默认 "default"）
-  repeated float vector = 3;  // 向量数据
+  repeated float embedding = 3;  // 向量数据
 }
 
 message InsertVectorResponse {
@@ -36,7 +36,7 @@ message InsertVectorResponse {
 // ── SearchVector ────────────────────────────
 
 message SearchVectorRequest {
-  repeated float query_vector = 1;  // 查询向量
+  repeated float query_embedding = 1;  // 查询向量
   int32 top_k = 2;                  // 返回 top-K 结果
   string index_name = 3;            // 索引名称（默认 "default"）
 }
@@ -44,7 +44,7 @@ message SearchVectorRequest {
 message SearchResult {
   uint64 id = 1;
   float distance = 2;
-  repeated float vector = 3;  // 向量数据（可选）
+  repeated float embedding = 3;  // 向量数据（可选）
 }
 
 message SearchVectorResponse {

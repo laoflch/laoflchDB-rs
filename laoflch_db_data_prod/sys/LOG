@@ -1574,3 +1574,31 @@ Block cache entry stats(count,size,portion): DataBlock(1,0.25 KB,0.00076592%) Mi
 2026/07/02-06:50:13.255230 66 [db/db_impl/db_impl.cc:6996] Running the periodic task to trigger compactions.
 2026/07/02-06:50:13.255266 66 [db/db_impl/db_impl.cc:7019] Periodic task to trigger compaction queued Column family [test_rest_api] for compaction.
 2026/07/02-06:50:13.255331 19 (Original Log Time 2026/07/02-06:50:13.255316) [db/db_impl/db_impl_compaction_flush.cc:4075] Compaction nothing to do
+2026/07/02-07:00:10.260208 66 [db/db_impl/db_impl.cc:1209] ------- DUMPING STATS -------
+2026/07/02-07:00:10.260263 66 [db/db_impl/db_impl.cc:1211] 
+** DB Stats **
+Uptime(secs): 16200.0 total, 600.0 interval
+Cumulative writes: 0 writes, 0 keys, 0 commit groups, 0.0 writes per commit group, ingest: 0.00 GB, 0.00 MB/s
+Cumulative WAL: 0 writes, 0 syncs, 0.00 writes per sync, written: 0.00 GB, 0.00 MB/s
+Cumulative stall: 00:00:0.000 H:M:S, 0.0 percent
+Interval writes: 0 writes, 0 keys, 0 commit groups, 0.0 writes per commit group, ingest: 0.00 MB, 0.00 MB/s
+Interval WAL: 0 writes, 0 syncs, 0.00 writes per sync, written: 0.00 GB, 0.00 MB/s
+Interval stall: 00:00:0.000 H:M:S, 0.0 percent
+Write Stall (count): write-buffer-manager-limit-stops: 0
+2026/07/02-07:00:13.255397 66 [db/db_impl/db_impl.cc:6996] Running the periodic task to trigger compactions.
+2026/07/02-07:00:13.255415 66 [db/db_impl/db_impl.cc:7019] Periodic task to trigger compaction queued Column family [test_rest_api] for compaction.
+2026/07/02-07:00:13.255451 19 (Original Log Time 2026/07/02-07:00:13.255440) [db/db_impl/db_impl_compaction_flush.cc:4075] Compaction nothing to do
+2026/07/02-07:10:10.260465 66 [db/db_impl/db_impl.cc:1209] ------- DUMPING STATS -------
+2026/07/02-07:10:10.260539 66 [db/db_impl/db_impl.cc:1211] 
+** DB Stats **
+Uptime(secs): 16800.0 total, 600.0 interval
+Cumulative writes: 0 writes, 0 keys, 0 commit groups, 0.0 writes per commit group, ingest: 0.00 GB, 0.00 MB/s
+Cumulative WAL: 0 writes, 0 syncs, 0.00 writes per sync, written: 0.00 GB, 0.00 MB/s
+Cumulative stall: 00:00:0.000 H:M:S, 0.0 percent
+Interval writes: 0 writes, 0 keys, 0 commit groups, 0.0 writes per commit group, ingest: 0.00 MB, 0.00 MB/s
+Interval WAL: 0 writes, 0 syncs, 0.00 writes per sync, written: 0.00 GB, 0.00 MB/s
+Interval stall: 00:00:0.000 H:M:S, 0.0 percent
+Write Stall (count): write-buffer-manager-limit-stops: 0
+2026/07/02-07:10:13.255495 66 [db/db_impl/db_impl.cc:6996] Running the periodic task to trigger compactions.
+2026/07/02-07:10:13.255535 66 [db/db_impl/db_impl.cc:7019] Periodic task to trigger compaction queued Column family [test_rest_api] for compaction.
+2026/07/02-07:10:13.255650 19 (Original Log Time 2026/07/02-07:10:13.255634) [db/db_impl/db_impl_compaction_flush.cc:4075] Compaction nothing to do
