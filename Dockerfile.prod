@@ -10,7 +10,8 @@ LABEL version="${VERSION}"
 # Create app directories
 RUN mkdir -p /app/data && \
     mkdir -p /app/config && \
-    mkdir -p /usr/local/cuda
+    mkdir -p /usr/local/cuda && \
+    mkdir -p /app/model
 
 # Set working directory
 WORKDIR /app

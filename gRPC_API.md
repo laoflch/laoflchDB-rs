@@ -5,7 +5,7 @@
 - **服务地址**: `localhost:19777`
 - **协议**: gRPC (HTTP/2)
 - **语言**: Protocol Buffers 3
-- **版本**: v0.1.6
+- **版本**: v0.1.7
 
 ## 认证机制
 
@@ -94,6 +94,7 @@ service VectorService {
   rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
   rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
   rpc UnloadModel(UnloadModelRequest) returns (UnloadModelResponse);
+  rpc ListLoadableModels(ListLoadableModelsRequest) returns (ListLoadableModelsResponse);
 }
 ```
 
@@ -911,6 +912,49 @@ JOIN inventory.products ON sales.orders.product_id = inventory.products.product_
 | message | string | 提示信息 |
 | model_name | string | 模型名称 |
 
+#### ListLoadableModelsRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| (无) | - | - | 无参数 |
+
+#### LoadableModelInfo
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| model_name | string | 模型目录名称 |
+| model_path | string | 模型完整路径 |
+| embedding_dim | int32 | 向量维度（来自 config.json 的 hidden_size） |
+| has_config | bool | 是否存在 config.json |
+| has_tokenizer | bool | 是否存在 tokenizer.json |
+| has_weights | bool | 是否存在 model.safetensors |
+| is_loaded | bool | 是否已加载到内存 |
+
+#### ListLoadableModelsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| model_dir | string | Candle 模型目录路径 |
+| models | repeated LoadableModelInfo | 可加载模型列表 |
+
+#### 自动加载配置
+
+启动时通过 `laoflchdb.yaml` 的 `vector_service` 配置节控制模型自动加载：
+
+```yaml
+vector_service:
+  enabled: true               # 启用向量化服务
+  auto_load: true             # 启动时自动扫描加载
+  load_models: []             # 指定加载列表（空=加载 candle 目录下所有有效模型）
+```
+
+模型文件需放置于 `{model_path}/candle/{model_name}/` 目录下，包含：
+- `config.json` — BERT 模型配置
+- `tokenizer.json` — HuggingFace tokenizer
+- `model.safetensors` — 模型权重 (SafeTensors 格式)
+
 ---
 
 ## 使用示例
@@ -1079,13 +1123,20 @@ resp = vec_stub.ListModels(vector_pb2.ListModelsRequest(), metadata=metadata)
 for m in resp.models:
     print(f"  model: {m.model_name}, dim={m.embedding_dim}, device={m.device}")
 
-# 16. 删除表
+# 16. 列出可加载模型（扫描 candle 目录）
+resp = vec_stub.ListLoadableModels(vector_pb2.ListLoadableModelsRequest(), metadata=metadata)
+print(f"ListLoadableModels: {resp.success}, dir={resp.model_dir}")
+for m in resp.models:
+    status = "LOADED" if m.is_loaded else "available"
+    print(f"  {m.model_name}: dim={m.embedding_dim} [{status}]")
+
+# 17. 删除表
 resp = stub.DropTable(rpc_pb2.DropTableRequest(
     schema="sys", table_name="users"
 ), metadata=metadata)
 print(f"Drop table: {resp.success}")
 
-# 17. 用户登出
+# 18. 用户登出
 resp = stub.Logout(rpc_pb2.LogoutRequest(token=login_resp.token))
 print(f"Logout: {resp.success}")
 ```

@@ -28,8 +28,12 @@ SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "tar
 # 服务器配置文件路径
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "laoflchdb.yaml")
 
-# 真实 BERT 模型测试目录（如果存在则测试真实模型推理路径）
-TEST_REAL_MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "test_bert_model")
+# 真实 BERT 模型测试目录（下载到 laoflch_db_model/candle/ 下）
+TEST_REAL_MODEL_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..",
+    "laoflch_db_model", "candle", "bge-small-zh-v1.5"
+)
+TEST_REAL_MODEL_NAME = "bge-small-zh-v1.5"
 
 TOKEN = None
 stub = None
@@ -87,13 +91,22 @@ def test_list_models_empty():
 
 
 def test_load_model():
-    """测试加载模型注册"""
+    """测试加载模型"""
     print("[测试] 注册模型...")
     try:
+        # 使用真实 BERT 模型目录
+        model_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..",
+            "laoflch_db_model", "candle", "bge-small-zh-v1.5"
+        )
+        if not os.path.isfile(os.path.join(model_dir, "model.safetensors")):
+            print(f"    - 模型文件不存在，跳过测试")
+            return True
+
         req = vector_pb2.LoadModelRequest(
             model_name="bert_base",
-            model_path="/tmp/models/bert_base",
-            embedding_dim=768,
+            model_path=model_dir,
+            embedding_dim=512,
         )
         resp = vec_stub.LoadModel(req, metadata=get_metadata())
         assert resp.success, f"LoadModel failed: {resp.message}"
@@ -105,16 +118,26 @@ def test_load_model():
 
 
 def test_load_model_empty_name():
-    """测试加载空名称模型"""
+    """测试加载空名称模型应失败"""
     print("[测试] 加载空名称模型...")
     try:
+        # 创建空目录确保路径有效
+        os.makedirs("/tmp/empty", exist_ok=True)
         req = vector_pb2.LoadModelRequest(
             model_name="",
             model_path="/tmp/empty",
             embedding_dim=64,
         )
         resp = vec_stub.LoadModel(req, metadata=get_metadata())
-        print(f"    ✓ 空名称模型加载结果: {resp.message}")
+        # 空名称应当被服务端拒绝
+        if resp.success:
+            print(f"    ✗ 空名称不应注册成功: {resp.message}")
+            return False
+        print(f"    ✓ 空名称被正确拒绝: {resp.message}")
+        return True
+    except grpc.RpcError as e:
+        # gRPC 错误也是正确的拒绝方式
+        print(f"    ✓ 空名称被正确拒绝 (gRPC error): {e.code()}")
         return True
     except Exception as e:
         print(f"    ✗ 空名称模型加载异常: {e}")
@@ -147,7 +170,7 @@ def test_get_model_info():
         resp = vec_stub.GetModelInfo(req, metadata=get_metadata())
         assert resp.success, f"GetModelInfo failed: {resp.message}"
         assert resp.model_name == "bert_base"
-        assert resp.embedding_dim == 768
+        assert resp.embedding_dim == 512
         print(f"    ✓ 模型信息: name={resp.model_name}, dim={resp.embedding_dim}, loaded={resp.loaded}")
         return True
     except Exception as e:
@@ -181,14 +204,14 @@ def test_create_embedding():
         req = vector_pb2.EmbeddingRequest(
             model_name="bert_base",
             texts=["Hello World", "Rust Programming", "Vector Database"],
-            dim=768,
+            dim=512,
         )
         resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
         assert resp.success, f"CreateEmbedding failed: {resp.message}"
         assert len(resp.results) == 3
         print(f"    ✓ 成功生成 {len(resp.results)} 条向量")
         for r in resp.results:
-            assert len(r.embedding) == 768, f"向量维度应为 768，实际: {len(r.embedding)}"
+            assert len(r.embedding) == 512, f"向量维度应为 512，实际: {len(r.embedding)}"
             print(f"        text='{r.text[:20]}...' dim={r.dim} embedding[:3]={r.embedding[:3]}")
         return True
     except Exception as e:
@@ -223,7 +246,7 @@ def test_create_embedding_empty_text():
         req = vector_pb2.EmbeddingRequest(
             model_name="bert_base",
             texts=[""],
-            dim=768,
+            dim=512,
         )
         resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
         assert resp.success
@@ -370,11 +393,20 @@ def test_vector_model_lifecycle():
     print("[测试] 向量模型完整生命周期...")
     model_name = "lifecycle_model"
     try:
+        # 使用真实 BERT 模型目录
+        model_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..",
+            "laoflch_db_model", "candle", "bge-small-zh-v1.5"
+        )
+        if not os.path.isfile(os.path.join(model_dir, "model.safetensors")):
+            print(f"    - 模型文件不存在，跳过测试")
+            return True
+
         # 1. 加载模型
         load_req = vector_pb2.LoadModelRequest(
             model_name=model_name,
-            model_path="/tmp/lifecycle",
-            embedding_dim=128,
+            model_path=model_dir,
+            embedding_dim=512,
         )
         load_resp = vec_stub.LoadModel(load_req, metadata=get_metadata())
         assert load_resp.success, f"加载模型失败: {load_resp.message}"
@@ -391,12 +423,12 @@ def test_vector_model_lifecycle():
         embed_req = vector_pb2.EmbeddingRequest(
             model_name=model_name,
             texts=["lifecycle test"],
-            dim=128,
+            dim=512,
         )
         embed_resp = vec_stub.CreateEmbedding(embed_req, metadata=get_metadata())
         assert embed_resp.success, f"向量化失败: {embed_resp.message}"
         assert len(embed_resp.results) == 1
-        assert len(embed_resp.results[0].embedding) == 128
+        assert len(embed_resp.results[0].embedding) == 512
         print(f"        3/5 向量化 ✓")
 
         # 4. 卸载模型
@@ -465,21 +497,21 @@ def test_create_embedding_consistency():
         req1 = vector_pb2.EmbeddingRequest(
             model_name=model_name,
             texts=["一致性测试文本"],
-            dim=768,
+            dim=512,
         )
         resp1 = vec_stub.CreateEmbedding(req1, metadata=get_metadata())
 
         req2 = vector_pb2.EmbeddingRequest(
             model_name=model_name,
             texts=["一致性测试文本"],
-            dim=768,
+            dim=512,
         )
         resp2 = vec_stub.CreateEmbedding(req2, metadata=get_metadata())
 
         assert resp1.success and resp2.success
         e1 = resp1.results[0].embedding
         e2 = resp2.results[0].embedding
-        assert len(e1) == len(e2) == 768
+        assert len(e1) == len(e2) == 512
 
         # 检查所有维度是否一致
         diff = sum(abs(a - b) for a, b in zip(e1, e2))
@@ -499,7 +531,7 @@ def test_create_embedding_different_texts():
         req = vector_pb2.EmbeddingRequest(
             model_name=model_name,
             texts=["苹果", "香蕉", "计算机", "编程"],
-            dim=768,
+            dim=512,
         )
         resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
         assert resp.success
@@ -525,7 +557,7 @@ def test_create_embedding_dimension():
     """测试向量维度参数"""
     print("[测试] 向量维度匹配...")
     model_name = "bert_base"
-    test_cases = [("短文本", 768), ("中等长度的测试文本内容", 768), ("长文本内容" * 50, 768)]
+    test_cases = [("短文本", 512), ("中等长度的测试文本内容", 512), ("长文本内容" * 50, 512)]
     try:
         for text, expected_dim in test_cases:
             req = vector_pb2.EmbeddingRequest(
@@ -553,7 +585,7 @@ def test_create_embedding_l2_normalized():
         req = vector_pb2.EmbeddingRequest(
             model_name=model_name,
             texts=texts,
-            dim=768,
+            dim=512,
         )
         resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
         assert resp.success
@@ -590,7 +622,7 @@ def test_create_embedding_special_chars():
         req = vector_pb2.EmbeddingRequest(
             model_name=model_name,
             texts=special_texts,
-            dim=768,
+            dim=512,
         )
         resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
         assert resp.success
@@ -654,21 +686,22 @@ def test_list_loadable_models():
 def test_load_from_model_dir():
     """测试从模型目录加载模型并验证可用性"""
     print("[测试] 从模型目录加载...")
-    # 创建一个临时模型目录（不完整的模型，用于测试加载和列表）
-    model_dir = "/tmp/loadable_test_models"
-    model_sub = os.path.join(model_dir, "test_model_v1")
-    os.makedirs(model_sub, exist_ok=True)
-    config_path = os.path.join(model_sub, "config.json")
-    with open(config_path, "w") as f:
-        f.write('{"hidden_size": 128}')
-    # 仅创建 config.json，不创建 tokenizer/model.safetensors（模拟不完整模型）
+    # 使用真实 BERT 模型目录，用别名加载测试
+    real_model_dir = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "..",
+        "laoflch_db_model", "candle", "bge-small-zh-v1.5"
+    )
+    if not os.path.isfile(os.path.join(real_model_dir, "model.safetensors")):
+        print(f"    - 真实模型文件不存在，跳过测试")
+        return True
 
+    test_alias = "test_loaded_model"
     try:
-        # 这里使用 gRPC 的动态加载
+        # 通过 gRPC 从目录加载真实模型（使用不同名称）
         req = vector_pb2.LoadModelRequest(
-            model_name="test_model_v1",
-            model_path=model_sub,
-            embedding_dim=128,
+            model_name=test_alias,
+            model_path=real_model_dir,
+            embedding_dim=512,
         )
         resp = vec_stub.LoadModel(req, metadata=get_metadata())
         assert resp.success, f"加载失败: {resp.message}"
@@ -677,20 +710,20 @@ def test_load_from_model_dir():
         list_req = vector_pb2.ListModelsRequest()
         list_resp = vec_stub.ListModels(list_req, metadata=get_metadata())
         names = [m.model_name for m in list_resp.models]
-        assert "test_model_v1" in names
+        assert test_alias in names, f"模型 '{test_alias}' 不在列表中: {names}"
 
         # 验证可以用该模型生成向量
         emb_req = vector_pb2.EmbeddingRequest(
-            model_name="test_model_v1",
-            texts=["从测试目录加载的模型"],
-            dim=128,
+            model_name=test_alias,
+            texts=["从目录加载的模型推理测试"],
+            dim=512,
         )
         emb_resp = vec_stub.CreateEmbedding(emb_req, metadata=get_metadata())
         assert emb_resp.success
-        assert len(emb_resp.results[0].embedding) == 128
+        assert len(emb_resp.results[0].embedding) == 512
 
         # 清理
-        unload_req = vector_pb2.UnloadModelRequest(model_name="test_model_v1")
+        unload_req = vector_pb2.UnloadModelRequest(model_name=test_alias)
         vec_stub.UnloadModel(unload_req, metadata=get_metadata())
 
         print(f"    ✓ 从模型目录加载、使用、卸载成功")
@@ -698,9 +731,6 @@ def test_load_from_model_dir():
     except Exception as e:
         print(f"    ✗ 测试失败: {e}")
         return False
-    finally:
-        import shutil
-        shutil.rmtree(model_dir, ignore_errors=True)
 
 
 # ============================================================================
@@ -711,7 +741,7 @@ def test_load_from_model_dir():
 # 推荐: shibing624/text2vec-base-chinese (约 90MB)，或
 #        BAAI/bge-small-zh-v1.5 (约 33MB)
 REAL_MODEL_HF_REPO = "shibing624/text2vec-base-chinese"
-REAL_MODEL_DIM = 384
+REAL_MODEL_DIM = 512
 
 
 def _check_real_model_available():
@@ -773,7 +803,7 @@ def test_real_model_load():
 
     try:
         req = vector_pb2.LoadModelRequest(
-            model_name="real_bert",
+            model_name=TEST_REAL_MODEL_NAME,
             model_path=TEST_REAL_MODEL_DIR,
             embedding_dim=REAL_MODEL_DIM,
         )
@@ -795,7 +825,7 @@ def test_real_model_embedding():
 
     try:
         req = vector_pb2.EmbeddingRequest(
-            model_name="real_bert",
+            model_name=TEST_REAL_MODEL_NAME,
             texts=["今天天气怎么样", "自然语言处理是人工智能的重要分支", "Rust 系统编程语言"],
             dim=REAL_MODEL_DIM,
         )
@@ -824,7 +854,7 @@ def test_real_model_consistency():
 
         # 用真实模型生成向量
         real_req = vector_pb2.EmbeddingRequest(
-            model_name="real_bert",
+            model_name=TEST_REAL_MODEL_NAME,
             texts=texts,
             dim=REAL_MODEL_DIM,
         )
@@ -833,7 +863,7 @@ def test_real_model_consistency():
 
         # 再次用真实模型生成向量（验证确定性）
         real_req2 = vector_pb2.EmbeddingRequest(
-            model_name="real_bert",
+            model_name=TEST_REAL_MODEL_NAME,
             texts=texts,
             dim=REAL_MODEL_DIM,
         )
@@ -861,7 +891,7 @@ def test_real_model_unload():
         return True
 
     try:
-        req = vector_pb2.UnloadModelRequest(model_name="real_bert")
+        req = vector_pb2.UnloadModelRequest(model_name=TEST_REAL_MODEL_NAME)
         resp = vec_stub.UnloadModel(req, metadata=get_metadata())
         assert resp.success, f"卸载真实模型失败: {resp.message}"
         print(f"    ✓ 真实模型卸载成功: {resp.model_name}")

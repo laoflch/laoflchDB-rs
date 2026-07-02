@@ -3236,6 +3236,7 @@ dependencies = [
  "hex",
  "laoflchdb_engines",
  "laoflchdb_index_tantivy_engine",
+ "laoflchdb_kv_rocksdb_engine",
  "laoflchdb_sql_df_engine",
  "laoflchdb_vector_service",
  "log",
@@ -3301,6 +3302,22 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "laoflchdb_kv_rocksdb_engine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "laoflchdb_engines",
+ "log",
+ "protobuf",
+ "rust-rocksdb",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
 ]
 
 [[package]]

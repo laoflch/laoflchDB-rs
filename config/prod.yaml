@@ -3,6 +3,15 @@
 # Database configuration
 db_path: /app/data
 index_path: /app/indexes
+model_path: /app/model
+
+# Vector service configuration
+vector_service:
+  enabled: true
+  auto_load: true
+  # 可指定启动时加载的模型名称列表（空列表表示加载 candle 目录下所有有效模型）
+  load_models: ["bge-small-zh-v1.5"]
+
 
 # Log configuration
 log_level: info

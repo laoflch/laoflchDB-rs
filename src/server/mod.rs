@@ -64,7 +64,7 @@ impl LaoflchDBServer {
         }).flatten();
         let vector_service = laoflchdb_vector_service::VectorServiceImpl::new_with_config(
             &config.model_path,
-            auto_load_models,
+            auto_load_models.clone(),
         );
 
         if config.access_protocols.is_empty() {

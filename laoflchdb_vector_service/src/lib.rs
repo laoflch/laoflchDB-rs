@@ -405,32 +405,49 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
             req.model_name, req.model_path, req.embedding_dim
         );
 
+        if req.model_name.is_empty() {
+            return Err(Status::invalid_argument("模型名称不能为空"));
+        }
+
+        let model_path = Path::new(&req.model_path);
+        if !model_path.exists() || !model_path.is_dir() {
+            return Err(Status::not_found(format!(
+                "模型路径 '{}' 不存在或不是目录",
+                req.model_path
+            )));
+        }
+
         let device_str = format!("{:?}", self.default_device);
 
-        // 尝试加载真实 BERT 模型（如果 model_path 是包含模型文件的目录）
+        // 尝试加载真实 BERT 模型
         let bert_model = try_load_bert_model(&req.model_path, &self.default_device);
 
-        match bert_model {
-            Some(ref bm) => info!(
-                "模型 '{}' 成功加载为真实 BERT 模型，dim={}",
-                req.model_name,
-                bm.config.hidden_size
-            ),
-            None => info!(
-                "模型 '{}' 未检测到真实模型文件，使用 fallback 实现",
-                req.model_name
-            ),
-        }
+        let bert_model = match bert_model {
+            Some(model) => {
+                let hidden_size = model.config.hidden_size;
+                info!(
+                    "模型 '{}' 成功加载为真实 BERT 模型，dim={}",
+                    req.model_name, hidden_size
+                );
+                model
+            }
+            None => {
+                return Err(Status::not_found(format!(
+                    "模型路径 '{}' 缺少必要文件 (需要 config.json, tokenizer.json, model.safetensors)",
+                    req.model_path
+                )));
+            }
+        };
 
         let mut models = self.models.write().await;
         models.insert(
             req.model_name.clone(),
             ModelInstance {
-                embedding_dim: req.embedding_dim as usize,
+                embedding_dim: bert_model.config.hidden_size,
                 model_path: req.model_path,
                 loaded: true,
                 device: device_str,
-                bert_model,
+                bert_model: Some(bert_model),
             },
         );
 
@@ -585,13 +602,43 @@ impl BertConfig {
     }
 }
 
+// ---- 手动 LayerNorm（CUDA 兼容） ----
+
+/// 自定义 LayerNorm，使用基础运算（mean、std、sub、div、mul、add）
+/// 避免依赖 candle_nn::layer_norm 的 CUDA kernel
+struct CudaLayerNorm {
+    weight: Tensor,
+    bias: Tensor,
+    eps: f64,
+    size: usize,
+}
+
+impl CudaLayerNorm {
+    fn load(size: usize, eps: f64, vb: VarBuilder) -> Result<Self, candle_core::Error> {
+        let weight = vb.get_with_hints(size, "weight", candle_nn::Init::Const(1.0))?;
+        let bias = vb.get_with_hints(size, "bias", candle_nn::Init::Const(0.0))?;
+        Ok(Self { weight, bias, eps, size })
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor, candle_core::Error> {
+        // LayerNorm on last dimension: y = (x - mean) / sqrt(var + eps) * weight + bias
+        let dim = x.dims().len() - 1;
+        let mean = x.mean_keepdim(dim)?;
+        let centered = x.broadcast_sub(&mean)?;
+        let variance = centered.sqr()?.mean_keepdim(dim)?;
+        let eps_t = Tensor::new(self.eps as f32, x.device())?;
+        let normalized = centered.broadcast_div(&(variance.broadcast_add(&eps_t)?).sqrt()?)?;
+        normalized.broadcast_mul(&self.weight)?.broadcast_add(&self.bias)
+    }
+}
+
 // ---- BERT 子模块 ----
 
 struct BertEmbeddings {
     word_embeddings: candle_nn::Embedding,
     position_embeddings: candle_nn::Embedding,
     token_type_embeddings: candle_nn::Embedding,
-    layer_norm: candle_nn::LayerNorm,
+    layer_norm: CudaLayerNorm,
     dropout: Dropout,
 }
 
@@ -608,7 +655,7 @@ impl BertEmbeddings {
             config.hidden_size,
             vb.pp("token_type_embeddings"),
         )?;
-        let layer_norm = candle_nn::layer_norm(
+        let layer_norm = CudaLayerNorm::load(
             config.hidden_size,
             config.layer_norm_eps(),
             vb.pp("LayerNorm"),
@@ -685,7 +732,7 @@ impl BertSelfAttention {
     fn transpose_for_scores(&self, xs: &Tensor) -> Result<Tensor, candle_core::Error> {
         let (b_sz, seq_len, _hidden) = xs.dims3()?;
         let xs = xs.reshape((b_sz, seq_len, self.num_attention_heads, self.attention_head_size))?;
-        xs.permute((0, 2, 1, 3))
+        xs.permute((0, 2, 1, 3))?.contiguous()
     }
 
     fn forward(&self, hidden_states: &Tensor, attention_mask: &Tensor) -> Result<Tensor, candle_core::Error> {
@@ -697,14 +744,18 @@ impl BertSelfAttention {
         let key = self.transpose_for_scores(&key)?;
         let value = self.transpose_for_scores(&value)?;
 
-        let scale = 1.0 / (self.attention_head_size as f64).sqrt();
-        let attention_scores = query.matmul(&key.t()?)?.broadcast_mul(&Tensor::new(scale, query.device())?)?;
+        let scale = 1.0f32 / (self.attention_head_size as f32).sqrt();
+        let attention_scores = query.matmul(&key.t()?.contiguous()?)?.broadcast_mul(&Tensor::new(scale, query.device())?)?;
         let attention_scores = attention_scores.broadcast_add(attention_mask)?;
-        let attention_probs = candle_nn::ops::softmax_last_dim(&attention_scores)?;
+        // 软最大化在 CPU 上执行（CUDA 可能不支持 softmax_last_dim）
+        let orig_device = attention_scores.device().clone();
+        let attention_scores_cpu = attention_scores.to_device(&Device::Cpu)?;
+        let attention_probs = candle_nn::ops::softmax_last_dim(&attention_scores_cpu)?;
+        let attention_probs = attention_probs.to_device(&orig_device)?;
         let attention_probs = self.dropout.forward_t(&attention_probs, false)?;
 
         let context = attention_probs.matmul(&value)?;
-        let context = context.permute((0, 2, 1, 3))?;
+        let context = context.permute((0, 2, 1, 3))?.contiguous()?;
         let (b_sz, seq_len, _heads, _head_size) = context.dims4()?;
         context.reshape((b_sz, seq_len, self.hidden_size))
     }
@@ -755,7 +806,7 @@ struct BertLayer {
 
 impl BertLayer {
     fn load(vb: VarBuilder, config: &BertConfig, layer_idx: usize) -> Result<Self, candle_core::Error> {
-        let vb = vb.pp("encoder").pp("layer").pp(&layer_idx.to_string());
+        let vb = vb.pp("layer").pp(&layer_idx.to_string());
         let attention = BertAttention::load(vb.pp("attention"), config)?;
         let intermediate = BertIntermediate::load(vb.pp("intermediate"), config)?;
         let output = BertOutput::load(vb.pp("output"), config)?;
@@ -819,8 +870,12 @@ impl BertModel {
     ) -> Result<Tensor, candle_core::Error> {
         // 扩展 attention_mask: [batch, seq] -> [batch, 1, 1, seq]
         let mask = attention_mask.unsqueeze(1)?.unsqueeze(2)?;
-        // 转换: 0 -> -10000 (mask out), 1 -> 0 (keep)
-        let mask = (mask.to_dtype(DType::F32)? * -10000.0)?;
+        // 转换: 1 -> 0 (keep), 0 -> -10000 (mask out)
+        // standard formula: (1 - mask_f32) * -10000.0
+        let ones = Tensor::new(1.0f32, mask.device())?;
+        let mask = mask.to_dtype(DType::F32)?;
+        let scale = Tensor::new(-10000.0f32, mask.device())?;
+        let mask = ones.broadcast_sub(&mask)?.broadcast_mul(&scale)?;
         let mask = mask.broadcast_as((input_ids.dim(0)?, 1usize, 1usize, input_ids.dim(1)?))?;
 
         // embeddings 接受拼接输入 [input_ids, token_type_ids] 或只接收 input_ids
@@ -835,14 +890,14 @@ impl BertModel {
 
 struct BertSelfOutput {
     dense: candle_nn::Linear,
-    layer_norm: candle_nn::LayerNorm,
+    layer_norm: CudaLayerNorm,
     dropout: Dropout,
 }
 
 impl BertSelfOutput {
     fn load(vb: VarBuilder, config: &BertConfig) -> Result<Self, candle_core::Error> {
         let dense = candle_nn::linear(config.hidden_size, config.hidden_size, vb.pp("dense"))?;
-        let layer_norm = candle_nn::layer_norm(
+        let layer_norm = CudaLayerNorm::load(
             config.hidden_size,
             config.layer_norm_eps(),
             vb.pp("LayerNorm"),
@@ -866,14 +921,14 @@ impl BertSelfOutput {
 
 struct BertOutput {
     dense: candle_nn::Linear,
-    layer_norm: candle_nn::LayerNorm,
+    layer_norm: CudaLayerNorm,
     dropout: Dropout,
 }
 
 impl BertOutput {
     fn load(vb: VarBuilder, config: &BertConfig) -> Result<Self, candle_core::Error> {
         let dense = candle_nn::linear(config.intermediate_size, config.hidden_size, vb.pp("dense"))?;
-        let layer_norm = candle_nn::layer_norm(
+        let layer_norm = CudaLayerNorm::load(
             config.hidden_size,
             config.layer_norm_eps(),
             vb.pp("LayerNorm"),
@@ -1146,12 +1201,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_and_list_model() {
+        let model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("laoflch_db_model/candle/bge-small-zh-v1.5");
+        if !model_path.join("model.safetensors").exists() {
+            return; // 模型文件不存在，跳过测试
+        }
+
+        let device = VectorServiceImpl::detect_device();
+        let bert_model = crate::try_load_bert_model(
+            &model_path.to_string_lossy(),
+            &device,
+        );
+        assert!(bert_model.is_some(), "BERT model should load from: {}",
+            model_path.display());
+
         let service = VectorServiceImpl::new();
 
         let load_req = Request::new(LoadModelRequest {
             model_name: "test_model".to_string(),
-            model_path: "/tmp/test_model".to_string(),
-            embedding_dim: 768,
+            model_path: model_path.to_string_lossy().to_string(),
+            embedding_dim: 512,
         });
         let load_resp = service.load_model(load_req).await.unwrap();
         assert!(load_resp.into_inner().success);
@@ -1161,17 +1232,25 @@ mod tests {
         let models = list_resp.into_inner().models;
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].model_name, "test_model");
-        assert_eq!(models[0].embedding_dim, 768);
+        assert_eq!(models[0].embedding_dim, 512);
     }
 
     #[tokio::test]
     async fn test_unload_model() {
+        let model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("laoflch_db_model/candle/bge-small-zh-v1.5");
+        if !model_path.join("model.safetensors").exists() {
+            return; // 模型文件不存在，跳过测试
+        }
+
         let service = VectorServiceImpl::new();
 
         let load_req = Request::new(LoadModelRequest {
             model_name: "temp_model".to_string(),
-            model_path: "/tmp/temp".to_string(),
-            embedding_dim: 384,
+            model_path: model_path.to_string_lossy().to_string(),
+            embedding_dim: 512,
         });
         service.load_model(load_req).await.unwrap();
 
@@ -1274,25 +1353,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_embedding_with_model() {
+        let model_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("laoflch_db_model/candle/bge-small-zh-v1.5");
+        if !model_path.join("model.safetensors").exists() {
+            return; // 模型文件不存在，跳过测试
+        }
+
         let service = VectorServiceImpl::new();
 
         let load_req = Request::new(LoadModelRequest {
             model_name: "embed_model".to_string(),
-            model_path: "/tmp/embed".to_string(),
-            embedding_dim: 64,
+            model_path: model_path.to_string_lossy().to_string(),
+            embedding_dim: 512,
         });
         service.load_model(load_req).await.unwrap();
 
         let req = Request::new(EmbeddingRequest {
             model_name: "embed_model".to_string(),
             texts: vec!["hello world".to_string(), "test text".to_string()],
-            dim: 64,
+            dim: 512,
         });
         let resp = service.create_embedding(req).await.unwrap();
         let results = resp.into_inner().results;
         assert_eq!(results.len(), 2);
-        assert_eq!(results[0].embedding.len(), 64);
-        assert_eq!(results[1].embedding.len(), 64);
+        assert_eq!(results[0].embedding.len(), 512);
+        assert_eq!(results[1].embedding.len(), 512);
     }
 
     #[test]

@@ -1,0 +1,16 @@
+[package]
+name = "laoflchdb_kv_rocksdb_engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rocksdb = { version = "0.50", package = "rust-rocksdb", features = ["zstd-static-linking-only"] }
+laoflchdb_engines = { path = "../laoflchdb_engines" }
+async-trait = "0.1"
+tokio = { version = "1.0", features = ["rt"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+thiserror = "1.0"
+bytes = "1.6"
+protobuf = "3.7"
