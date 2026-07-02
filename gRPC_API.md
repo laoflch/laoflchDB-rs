@@ -5,7 +5,7 @@
 - **服务地址**: `localhost:19777`
 - **协议**: gRPC (HTTP/2)
 - **语言**: Protocol Buffers 3
-- **版本**: v0.1.7
+- **版本**: v0.1.8
 
 ## 认证机制
 
@@ -95,6 +95,25 @@ service VectorService {
   rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
   rpc UnloadModel(UnloadModelRequest) returns (UnloadModelResponse);
   rpc ListLoadableModels(ListLoadableModelsRequest) returns (ListLoadableModelsResponse);
+}```
+```
+
+### 3. EmbeddingIndexService 嵌入向量索引服务
+
+```protobuf
+service EmbeddingIndexService {
+  // 插入向量
+  rpc InsertEmbedding(InsertEmbeddingRequest) returns (InsertEmbeddingResponse);
+  // 搜索最近邻
+  rpc SearchEmbedding(SearchEmbeddingRequest) returns (SearchEmbeddingResponse);
+  // 删除向量
+  rpc DeleteEmbedding(DeleteEmbeddingRequest) returns (DeleteEmbeddingResponse);
+  // 获取索引信息
+  rpc GetIndexInfo(GetIndexInfoRequest) returns (GetIndexInfoResponse);
+  // 手动保存快照
+  rpc SaveSnapshot(SaveSnapshotRequest) returns (SaveSnapshotResponse);
+  // 手动加载快照
+  rpc LoadSnapshot(LoadSnapshotRequest) returns (LoadSnapshotResponse);
 }
 ```
 
@@ -957,6 +976,135 @@ vector_service:
 
 ---
 
+### 10. EmbeddingIndexService 嵌入向量索引服务
+
+#### InsertEmbeddingRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| id | uint64 | 是 | 向量唯一 ID |
+| index_name | string | 否 | 索引名称（默认 "default"） |
+| embedding | repeated float | 是 | 嵌入向量数据 |
+
+#### InsertEmbeddingResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+
+#### SearchEmbeddingRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| query_embedding | repeated float | 是 | 查询向量 |
+| top_k | int32 | 是 | 返回 top-K 最近邻结果 |
+| index_name | string | 否 | 索引名称（默认 "default"） |
+
+#### SearchResult
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | uint64 | 向量 ID |
+| distance | float | 与查询向量的距离 |
+| embedding | repeated float | 向量数据（可选返回） |
+
+#### SearchEmbeddingResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| results | repeated SearchResult | 搜索结果列表 |
+
+#### DeleteEmbeddingRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| id | uint64 | 是 | 要删除的向量 ID |
+| index_name | string | 否 | 索引名称（默认 "default"） |
+
+#### DeleteEmbeddingResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+
+#### GetIndexInfoRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+
+#### IndexStats
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| num_elements | uint64 | 索引中的元素数量 |
+| max_layers | uint32 | HNSW 最大层级数 |
+| avg_connections | float | 平均连接数 |
+| search_count | uint64 | 搜索总次数 |
+| insert_count | uint64 | 插入总次数 |
+| delete_count | uint64 | 删除总次数 |
+| dim | uint32 | 向量维度 |
+| distance_metric | string | 距离度量方式（如 Cosine） |
+| snapshot_path | string | 快照保存路径 |
+
+#### GetIndexInfoResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| stats | IndexStats | 索引统计信息 |
+
+#### SaveSnapshotRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+
+#### SaveSnapshotResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| path | string | 快照保存路径 |
+
+#### LoadSnapshotRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| index_name | string | 是 | 索引名称 |
+
+#### LoadSnapshotResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| num_elements | uint64 | 加载的元素数量 |
+
+#### 自动加载配置
+
+启动时通过 `laoflchdb.yaml` 的 `embedding_index` 配置节控制嵌入向量索引服务启动参数：
+
+```yaml
+embedding_index:
+  enabled: true               # 启用嵌入向量索引服务
+  dim: 512                    # 向量维度
+  m: 32                       # HNSW 图每个节点的最大连接数
+  ef_construction: 200        # 图构建时的搜索宽度
+  ef_search: 50               # 搜索时的搜索宽度
+  max_elements: 1000000       # 索引最大容量
+  kv_db_path: /path/to/data   # KV 存储路径（持久化向量数据）
+  snapshot_path: /path/to/snapshots  # HNSW 图拓扑快照保存路径
+```
+
+---
+
 ## 使用示例
 
 ### Python 示例
@@ -1130,13 +1278,64 @@ for m in resp.models:
     status = "LOADED" if m.is_loaded else "available"
     print(f"  {m.model_name}: dim={m.embedding_dim} [{status}]")
 
-# 17. 删除表
+# ===== 嵌入向量索引服务操作 =====
+# 17. 连接嵌入向量索引服务
+import embedding_pb2
+import embedding_pb2_grpc
+
+emb_stub = embedding_pb2_grpc.EmbeddingIndexServiceStub(channel)
+
+# 18. 插入向量
+resp = emb_stub.InsertEmbedding(embedding_pb2.InsertEmbeddingRequest(
+    id=1,
+    index_name="default",
+    embedding=[0.1, 0.2, 0.3, 0.4, 0.5] * 102,  # 512 维向量
+), metadata=metadata)
+print(f"Insert embedding: {resp.success}")
+
+# 19. 搜索最近邻
+resp = emb_stub.SearchEmbedding(embedding_pb2.SearchEmbeddingRequest(
+    query_embedding=[0.1, 0.2, 0.3, 0.4, 0.5] * 102,
+    top_k=5,
+    index_name="default",
+), metadata=metadata)
+for r in resp.results:
+    print(f"  id={r.id} distance={r.distance:.6f} embedding[:3]={r.embedding[:3]}")
+
+# 20. 获取索引信息
+resp = emb_stub.GetIndexInfo(embedding_pb2.GetIndexInfoRequest(
+    index_name="default",
+), metadata=metadata)
+if resp.success:
+    s = resp.stats
+    print(f"Index info: elements={s.num_elements}, dim={s.dim}, metric={s.distance_metric}")
+
+# 21. 删除向量
+resp = emb_stub.DeleteEmbedding(embedding_pb2.DeleteEmbeddingRequest(
+    id=1,
+    index_name="default",
+), metadata=metadata)
+print(f"Delete embedding: {resp.success}")
+
+# 22. 保存快照
+resp = emb_stub.SaveSnapshot(embedding_pb2.SaveSnapshotRequest(
+    index_name="default",
+), metadata=metadata)
+print(f"Save snapshot: {resp.success}, path={resp.path}")
+
+# 23. 加载快照
+resp = emb_stub.LoadSnapshot(embedding_pb2.LoadSnapshotRequest(
+    index_name="default",
+), metadata=metadata)
+print(f"Load snapshot: {resp.success}, elements={resp.num_elements}")
+
+# 24. 删除表
 resp = stub.DropTable(rpc_pb2.DropTableRequest(
     schema="sys", table_name="users"
 ), metadata=metadata)
 print(f"Drop table: {resp.success}")
 
-# 18. 用户登出
+# 25. 用户登出
 resp = stub.Logout(rpc_pb2.LogoutRequest(token=login_resp.token))
 print(f"Logout: {resp.success}")
 ```
@@ -1208,6 +1407,9 @@ python3 tests_python/test_index_grpc.py
 
 # 运行向量化服务 gRPC 测试
 python3 tests_python/test_vector_service_grpc.py
+
+# 运行嵌入向量索引服务 gRPC 测试
+python3 tests_python/test_embedding_service_grpc.py
 
 # 运行完整测试
 cargo auto-test prod

@@ -11,7 +11,9 @@ LABEL version="${VERSION}"
 RUN mkdir -p /app/data && \
     mkdir -p /app/config && \
     mkdir -p /usr/local/cuda && \
-    mkdir -p /app/model
+    mkdir -p /app/model && \
+    mkdir -p /app/laoflch_hnsw_data && \
+    mkdir -p /app/laoflch_hnsw_snapshots
 
 # Set working directory
 WORKDIR /app

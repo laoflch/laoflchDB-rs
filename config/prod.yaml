@@ -12,6 +12,16 @@ vector_service:
   # 可指定启动时加载的模型名称列表（空列表表示加载 candle 目录下所有有效模型）
   load_models: ["bge-small-zh-v1.5"]
 
+# 嵌入向量索引服务配置
+embedding_index:
+  enabled: true
+  dim: 512
+  m: 32
+  ef_construction: 200
+  ef_search: 50
+  max_elements: 1000000
+  kv_db_path: /app/laoflch_hnsw_data
+  snapshot_path: /app/laoflch_hnsw_snapshots
 
 # Log configuration
 log_level: info

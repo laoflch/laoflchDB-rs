@@ -3320,8 +3320,8 @@ dependencies = [
  "clap",
  "env_logger",
  "hex",
+ "laoflchdb_embedding_service",
  "laoflchdb_engines",
- "laoflchdb_hnsw_service",
  "laoflchdb_index_tantivy_engine",
  "laoflchdb_kv_rocksdb_engine",
  "laoflchdb_sql_df_engine",
@@ -3350,6 +3350,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "laoflchdb_embedding_service"
+version = "0.1.0"
+dependencies = [
+ "anda_db_hnsw",
+ "laoflchdb_engines",
+ "laoflchdb_kv_rocksdb_engine",
+ "log",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "uuid",
+]
+
+[[package]]
 name = "laoflchdb_engines"
 version = "0.1.0"
 dependencies = [
@@ -3366,23 +3383,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
-]
-
-[[package]]
-name = "laoflchdb_hnsw_service"
-version = "0.1.0"
-dependencies = [
- "anda_db_hnsw",
- "laoflchdb_engines",
- "laoflchdb_kv_rocksdb_engine",
- "log",
- "prost",
- "serde",
- "serde_json",
- "tokio",
- "tonic",
- "tonic-build",
- "uuid",
 ]
 
 [[package]]

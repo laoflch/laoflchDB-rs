@@ -1,13 +1,13 @@
 pub mod proto {
-    tonic::include_proto!("laoflchdb.hnsw");
+    tonic::include_proto!("laoflchdb.embedding");
 }
 
-use proto::hnsw_index_service_server::HnswIndexService;
+use proto::embedding_index_service_server::EmbeddingIndexService;
 use proto::{
-    DeleteVectorRequest, DeleteVectorResponse, GetIndexInfoRequest, GetIndexInfoResponse,
-    IndexStats, InsertVectorRequest, InsertVectorResponse, SaveSnapshotRequest,
+    DeleteEmbeddingRequest, DeleteEmbeddingResponse, GetIndexInfoRequest, GetIndexInfoResponse,
+    IndexStats, InsertEmbeddingRequest, InsertEmbeddingResponse, SaveSnapshotRequest,
     SaveSnapshotResponse, LoadSnapshotRequest, LoadSnapshotResponse,
-    SearchResult, SearchVectorRequest, SearchVectorResponse,
+    SearchResult, SearchEmbeddingRequest, SearchEmbeddingResponse,
 };
 use anda_db_hnsw::{BoxError, DistanceMetric, HnswConfig, HnswIndex, SelectNeighborsStrategy};
 use laoflchdb_engines::{EngineOptions, StorageEngine};
@@ -20,9 +20,9 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use tonic::{Request, Response, Status};
 
-/// HNSW 索引配置
+/// 嵌入向量索引服务配置
 #[derive(Debug, Clone)]
-pub struct HnswServiceConfig {
+pub struct EmbeddingServiceConfig {
     /// 向量维度
     pub dim: usize,
     /// HNSW max connections (M)
@@ -39,7 +39,7 @@ pub struct HnswServiceConfig {
     pub snapshot_path: String,
 }
 
-impl Default for HnswServiceConfig {
+impl Default for EmbeddingServiceConfig {
     fn default() -> Self {
         Self {
             dim: 512,
@@ -59,18 +59,18 @@ impl Default for HnswServiceConfig {
 /// - `anda_db_hnsw` (HnswIndex): 管理内存中的 HNSW 图拓扑（分层可导航小世界图）
 /// - `KVRocksDBEngine`: 持久化存储向量数据（RocksDB）
 /// - `snapshot_path`: 图拓扑快照文件保存路径（用于启动恢复）
-pub struct HnswIndexServiceImpl {
+pub struct EmbeddingIndexServiceImpl {
     /// HNSW 内存索引（tokio RwLock 允许跨 .await 持有 guard）
     index: RwLock<HnswIndex>,
     /// 向量数据持久化存储（RocksDB）
     storage: Mutex<KVRocksDBEngine>,
     /// 服务配置
-    config: Arc<HnswServiceConfig>,
+    config: Arc<EmbeddingServiceConfig>,
 }
 
-impl HnswIndexServiceImpl {
+impl EmbeddingIndexServiceImpl {
     /// 创建 HNSW 索引服务实例
-    pub async fn new(config: &HnswServiceConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn new(config: &EmbeddingServiceConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let hnsw_config = HnswConfig {
             dimension: config.dim,
             max_layers: 16,
@@ -338,30 +338,30 @@ impl HnswIndexServiceImpl {
     }
 }
 
-/// 允许通过 `Arc<HnswIndexServiceImpl>` 直接作为 gRPC 服务注册
+/// 允许通过 `Arc<EmbeddingIndexServiceImpl>` 直接作为 gRPC 服务注册
 #[tonic::async_trait]
-impl proto::hnsw_index_service_server::HnswIndexService
-    for std::sync::Arc<HnswIndexServiceImpl>
+impl proto::embedding_index_service_server::EmbeddingIndexService
+    for std::sync::Arc<EmbeddingIndexServiceImpl>
 {
-    async fn insert_vector(
+    async fn insert_embedding(
         &self,
-        request: tonic::Request<InsertVectorRequest>,
-    ) -> std::result::Result<tonic::Response<InsertVectorResponse>, tonic::Status> {
-        self.as_ref().insert_vector(request).await
+        request: tonic::Request<InsertEmbeddingRequest>,
+    ) -> std::result::Result<tonic::Response<InsertEmbeddingResponse>, tonic::Status> {
+        self.as_ref().insert_embedding(request).await
     }
 
-    async fn search_vector(
+    async fn search_embedding(
         &self,
-        request: tonic::Request<SearchVectorRequest>,
-    ) -> std::result::Result<tonic::Response<SearchVectorResponse>, tonic::Status> {
-        self.as_ref().search_vector(request).await
+        request: tonic::Request<SearchEmbeddingRequest>,
+    ) -> std::result::Result<tonic::Response<SearchEmbeddingResponse>, tonic::Status> {
+        self.as_ref().search_embedding(request).await
     }
 
-    async fn delete_vector(
+    async fn delete_embedding(
         &self,
-        request: tonic::Request<DeleteVectorRequest>,
-    ) -> std::result::Result<tonic::Response<DeleteVectorResponse>, tonic::Status> {
-        self.as_ref().delete_vector(request).await
+        request: tonic::Request<DeleteEmbeddingRequest>,
+    ) -> std::result::Result<tonic::Response<DeleteEmbeddingResponse>, tonic::Status> {
+        self.as_ref().delete_embedding(request).await
     }
 
     async fn get_index_info(
@@ -387,12 +387,12 @@ impl proto::hnsw_index_service_server::HnswIndexService
 }
 
 #[tonic::async_trait]
-impl HnswIndexService for HnswIndexServiceImpl {
+impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
     /// 插入向量到 HNSW 索引
-    async fn insert_vector(
+    async fn insert_embedding(
         &self,
-        request: Request<InsertVectorRequest>,
-    ) -> Result<Response<InsertVectorResponse>, Status> {
+        request: Request<InsertEmbeddingRequest>,
+    ) -> Result<Response<InsertEmbeddingResponse>, Status> {
         let req = request.into_inner();
         let index_name = if req.index_name.is_empty() {
             "default"
@@ -403,7 +403,7 @@ impl HnswIndexService for HnswIndexServiceImpl {
         // 维度校验
         let dim = self.config.dim;
         if req.embedding.len() != dim {
-            return Ok(Response::new(InsertVectorResponse {
+            return Ok(Response::new(InsertEmbeddingResponse {
                 success: false,
                 message: format!("向量维度不匹配: 需要 {}, 实际 {}", dim, req.embedding.len()),
             }));
@@ -432,22 +432,22 @@ impl HnswIndexService for HnswIndexServiceImpl {
         })?;
 
         log::info!("向量插入成功: id={}, index={}", req.id, index_name);
-        Ok(Response::new(InsertVectorResponse {
+        Ok(Response::new(InsertEmbeddingResponse {
             success: true,
             message: format!("向量插入成功, id={}", req.id),
         }))
     }
 
     /// 搜索最近邻向量
-    async fn search_vector(
+    async fn search_embedding(
         &self,
-        request: Request<SearchVectorRequest>,
-    ) -> Result<Response<SearchVectorResponse>, Status> {
+        request: Request<SearchEmbeddingRequest>,
+    ) -> Result<Response<SearchEmbeddingResponse>, Status> {
         let req = request.into_inner();
         let top_k = if req.top_k <= 0 { 10 } else { req.top_k as usize };
 
         if req.query_embedding.is_empty() {
-            return Ok(Response::new(SearchVectorResponse {
+            return Ok(Response::new(SearchEmbeddingResponse {
                 success: false,
                 message: "查询向量为空".to_string(),
                 results: vec![],
@@ -463,7 +463,7 @@ impl HnswIndexService for HnswIndexServiceImpl {
         };
 
         if results.is_empty() {
-            return Ok(Response::new(SearchVectorResponse {
+            return Ok(Response::new(SearchEmbeddingResponse {
                 success: true,
                 message: "未找到匹配结果".to_string(),
                 results: vec![],
@@ -498,7 +498,7 @@ impl HnswIndexService for HnswIndexServiceImpl {
             });
         }
 
-        Ok(Response::new(SearchVectorResponse {
+        Ok(Response::new(SearchEmbeddingResponse {
             success: true,
             message: format!("搜索完成, 返回 {} 条结果", search_results.len()),
             results: search_results,
@@ -506,10 +506,10 @@ impl HnswIndexService for HnswIndexServiceImpl {
     }
 
     /// 删除向量
-    async fn delete_vector(
+    async fn delete_embedding(
         &self,
-        request: Request<DeleteVectorRequest>,
-    ) -> Result<Response<DeleteVectorResponse>, Status> {
+        request: Request<DeleteEmbeddingRequest>,
+    ) -> Result<Response<DeleteEmbeddingResponse>, Status> {
         let req = request.into_inner();
         let index_name = if req.index_name.is_empty() {
             "default"
@@ -534,12 +534,12 @@ impl HnswIndexService for HnswIndexServiceImpl {
 
         if removed {
             log::info!("向量删除成功: id={}, index={}", req.id, index_name);
-            Ok(Response::new(DeleteVectorResponse {
+            Ok(Response::new(DeleteEmbeddingResponse {
                 success: true,
                 message: format!("向量删除成功, id={}", req.id),
             }))
         } else {
-            Ok(Response::new(DeleteVectorResponse {
+            Ok(Response::new(DeleteEmbeddingResponse {
                 success: false,
                 message: format!("未找到向量 id={}", req.id),
             }))

@@ -67,35 +67,35 @@ impl LaoflchDBServer {
             auto_load_models.clone(),
         );
 
-        // 创建 HNSW 索引服务（如果配置启用）
-        let hnsw_service = match &config.hnsw_index {
-            Some(hnsw_cfg) if hnsw_cfg.enabled => {
-                let hnsw_config = laoflchdb_hnsw_service::HnswServiceConfig {
-                    dim: hnsw_cfg.dim,
-                    m: hnsw_cfg.m as u8,
-                    ef_construction: hnsw_cfg.ef_construction as usize,
-                    ef_search: hnsw_cfg.ef_search as usize,
-                    max_elements: hnsw_cfg.max_elements as u64,
-                    kv_db_path: hnsw_cfg.kv_db_path.clone(),
-                    snapshot_path: hnsw_cfg.snapshot_path.clone(),
+        // 创建嵌入向量索引服务（如果配置启用）
+        let embedding_service = match &config.embedding_index {
+            Some(embedding_cfg) if embedding_cfg.enabled => {
+                let embedding_config = laoflchdb_embedding_service::EmbeddingServiceConfig {
+                    dim: embedding_cfg.dim,
+                    m: embedding_cfg.m as u8,
+                    ef_construction: embedding_cfg.ef_construction as usize,
+                    ef_search: embedding_cfg.ef_search as usize,
+                    max_elements: embedding_cfg.max_elements as u64,
+                    kv_db_path: embedding_cfg.kv_db_path.clone(),
+                    snapshot_path: embedding_cfg.snapshot_path.clone(),
                 };
-                match laoflchdb_hnsw_service::HnswIndexServiceImpl::new(&hnsw_config).await {
+                match laoflchdb_embedding_service::EmbeddingIndexServiceImpl::new(&embedding_config).await {
                     Ok(svc) => {
                         // 尝试自动加载快照
                         if let Ok(Some(n)) = svc.try_load_snapshot().await {
-                            info!("HNSW 索引从快照恢复: {} 条向量", n);
+                            info!("嵌入向量索引从快照恢复: {} 条向量", n);
                         }
-                        info!("HNSW 索引服务已启动");
+                        info!("嵌入向量索引服务已启动");
                         Some(Arc::new(svc))
                     }
                     Err(e) => {
-                        log::error!("HNSW 索引服务启动失败: {}", e);
+                        log::error!("嵌入向量索引服务启动失败: {}", e);
                         None
                     }
                 }
             }
             _ => {
-                info!("HNSW 索引服务未启用");
+                info!("嵌入向量索引服务未启用");
                 None
             }
         };
@@ -109,7 +109,7 @@ impl LaoflchDBServer {
             let grpc_service: crate::GrpcService = self.access_service.get_grpc_service(None);
             
             tokio::spawn(async move {
-                if let Err(e) = start_grpc_server(grpc_service, vector_service, hnsw_service, &addr).await {
+                if let Err(e) = start_grpc_server(grpc_service, vector_service, embedding_service, &addr).await {
                     log::error!("gRPC 服务错误: {}", e);
                 }
             });
@@ -135,10 +135,10 @@ impl LaoflchDBServer {
                             &config.model_path,
                             auto_load_models.clone(),
                         );
-                        let hnsw_service_clone = hnsw_service.clone();
+                        let embedding_service_clone = embedding_service.clone();
                         
                         tokio::spawn(async move {
-                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, hnsw_service_clone, &addr_owned).await {
+                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, embedding_service_clone, &addr_owned).await {
                                 log::error!("gRPC 服务错误: {}", e);
                             }
                         });
@@ -182,13 +182,13 @@ impl LaoflchDBServer {
 async fn start_grpc_server(
     laoflchdb_service: impl crate::pb::rpc::laoflch_db_server::LaoflchDb,
     vector_service: impl laoflchdb_vector_service::proto::vector_service_server::VectorService,
-    hnsw_service: Option<std::sync::Arc<laoflchdb_hnsw_service::HnswIndexServiceImpl>>,
+    embedding_service: Option<std::sync::Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
     addr: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tonic::transport::Server;
     use crate::pb::rpc::laoflch_db_server::LaoflchDbServer;
     use laoflchdb_vector_service::proto::vector_service_server::VectorServiceServer;
-    use laoflchdb_hnsw_service::proto::hnsw_index_service_server::HnswIndexServiceServer;
+    use laoflchdb_embedding_service::proto::embedding_index_service_server::EmbeddingIndexServiceServer;
     
     let addr_copy = addr.to_string();
     info!("gRPC 服务监听: {}", addr_copy);
@@ -197,9 +197,9 @@ async fn start_grpc_server(
         .add_service(LaoflchDbServer::new(laoflchdb_service))
         .add_service(VectorServiceServer::new(vector_service));
 
-    // 如果有 HNSW 服务配置，则注册
-    if let Some(hnsw) = hnsw_service {
-        server = server.add_service(HnswIndexServiceServer::new(hnsw));
+    // 如果有嵌入向量索引服务配置，则注册
+    if let Some(embedding) = embedding_service {
+        server = server.add_service(EmbeddingIndexServiceServer::new(embedding));
     }
 
     server.serve(addr_copy.parse()?).await?;

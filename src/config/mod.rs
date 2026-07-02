@@ -133,9 +133,9 @@ fn default_vector_auto_load() -> bool {
     true
 }
 
-/// HNSW 索引服务配置
+/// 嵌入向量索引服务配置
 #[derive(Debug, Deserialize, Clone)]
-pub struct HnswIndexConfig {
+pub struct EmbeddingIndexConfig {
     /// 是否启用
     #[serde(default)]
     pub enabled: bool,
@@ -170,7 +170,7 @@ fn default_hnsw_max_elements() -> usize { 1_000_000 }
 fn default_hnsw_kv_db_path() -> String { "./laoflch_hnsw_data".to_string() }
 fn default_hnsw_snapshot_path() -> String { "./laoflch_hnsw_snapshots".to_string() }
 
-impl Default for HnswIndexConfig {
+impl Default for EmbeddingIndexConfig {
     fn default() -> Self {
         Self {
             enabled: false,
@@ -206,7 +206,7 @@ pub struct DatabaseConfig {
     #[serde(default)]
     pub vector_service: Option<VectorServiceConfig>,
     #[serde(default)]
-    pub hnsw_index: Option<HnswIndexConfig>,
+    pub embedding_index: Option<EmbeddingIndexConfig>,
 }
 
 fn default_addr() -> String {
@@ -267,7 +267,7 @@ impl DatabaseConfig {
             default_policy: default_global_default_policy(),
             runtime_mode: RuntimeMode::default(),
             vector_service: None,
-            hnsw_index: None,
+            embedding_index: None,
         }
     }
 

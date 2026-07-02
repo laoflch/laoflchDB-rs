@@ -1,5 +1,5 @@
 [package]
-name = "laoflchdb_hnsw_service"
+name = "laoflchdb_embedding_service"
 version = "0.1.0"
 edition = "2021"
 

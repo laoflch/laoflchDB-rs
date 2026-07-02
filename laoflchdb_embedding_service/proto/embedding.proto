@@ -1,17 +1,17 @@
 syntax = "proto3";
-package laoflchdb.hnsw;
+package laoflchdb.embedding;
 
 // ─────────────────────────────────────────────
 // HNSW 向量索引服务
 // ─────────────────────────────────────────────
 
-service HnswIndexService {
+service EmbeddingIndexService {
   // 插入向量
-  rpc InsertVector(InsertVectorRequest) returns (InsertVectorResponse);
+  rpc InsertEmbedding(InsertEmbeddingRequest) returns (InsertEmbeddingResponse);
   // 搜索最近邻
-  rpc SearchVector(SearchVectorRequest) returns (SearchVectorResponse);
+  rpc SearchEmbedding(SearchEmbeddingRequest) returns (SearchEmbeddingResponse);
   // 删除向量
-  rpc DeleteVector(DeleteVectorRequest) returns (DeleteVectorResponse);
+  rpc DeleteEmbedding(DeleteEmbeddingRequest) returns (DeleteEmbeddingResponse);
   // 获取索引信息
   rpc GetIndexInfo(GetIndexInfoRequest) returns (GetIndexInfoResponse);
   // 手动保存快照
@@ -20,22 +20,22 @@ service HnswIndexService {
   rpc LoadSnapshot(LoadSnapshotRequest) returns (LoadSnapshotResponse);
 }
 
-// ── InsertVector ────────────────────────────
+// ── InsertEmbedding ────────────────────────────
 
-message InsertVectorRequest {
+message InsertEmbeddingRequest {
   uint64 id = 1;          // 向量唯一 ID
   string index_name = 2;  // 索引名称（默认 "default"）
   repeated float embedding = 3;  // 向量数据
 }
 
-message InsertVectorResponse {
+message InsertEmbeddingResponse {
   bool success = 1;
   string message = 2;
 }
 
-// ── SearchVector ────────────────────────────
+// ── SearchEmbedding ────────────────────────────
 
-message SearchVectorRequest {
+message SearchEmbeddingRequest {
   repeated float query_embedding = 1;  // 查询向量
   int32 top_k = 2;                  // 返回 top-K 结果
   string index_name = 3;            // 索引名称（默认 "default"）
@@ -47,20 +47,20 @@ message SearchResult {
   repeated float embedding = 3;  // 向量数据（可选）
 }
 
-message SearchVectorResponse {
+message SearchEmbeddingResponse {
   bool success = 1;
   string message = 2;
   repeated SearchResult results = 3;
 }
 
-// ── DeleteVector ────────────────────────────
+// ── DeleteEmbedding ────────────────────────────
 
-message DeleteVectorRequest {
+message DeleteEmbeddingRequest {
   uint64 id = 1;
   string index_name = 2;
 }
 
-message DeleteVectorResponse {
+message DeleteEmbeddingResponse {
   bool success = 1;
   string message = 2;
 }

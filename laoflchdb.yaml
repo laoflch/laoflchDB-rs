@@ -12,8 +12,8 @@ vector_service:
   # 可指定启动时加载的模型名称列表（空列表表示加载 candle 目录下所有有效模型）
   load_models: ["bge-small-zh-v1.5"]
 
-# HNSW 索引服务配置
-hnsw_index:
+# 嵌入向量索引服务配置
+embedding_index:
   enabled: true
   dim: 512
   m: 32
