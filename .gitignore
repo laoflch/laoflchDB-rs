@@ -11,8 +11,10 @@ gcc13/
 # 本地数据库文件
 laoflch_db_data/
 laoflch_db_data_prod/
-##laoflch_hnsw_data/
-##laoflch_db_index/
+laoflch_hnsw_data/
+laoflch_hnsw_snapshots/
+laoflch_db_index/
+laoflch_db_model/
 test_*/
 # 二进制可执行文件
 *.exe
