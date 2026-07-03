@@ -637,7 +637,7 @@ impl CudaLayerNorm {
 struct BertEmbeddings {
     word_embeddings: candle_nn::Embedding,
     position_embeddings: candle_nn::Embedding,
-    token_type_embeddings: candle_nn::Embedding,
+    token_type_embeddings: Option<candle_nn::Embedding>,  // XLM-RoBERTa 无此层
     layer_norm: CudaLayerNorm,
     dropout: Dropout,
 }
@@ -650,11 +650,12 @@ impl BertEmbeddings {
             config.hidden_size,
             vb.pp("position_embeddings"),
         )?;
+        // token_type_embeddings 可选（XLM-RoBERTa/bge-m3 无此层）
         let token_type_embeddings = candle_nn::embedding(
             config.type_vocab_size(),
             config.hidden_size,
             vb.pp("token_type_embeddings"),
-        )?;
+        ).ok();
         let layer_norm = CudaLayerNorm::load(
             config.hidden_size,
             config.layer_norm_eps(),
@@ -688,9 +689,13 @@ impl ModuleT for BertEmbeddings {
 
         let word_emb = self.word_embeddings.forward(&input_ids)?;
         let pos_emb = self.position_embeddings.forward(&pos_ids)?;
-        let type_emb = self.token_type_embeddings.forward(&token_type_ids)?;
 
-        let emb = ((word_emb + pos_emb)? + type_emb)?;
+        // token_type_embeddings 不存在时跳过（type_ids 全为零，加不加无影响）
+        let mut emb = (word_emb + pos_emb)?;
+        if let Some(ref tte) = self.token_type_embeddings {
+            let type_emb = tte.forward(&token_type_ids)?;
+            emb = (emb + type_emb)?;
+        }
         let emb = self.layer_norm.forward(&emb)?;
         let emb = self.dropout.forward_t(&emb, train)?;
         Ok(emb)
@@ -999,13 +1004,32 @@ impl RealBertModel {
         let encoding = self.tokenizer.encode(text, true)
             .map_err(|e| format!("tokenize 失败: {}", e))?;
 
-        let input_ids = encoding.get_ids().to_vec();
+        let raw_ids = encoding.get_ids();
         let attention_mask = encoding.get_attention_mask().to_vec();
         let token_type_ids = encoding.get_type_ids().to_vec();
 
-        if input_ids.is_empty() {
+        if raw_ids.is_empty() {
             return Ok(vec![0.0f32; self.config.hidden_size]);
         }
+
+        // 截断到 max_position_embeddings，避免位置嵌入 index_select 越界
+        let max_seq_len = self.config.max_position_embeddings;
+        let seq_len = raw_ids.len().min(max_seq_len);
+        if raw_ids.len() > max_seq_len {
+            warn!("输入长度 {} 超过 max_position_embeddings={}, 已截断", raw_ids.len(), max_seq_len);
+        }
+        let raw_ids = &raw_ids[..seq_len];
+
+        // 裁剪 token ID 到 [0, vocab_size-1]，避免词嵌入 index_select 越界
+        let max_id = self.config.vocab_size as u32 - 1;
+        let input_ids: Vec<u32> = raw_ids.iter()
+            .map(|&id| if id > max_id { 
+                warn!("token ID {} 超过词表大小 {}, 已裁剪", id, self.config.vocab_size);
+                max_id 
+            } else { 
+                id 
+            })
+            .collect();
 
         let seq_len = input_ids.len();
         let device = &self.device;
@@ -1023,11 +1047,12 @@ impl RealBertModel {
         let masked_output = output.broadcast_mul(&mask)?;
         let sum_hidden = masked_output.sum(1)?; // [1, hidden_size]
         let num_tokens = mask.sum(1)?;
-        let pooled = sum_hidden.broadcast_div(&num_tokens)?;
+        let eps_t = Tensor::new(1e-8f32, device)?;
+        let pooled = sum_hidden.broadcast_div(&num_tokens.broadcast_add(&eps_t)?)?;
 
         // L2 normalize
         let norm = pooled.sqr()?.sum(1)?.sqrt()?;
-        let normalized = pooled.broadcast_div(&norm)?;
+        let normalized = pooled.broadcast_div(&norm.broadcast_add(&eps_t)?)?;
 
         // 转为 Vec<f32>
         let result: Vec<f32> = normalized.squeeze(0)?.to_vec1()?;

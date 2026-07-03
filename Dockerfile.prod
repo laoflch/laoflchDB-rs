@@ -4,7 +4,7 @@
 FROM ubuntu:24.04
 
 # 版本号参数（从 Cargo.toml 获取前半段，如 0.1.3+xxx 取 0.1.3）
-ARG VERSION=0.1.7
+ARG VERSION=0.1.8
 LABEL version="${VERSION}"
 
 # Create app directories

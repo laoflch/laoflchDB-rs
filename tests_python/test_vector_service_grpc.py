@@ -35,6 +35,14 @@ TEST_REAL_MODEL_DIR = os.path.join(
 )
 TEST_REAL_MODEL_NAME = "bge-small-zh-v1.5"
 
+# bge-m3 (XLM-RoBERTa, dim=1024)
+TEST_BGE_M3_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..",
+    "laoflch_db_model", "candle", "bge-m3"
+)
+TEST_BGE_M3_NAME = "bge-m3"
+TEST_BGE_M3_DIM = 1024
+
 TOKEN = None
 stub = None
 vec_stub = None
@@ -901,6 +909,226 @@ def test_real_model_unload():
         return False
 
 
+# ============================================================================
+# bge-m3 (XLM-RoBERTa, dim=1024) 模型测试
+# ============================================================================
+
+
+def _check_bge_m3_available():
+    """检查 bge-m3 模型文件是否可用"""
+    config_path = os.path.join(TEST_BGE_M3_DIR, "config.json")
+    tokenizer_path = os.path.join(TEST_BGE_M3_DIR, "tokenizer.json")
+    model_path = os.path.join(TEST_BGE_M3_DIR, "model.safetensors")
+    return os.path.exists(config_path) and os.path.exists(tokenizer_path) and os.path.exists(model_path)
+
+
+def test_bge_m3_load():
+    """测试加载 bge-m3 模型"""
+    print("[测试] 加载 bge-m3 模型...")
+    if not _check_bge_m3_available():
+        print(f"    - 跳过: bge-m3 模型文件不可用")
+        return True
+
+    try:
+        req = vector_pb2.LoadModelRequest(
+            model_name=TEST_BGE_M3_NAME,
+            model_path=TEST_BGE_M3_DIR,
+            embedding_dim=TEST_BGE_M3_DIM,
+        )
+        resp = vec_stub.LoadModel(req, metadata=get_metadata())
+        assert resp.success, f"加载 bge-m3 失败: {resp.message}"
+        print(f"    ✓ bge-m3 模型加载成功: {resp.model_name}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 加载 bge-m3 失败: {e}")
+        return False
+
+
+def test_bge_m3_embedding():
+    """测试 bge-m3 生成向量（多语言）"""
+    print("[测试] bge-m3 多语言向量生成...")
+    if not _check_bge_m3_available():
+        print(f"    - 跳过: bge-m3 模型文件不可用")
+        return True
+
+    try:
+        texts = [
+            "今天天气怎么样",
+            "Natural language processing is an important branch of AI",
+            "Rustはシステムプログラミング言語です",
+            "bge-m3 支持多语言和长文本处理",
+        ]
+        req = vector_pb2.EmbeddingRequest(
+            model_name=TEST_BGE_M3_NAME,
+            texts=texts,
+            dim=TEST_BGE_M3_DIM,
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success, f"bge-m3 推理失败: {resp.message}"
+        assert len(resp.results) == len(texts)
+        print(f"    ✓ 成功生成 {len(resp.results)} 条向量 (dim={TEST_BGE_M3_DIM})")
+        for r in resp.results:
+            assert len(r.embedding) == TEST_BGE_M3_DIM, f"维度应为 {TEST_BGE_M3_DIM}，实际: {len(r.embedding)}"
+            norm = math.sqrt(sum(x * x for x in r.embedding))
+            print(f"        '{r.text[:30]:30s}' norm={norm:.4f}, [:3]={r.embedding[:3]}")
+        return True
+    except Exception as e:
+        print(f"    ✗ bge-m3 推理失败: {e}")
+        return False
+
+
+def test_bge_m3_l2_normalized():
+    """测试 bge-m3 向量 L2 归一化"""
+    print("[测试] bge-m3 L2 归一化检查...")
+    if not _check_bge_m3_available():
+        print(f"    - 跳过: bge-m3 模型文件不可用")
+        return True
+
+    texts = ["测试文本", "machine learning", "deep learning", "mixed 中 English 123 !@#"]
+    try:
+        req = vector_pb2.EmbeddingRequest(
+            model_name=TEST_BGE_M3_NAME,
+            texts=texts,
+            dim=TEST_BGE_M3_DIM,
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success
+
+        for r in resp.results:
+            norm = math.sqrt(sum(x * x for x in r.embedding))
+            if norm == 0.0:
+                continue
+            assert abs(norm - 1.0) < 1e-4, f"文本 '{r.text[:20]}' 的 L2 范数={norm}, 期望≈1.0"
+
+        print(f"    ✓ 所有向量已 L2 归一化 ({len(resp.results)} 条)")
+        return True
+    except Exception as e:
+        print(f"    ✗ 归一化检查失败: {e}")
+        return False
+
+
+def test_bge_m3_consistency():
+    """测试 bge-m3 推理确定性"""
+    print("[测试] bge-m3 向量生成确定性...")
+    if not _check_bge_m3_available():
+        print(f"    - 跳过: bge-m3 模型文件不可用")
+        return True
+
+    texts = ["确定性测试文本", "Rust programming", "ベクトルデータベース"]
+    try:
+        req1 = vector_pb2.EmbeddingRequest(
+            model_name=TEST_BGE_M3_NAME,
+            texts=texts,
+            dim=TEST_BGE_M3_DIM,
+        )
+        resp1 = vec_stub.CreateEmbedding(req1, metadata=get_metadata())
+
+        req2 = vector_pb2.EmbeddingRequest(
+            model_name=TEST_BGE_M3_NAME,
+            texts=texts,
+            dim=TEST_BGE_M3_DIM,
+        )
+        resp2 = vec_stub.CreateEmbedding(req2, metadata=get_metadata())
+
+        assert resp1.success and resp2.success
+        for r1, r2 in zip(resp1.results, resp2.results):
+            diff = sum(abs(a - b) for a, b in zip(r1.embedding, r2.embedding))
+            assert diff < 1e-5, f"非确定性输出: {r1.text[:20]} diff={diff}"
+
+        print(f"    ✓ bge-m3 推理具有确定性 ({len(texts)} 条文本)")
+        return True
+    except Exception as e:
+        print(f"    ✗ 确定性测试失败: {e}")
+        return False
+
+
+def test_bge_m3_long_text():
+    """测试 bge-m3 长文本处理（支持长序列）"""
+    print("[测试] bge-m3 长文本处理...")
+    if not _check_bge_m3_available():
+        print(f"    - 跳过: bge-m3 模型文件不可用")
+        return True
+
+    try:
+        # 生成长文本（约 2000 token）
+        long_text = "自然语言处理是人工智能领域中的一个重要方向。 " * 200
+        req = vector_pb2.EmbeddingRequest(
+            model_name=TEST_BGE_M3_NAME,
+            texts=[long_text],
+            dim=TEST_BGE_M3_DIM,
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success, f"长文本推理失败: {resp.message}"
+        assert len(resp.results[0].embedding) == TEST_BGE_M3_DIM
+        norm = math.sqrt(sum(x * x for x in resp.results[0].embedding))
+        print(f"    ✓ 长文本处理成功 (len={len(long_text)}, dim={TEST_BGE_M3_DIM}, norm={norm:.4f})")
+        return True
+    except Exception as e:
+        print(f"    ✗ 长文本处理失败: {e}")
+        return False
+
+
+def test_bge_m3_similarity():
+    """测试 bge-m3 向量相似度计算"""
+    print("[测试] bge-m3 语义相似度...")
+    if not _check_bge_m3_available():
+        print(f"    - 跳过: bge-m3 模型文件不可用")
+        return True
+
+    try:
+        # 生成语义相近的文本向量
+        req = vector_pb2.EmbeddingRequest(
+            model_name=TEST_BGE_M3_NAME,
+            texts=["猫在睡觉", "猫咪正在休息", "我喜欢编程"],
+            dim=TEST_BGE_M3_DIM,
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success
+
+        embeddings = [r.embedding for r in resp.results]
+
+        # 计算余弦相似度
+        def cos_sim(a, b):
+            dot = sum(x * y for x, y in zip(a, b))
+            na = math.sqrt(sum(x * x for x in a))
+            nb = math.sqrt(sum(x * x for x in b))
+            return dot / (na * nb) if na > 0 and nb > 0 else 0.0
+
+        sim_12 = cos_sim(embeddings[0], embeddings[1])  # 猫在睡觉 vs 猫咪正在休息
+        sim_13 = cos_sim(embeddings[0], embeddings[2])  # 猫在睡觉 vs 我喜欢编程
+
+        print(f"    ✓ 语义相似度:")
+        print(f"        '猫在睡觉' ↔ '猫咪正在休息' = {sim_12:.4f}")
+        print(f"        '猫在睡觉' ↔ '我喜欢编程' = {sim_13:.4f}")
+
+        # 语义相近的应该有更高的相似度
+        if sim_12 > 0 and sim_13 > 0:
+            assert sim_12 > sim_13, f"语义相近文本相似度应更高: {sim_12:.4f} < {sim_13:.4f}"
+            print(f"    ✓ 语义相似度排序正确")
+        return True
+    except Exception as e:
+        print(f"    ✗ 相似度测试失败: {e}")
+        return False
+
+
+def test_bge_m3_unload():
+    """测试卸载 bge-m3 模型"""
+    print("[测试] 卸载 bge-m3 模型...")
+    if not _check_bge_m3_available():
+        print(f"    - 跳过: bge-m3 模型文件不可用")
+        return True
+
+    try:
+        req = vector_pb2.UnloadModelRequest(model_name=TEST_BGE_M3_NAME)
+        resp = vec_stub.UnloadModel(req, metadata=get_metadata())
+        assert resp.success, f"卸载 bge-m3 失败: {resp.message}"
+        print(f"    ✓ bge-m3 模型卸载成功: {resp.model_name}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 卸载失败: {e}")
+        return False
+
+
 def run_all_tests():
     tests = [
         ("用户登录", test_login),
@@ -934,6 +1162,14 @@ def run_all_tests():
         ("真实模型推理", test_real_model_embedding),
         ("真实模型确定性", test_real_model_consistency),
         ("卸载真实模型", test_real_model_unload),
+        # bge-m3 (XLM-RoBERTa, dim=1024) 模型测试
+        ("加载 bge-m3", test_bge_m3_load),
+        ("bge-m3 多语言向量生成", test_bge_m3_embedding),
+        ("bge-m3 L2 归一化", test_bge_m3_l2_normalized),
+        ("bge-m3 确定性", test_bge_m3_consistency),
+        ("bge-m3 长文本处理", test_bge_m3_long_text),
+        ("bge-m3 语义相似度", test_bge_m3_similarity),
+        ("卸载 bge-m3", test_bge_m3_unload),
     ]
 
     passed = 0
