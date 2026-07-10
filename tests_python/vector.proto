@@ -9,6 +9,7 @@ message EmbeddingRequest {
   string model_name = 1;
   repeated string texts = 2;
   int32 dim = 3;
+  repeated bytes images = 4;  // 图片原始字节数据（PNG/JPEG）
 }
 
 message EmbeddingResponse {

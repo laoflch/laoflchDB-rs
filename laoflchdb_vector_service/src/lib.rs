@@ -2,6 +2,9 @@ pub mod proto {
     tonic::include_proto!("laoflchdb.vector");
 }
 
+pub mod vision_encoder;
+
+use crate::vision_encoder::{VisionTransformer, try_load_vision_model};
 use candle_core::{Device, Tensor, DType};
 use candle_nn::{VarBuilder, Dropout, Module, ModuleT};
 use log::{info, warn};
@@ -26,6 +29,8 @@ struct ModelInstance {
     device: String,
     /// 真实的 BERT 模型（如果已加载）
     bert_model: Option<RealBertModel>,
+    /// 视觉模型（如果已加载）
+    vision_model: Option<VisionTransformer>,
 }
 
 impl VectorServiceImpl {
@@ -127,7 +132,18 @@ impl VectorServiceImpl {
             let has_tokenizer = tokenizer_path.exists();
             let has_weights = weights_path.exists();
 
-            if !has_config || !has_tokenizer || !has_weights {
+            // 判断是否为视觉模型（不需要 tokenizer.json）
+            let is_vision = is_vision_model_dir(&config_path);
+
+            if is_vision {
+                if !has_config || !has_weights {
+                    info!(
+                        "跳过不完整视觉模型目录 '{}': config={}, weights={}",
+                        model_name, has_config, has_weights
+                    );
+                    continue;
+                }
+            } else if !has_config || !has_tokenizer || !has_weights {
                 info!(
                     "跳过不完整模型目录 '{}': config={}, tokenizer={}, weights={}",
                     model_name, has_config, has_tokenizer, has_weights
@@ -136,28 +152,46 @@ impl VectorServiceImpl {
             }
 
             // 从 config.json 读取 hidden_size 作为向量维度
+            // 支持从顶层或 vision_config 嵌套中读取
             let dim = std::fs::read_to_string(&config_path)
                 .ok()
                 .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
                 .and_then(|j| {
+                    // 尝试从顶层读取
                     j.get("hidden_size")
                         .and_then(|v| v.as_u64())
                         .map(|v| v as usize)
+                        // 尝试从 vision_config 嵌套读取
+                        .or_else(|| {
+                            j.get("vision_config")
+                                .and_then(|vc| vc.get("hidden_size"))
+                                .and_then(|v| v.as_u64())
+                                .map(|v| v as usize)
+                        })
                 })
                 .unwrap_or(384);
 
             info!("自动发现模型: '{}' (dim={})", model_name, dim);
 
             let model_path_str = path.to_string_lossy().to_string();
-            let bert_model = try_load_bert_model(&model_path_str, device);
-            let loaded = bert_model.is_some();
             let device_str = format!("{:?}", device);
 
-            if loaded {
-                info!("模型 '{}' 自动加载成功 (dim={})", model_name, dim);
+            // 尝试加载视觉模型（优先，不需要 tokenizer.json）
+            let vision_model = try_load_vision_model(&model_path_str, device);
+            let (loaded, bert_model, vision_model) = if let Some(vm) = vision_model {
+                info!("模型 '{}' 自动加载为视觉模型 (dim={})", model_name, dim);
+                (true, None, Some(vm))
             } else {
-                warn!("模型 '{}' 检测到文件但加载失败，仍注册为可用", model_name);
-            }
+                // 尝试加载 BERT 文本模型
+                let bert_model = try_load_bert_model(&model_path_str, device);
+                let loaded = bert_model.is_some();
+                if loaded {
+                    info!("模型 '{}' 自动加载为文本模型 (dim={})", model_name, dim);
+                } else {
+                    warn!("模型 '{}' 检测到文件但加载失败，仍注册为可用", model_name);
+                }
+                (loaded, bert_model, None)
+            };
 
             models.insert(
                 model_name,
@@ -167,6 +201,7 @@ impl VectorServiceImpl {
                     loaded,
                     device: device_str,
                     bert_model,
+                    vision_model,
                 },
             );
         }
@@ -245,14 +280,41 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
             )));
         }
 
+        let mut results = Vec::new();
+
+        // 如果有视觉模型，处理图片输入
+        if let Some(ref vision_model) = model.vision_model {
+            if !req.images.is_empty() {
+                for image_bytes in &req.images {
+                    match vision_model.embed_image(image_bytes) {
+                        Ok(embedding) => {
+                            results.push(EmbeddingResult {
+                                text: format!("image_{}", results.len()),
+                                embedding,
+                                dim: model.embedding_dim as i32,
+                            });
+                        }
+                        Err(e) => {
+                            return Err(Status::internal(format!("图片向量化失败: {}", e)));
+                        }
+                    }
+                }
+                return Ok(Response::new(EmbeddingResponse {
+                    success: true,
+                    message: format!("成功生成 {} 条图片向量", results.len()),
+                    results,
+                }));
+            }
+            // 视觉模型也支持文本输入（使用文本编码器，暂未实现），回退到哈希
+        }
+
+        // 处理文本输入
         info!(
             "生成向量化: model={}, texts_count={}, dim={}",
             model_name,
             req.texts.len(),
             model.embedding_dim
         );
-
-        let mut results = Vec::new();
 
         // 如果有真实 BERT 模型，使用它进行推理
         if let Some(ref bert_model) = model.bert_model {
@@ -419,21 +481,50 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
 
         let device_str = format!("{:?}", self.default_device);
 
-        // 尝试加载真实 BERT 模型
+        // 尝试加载视觉模型（优先）
+        let vision_model = try_load_vision_model(&req.model_path, &self.default_device);
+        if let Some(ref vm) = vision_model {
+            let hidden_size = vm.config().hidden_size;
+            info!(
+                "模型 '{}' 成功加载为视觉模型，dim={}",
+                req.model_name, hidden_size
+            );
+
+            let mut models = self.models.write().await;
+            models.insert(
+                req.model_name.clone(),
+                ModelInstance {
+                    embedding_dim: hidden_size,
+                    model_path: req.model_path,
+                    loaded: true,
+                    device: device_str,
+                    bert_model: None,
+                    vision_model,
+                },
+            );
+
+            return Ok(Response::new(LoadModelResponse {
+                success: true,
+                message: format!("模型 '{}' 注册成功 (视觉模型)", req.model_name),
+                model_name: req.model_name,
+            }));
+        }
+
+        // 尝试加载 BERT 文本模型
         let bert_model = try_load_bert_model(&req.model_path, &self.default_device);
 
         let bert_model = match bert_model {
             Some(model) => {
                 let hidden_size = model.config.hidden_size;
                 info!(
-                    "模型 '{}' 成功加载为真实 BERT 模型，dim={}",
+                    "模型 '{}' 成功加载为文本 BERT 模型，dim={}",
                     req.model_name, hidden_size
                 );
                 model
             }
             None => {
                 return Err(Status::not_found(format!(
-                    "模型路径 '{}' 缺少必要文件 (需要 config.json, tokenizer.json, model.safetensors)",
+                    "模型路径 '{}' 中未找到可加载的模型 (需要 config.json, tokenizer.json, model.safetensors)",
                     req.model_path
                 )));
             }
@@ -448,12 +539,13 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                 loaded: true,
                 device: device_str,
                 bert_model: Some(bert_model),
+                vision_model: None,
             },
         );
 
         Ok(Response::new(LoadModelResponse {
             success: true,
-            message: format!("模型 '{}' 注册成功", req.model_name),
+            message: format!("模型 '{}' 注册成功 (文本模型)", req.model_name),
             model_name: req.model_name,
         }))
     }
@@ -511,6 +603,7 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                         let has_weights = weights_path.exists();
 
                         // 从 config.json 读取维度
+                        // 支持从顶层或 vision_config 嵌套中读取
                         let dim = if has_config {
                             std::fs::read_to_string(&config_path)
                                 .ok()
@@ -519,6 +612,12 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                                     j.get("hidden_size")
                                         .and_then(|v| v.as_u64())
                                         .map(|v| v as i32)
+                                        .or_else(|| {
+                                            j.get("vision_config")
+                                                .and_then(|vc| vc.get("hidden_size"))
+                                                .and_then(|v| v.as_u64())
+                                                .map(|v| v as i32)
+                                        })
                                 })
                                 .unwrap_or(0)
                         } else {
@@ -1060,6 +1159,28 @@ impl RealBertModel {
     }
 }
 
+/// 判断模型目录是否为视觉模型（不需要 tokenizer.json）
+fn is_vision_model_dir(config_path: &std::path::Path) -> bool {
+    if !config_path.exists() {
+        return false;
+    }
+    let config_json = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    let config_value: serde_json::Value = match serde_json::from_str(&config_json) {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let model_type = config_value.get("model_type").and_then(|v| v.as_str()).unwrap_or("");
+    let is_vision = matches!(
+        model_type,
+        "jina-clip-v2" | "siglip" | "siglip2" | "vit" | "clip" | "vision"
+    );
+    let has_vision_config = config_value.get("vision_config").is_some();
+    is_vision || has_vision_config
+}
+
 /// 尝试从指定路径加载真实 BERT 模型
 /// 如果路径下包含 config.json + tokenizer.json + model.safetensors，则加载
 fn try_load_bert_model(model_path: &str, device: &Device) -> Option<RealBertModel> {
@@ -1371,6 +1492,7 @@ mod tests {
             model_name: "no_model".to_string(),
             texts: vec!["hello".to_string()],
             dim: 128,
+            images: vec![],
         });
         let result = service.create_embedding(req).await;
         assert!(result.is_err());
@@ -1399,6 +1521,7 @@ mod tests {
             model_name: "embed_model".to_string(),
             texts: vec!["hello world".to_string(), "test text".to_string()],
             dim: 512,
+            images: vec![],
         });
         let resp = service.create_embedding(req).await.unwrap();
         let results = resp.into_inner().results;

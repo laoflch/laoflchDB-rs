@@ -910,6 +910,349 @@ def test_real_model_unload():
 
 
 # ============================================================================
+# 图片向量化模型测试（Jina-CLIP-v2 + SigLIP2）
+# ============================================================================
+
+# Jina-CLIP-v2 (ViT-L/14, dim=1024, image_size=512)
+TEST_JINA_CLIP_V2_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..",
+    "laoflch_db_model", "candle", "jina-clip-v2"
+)
+TEST_JINA_CLIP_V2_NAME = "jina-clip-v2"
+TEST_JINA_CLIP_V2_DIM = 1024
+
+# SigLIP2 (ViT-B/16, dim=768, image_size=224)
+TEST_SIGLIP2_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..",
+    "laoflch_db_model", "candle", "siglip2"
+)
+TEST_SIGLIP2_NAME = "siglip2"
+TEST_SIGLIP2_DIM = 768
+
+
+def _check_vision_model_available(model_dir):
+    """检查视觉模型文件是否可用（不需要 tokenizer）"""
+    config_path = os.path.join(model_dir, "config.json")
+    model_path = os.path.join(model_dir, "model.safetensors")
+    return os.path.exists(config_path) and os.path.exists(model_path)
+
+
+def _generate_test_image(width=224, height=224):
+    """生成一个简单的测试图片（PNG 格式），用随机色块"""
+    try:
+        from PIL import Image
+        import io
+        img = Image.new('RGB', (width, height), color=(73, 109, 137))
+        # 添加一些简单的图案
+        for x in range(0, width, 10):
+            for y in range(0, height, 10):
+                if (x // 10 + y // 10) % 2 == 0:
+                    img.putpixel((x, y), (255, 200, 100))
+        buf = io.BytesIO()
+        img.save(buf, format='PNG')
+        return buf.getvalue()
+    except ImportError:
+        # 如果 PIL 不可用，生成一个简单的 PNG 文件
+        import struct
+        import zlib
+
+        def create_png(w, h):
+            def chunk(ctype, data):
+                c = ctype + data
+                return struct.pack('>I', len(data)) + c + struct.pack('>I', zlib.crc32(c) & 0xffffffff)
+
+            sig = b'\x89PNG\r\n\x1a\n'
+            ihdr = chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+
+            raw = b''
+            for y in range(h):
+                raw += b'\x00'  # filter byte
+                for x in range(w):
+                    r = (73 + x * 2) % 256
+                    g = (109 + y * 2) % 256
+                    b = (137 + (x + y)) % 256
+                    raw += struct.pack('BBB', r, g, b)
+
+            idat = chunk(b'IDAT', zlib.compress(raw))
+            iend = chunk(b'IEND', b'')
+            return sig + ihdr + idat + iend
+
+        return create_png(width, height)
+
+
+def test_jina_clip_v2_load():
+    """测试加载 Jina-CLIP-v2 视觉模型"""
+    print("[测试] 加载 Jina-CLIP-v2 视觉模型...")
+    if not _check_vision_model_available(TEST_JINA_CLIP_V2_DIR):
+        print(f"    - 跳过: 模型文件不可用")
+        return True
+
+    try:
+        req = vector_pb2.LoadModelRequest(
+            model_name=TEST_JINA_CLIP_V2_NAME,
+            model_path=TEST_JINA_CLIP_V2_DIR,
+            embedding_dim=TEST_JINA_CLIP_V2_DIM,
+        )
+        resp = vec_stub.LoadModel(req, metadata=get_metadata())
+        assert resp.success, f"加载 Jina-CLIP-v2 失败: {resp.message}"
+        print(f"    ✓ Jina-CLIP-v2 视觉模型加载成功: {resp.message}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 加载失败: {e}")
+        return False
+
+
+def test_jina_clip_v2_image_embedding():
+    """测试 Jina-CLIP-v2 图片向量化"""
+    print("[测试] Jina-CLIP-v2 图片向量化...")
+    if not _check_vision_model_available(TEST_JINA_CLIP_V2_DIR):
+        print(f"    - 跳过: 模型文件不可用")
+        return True
+
+    try:
+        # 生成测试图片（Jina-CLIP-v2 使用 512x512）
+        image_bytes = _generate_test_image(512, 512)
+        req = vector_pb2.EmbeddingRequest(
+            model_name=TEST_JINA_CLIP_V2_NAME,
+            texts=[],
+            dim=TEST_JINA_CLIP_V2_DIM,
+            images=[image_bytes],
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success, f"图片向量化失败: {resp.message}"
+        assert len(resp.results) == 1
+        assert len(resp.results[0].embedding) == TEST_JINA_CLIP_V2_DIM
+        norm = math.sqrt(sum(x * x for x in resp.results[0].embedding))
+        print(f"    ✓ 图片向量生成成功 (dim={TEST_JINA_CLIP_V2_DIM}, norm={norm:.4f})")
+        print(f"        embedding[:5]={resp.results[0].embedding[:5]}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 图片向量化失败: {e}")
+        return False
+
+
+def test_jina_clip_v2_l2_normalized():
+    """测试 Jina-CLIP-v2 图片向量 L2 归一化"""
+    print("[测试] Jina-CLIP-v2 L2 归一化检查...")
+    if not _check_vision_model_available(TEST_JINA_CLIP_V2_DIR):
+        print(f"    - 跳过: 模型文件不可用")
+        return True
+
+    try:
+        images = [_generate_test_image(512, 512) for _ in range(3)]
+        req = vector_pb2.EmbeddingRequest(
+            model_name=TEST_JINA_CLIP_V2_NAME,
+            texts=[],
+            dim=TEST_JINA_CLIP_V2_DIM,
+            images=images,
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success
+        assert len(resp.results) == len(images)
+
+        for r in resp.results:
+            norm = math.sqrt(sum(x * x for x in r.embedding))
+            assert abs(norm - 1.0) < 1e-4, f"L2 范数={norm}, 期望≈1.0"
+        print(f"    ✓ 所有图片向量已 L2 归一化 ({len(resp.results)} 条)")
+        return True
+    except Exception as e:
+        print(f"    ✗ 归一化检查失败: {e}")
+        return False
+
+
+def test_jina_clip_v2_consistency():
+    """测试 Jina-CLIP-v2 图片向量生成确定性（相同图片产生相同向量）"""
+    print("[测试] Jina-CLIP-v2 图片向量确定性...")
+    if not _check_vision_model_available(TEST_JINA_CLIP_V2_DIR):
+        print(f"    - 跳过: 模型文件不可用")
+        return True
+
+    try:
+        image_bytes = _generate_test_image(512, 512)
+
+        req1 = vector_pb2.EmbeddingRequest(
+            model_name=TEST_JINA_CLIP_V2_NAME,
+            texts=[],
+            dim=TEST_JINA_CLIP_V2_DIM,
+            images=[image_bytes],
+        )
+        resp1 = vec_stub.CreateEmbedding(req1, metadata=get_metadata())
+
+        req2 = vector_pb2.EmbeddingRequest(
+            model_name=TEST_JINA_CLIP_V2_NAME,
+            texts=[],
+            dim=TEST_JINA_CLIP_V2_DIM,
+            images=[image_bytes],
+        )
+        resp2 = vec_stub.CreateEmbedding(req2, metadata=get_metadata())
+
+        assert resp1.success and resp2.success
+        e1 = resp1.results[0].embedding
+        e2 = resp2.results[0].embedding
+        diff = sum(abs(a - b) for a, b in zip(e1, e2))
+        assert diff < 1e-5, f"相同图片产生了不同向量，差异={diff}"
+        print(f"    ✓ 图片向量生成具有确定性 (diff={diff:.2e})")
+        return True
+    except Exception as e:
+        print(f"    ✗ 确定性测试失败: {e}")
+        return False
+
+
+def test_jina_clip_v2_unload():
+    """测试卸载 Jina-CLIP-v2 模型"""
+    print("[测试] 卸载 Jina-CLIP-v2 视觉模型...")
+    if not _check_vision_model_available(TEST_JINA_CLIP_V2_DIR):
+        print(f"    - 跳过: 模型文件不可用")
+        return True
+
+    try:
+        req = vector_pb2.UnloadModelRequest(model_name=TEST_JINA_CLIP_V2_NAME)
+        resp = vec_stub.UnloadModel(req, metadata=get_metadata())
+        assert resp.success, f"卸载失败: {resp.message}"
+        print(f"    ✓ Jina-CLIP-v2 视觉模型卸载成功")
+        return True
+    except Exception as e:
+        print(f"    ✗ 卸载失败: {e}")
+        return False
+
+
+def test_siglip2_load():
+    """测试加载 SigLIP2 视觉模型"""
+    print("[测试] 加载 SigLIP2 视觉模型...")
+    if not _check_vision_model_available(TEST_SIGLIP2_DIR):
+        print(f"    - 跳过: 模型文件不可用")
+        return True
+
+    try:
+        req = vector_pb2.LoadModelRequest(
+            model_name=TEST_SIGLIP2_NAME,
+            model_path=TEST_SIGLIP2_DIR,
+            embedding_dim=TEST_SIGLIP2_DIM,
+        )
+        resp = vec_stub.LoadModel(req, metadata=get_metadata())
+        assert resp.success, f"加载 SigLIP2 失败: {resp.message}"
+        print(f"    ✓ SigLIP2 视觉模型加载成功: {resp.message}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 加载失败: {e}")
+        return False
+
+
+def test_siglip2_image_embedding():
+    """测试 SigLIP2 图片向量化"""
+    print("[测试] SigLIP2 图片向量化...")
+    if not _check_vision_model_available(TEST_SIGLIP2_DIR):
+        print(f"    - 跳过: 模型文件不可用")
+        return True
+
+    try:
+        # 生成测试图片（SigLIP2 使用 224x224）
+        image_bytes = _generate_test_image(224, 224)
+        req = vector_pb2.EmbeddingRequest(
+            model_name=TEST_SIGLIP2_NAME,
+            texts=[],
+            dim=TEST_SIGLIP2_DIM,
+            images=[image_bytes],
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success, f"图片向量化失败: {resp.message}"
+        assert len(resp.results) == 1
+        assert len(resp.results[0].embedding) == TEST_SIGLIP2_DIM
+        norm = math.sqrt(sum(x * x for x in resp.results[0].embedding))
+        print(f"    ✓ 图片向量生成成功 (dim={TEST_SIGLIP2_DIM}, norm={norm:.4f})")
+        print(f"        embedding[:5]={resp.results[0].embedding[:5]}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 图片向量化失败: {e}")
+        return False
+
+
+def test_siglip2_l2_normalized():
+    """测试 SigLIP2 图片向量 L2 归一化"""
+    print("[测试] SigLIP2 L2 归一化检查...")
+    if not _check_vision_model_available(TEST_SIGLIP2_DIR):
+        print(f"    - 跳过: 模型文件不可用")
+        return True
+
+    try:
+        images = [_generate_test_image(224, 224) for _ in range(3)]
+        req = vector_pb2.EmbeddingRequest(
+            model_name=TEST_SIGLIP2_NAME,
+            texts=[],
+            dim=TEST_SIGLIP2_DIM,
+            images=images,
+        )
+        resp = vec_stub.CreateEmbedding(req, metadata=get_metadata())
+        assert resp.success
+        assert len(resp.results) == len(images)
+
+        for r in resp.results:
+            norm = math.sqrt(sum(x * x for x in r.embedding))
+            assert abs(norm - 1.0) < 1e-4, f"L2 范数={norm}, 期望≈1.0"
+        print(f"    ✓ 所有图片向量已 L2 归一化 ({len(resp.results)} 条)")
+        return True
+    except Exception as e:
+        print(f"    ✗ 归一化检查失败: {e}")
+        return False
+
+
+def test_siglip2_consistency():
+    """测试 SigLIP2 图片向量生成确定性"""
+    print("[测试] SigLIP2 图片向量确定性...")
+    if not _check_vision_model_available(TEST_SIGLIP2_DIR):
+        print(f"    - 跳过: 模型文件不可用")
+        return True
+
+    try:
+        image_bytes = _generate_test_image(224, 224)
+
+        req1 = vector_pb2.EmbeddingRequest(
+            model_name=TEST_SIGLIP2_NAME,
+            texts=[],
+            dim=TEST_SIGLIP2_DIM,
+            images=[image_bytes],
+        )
+        resp1 = vec_stub.CreateEmbedding(req1, metadata=get_metadata())
+
+        req2 = vector_pb2.EmbeddingRequest(
+            model_name=TEST_SIGLIP2_NAME,
+            texts=[],
+            dim=TEST_SIGLIP2_DIM,
+            images=[image_bytes],
+        )
+        resp2 = vec_stub.CreateEmbedding(req2, metadata=get_metadata())
+
+        assert resp1.success and resp2.success
+        e1 = resp1.results[0].embedding
+        e2 = resp2.results[0].embedding
+        diff = sum(abs(a - b) for a, b in zip(e1, e2))
+        assert diff < 1e-5, f"相同图片产生了不同向量，差异={diff}"
+        print(f"    ✓ 图片向量生成具有确定性 (diff={diff:.2e})")
+        return True
+    except Exception as e:
+        print(f"    ✗ 确定性测试失败: {e}")
+        return False
+
+
+def test_siglip2_unload():
+    """测试卸载 SigLIP2 模型"""
+    print("[测试] 卸载 SigLIP2 视觉模型...")
+    if not _check_vision_model_available(TEST_SIGLIP2_DIR):
+        print(f"    - 跳过: 模型文件不可用")
+        return True
+
+    try:
+        req = vector_pb2.UnloadModelRequest(model_name=TEST_SIGLIP2_NAME)
+        resp = vec_stub.UnloadModel(req, metadata=get_metadata())
+        assert resp.success, f"卸载失败: {resp.message}"
+        print(f"    ✓ SigLIP2 视觉模型卸载成功")
+        return True
+    except Exception as e:
+        print(f"    ✗ 卸载失败: {e}")
+        return False
+
+
+# ============================================================================
 # bge-m3 (XLM-RoBERTa, dim=1024) 模型测试
 # ============================================================================
 
@@ -1170,6 +1513,17 @@ def run_all_tests():
         ("bge-m3 长文本处理", test_bge_m3_long_text),
         ("bge-m3 语义相似度", test_bge_m3_similarity),
         ("卸载 bge-m3", test_bge_m3_unload),
+        # 图片向量化模型测试
+        ("加载 Jina-CLIP-v2 视觉模型", test_jina_clip_v2_load),
+        ("Jina-CLIP-v2 图片向量化", test_jina_clip_v2_image_embedding),
+        ("Jina-CLIP-v2 L2 归一化", test_jina_clip_v2_l2_normalized),
+        ("Jina-CLIP-v2 图片向量确定性", test_jina_clip_v2_consistency),
+        ("卸载 Jina-CLIP-v2", test_jina_clip_v2_unload),
+        ("加载 SigLIP2 视觉模型", test_siglip2_load),
+        ("SigLIP2 图片向量化", test_siglip2_image_embedding),
+        ("SigLIP2 L2 归一化", test_siglip2_l2_normalized),
+        ("SigLIP2 图片向量确定性", test_siglip2_consistency),
+        ("卸载 SigLIP2", test_siglip2_unload),
     ]
 
     passed = 0

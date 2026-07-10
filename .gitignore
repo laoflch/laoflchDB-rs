@@ -11,6 +11,7 @@ gcc13/
 # 本地数据库文件
 laoflch_db_data/
 laoflch_db_data_prod/
+laoflch_db_data_prod/sys/
 laoflch_hnsw_data/
 laoflch_hnsw_snapshots/
 laoflch_db_index/
