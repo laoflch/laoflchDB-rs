@@ -1175,7 +1175,7 @@ fn is_vision_model_dir(config_path: &std::path::Path) -> bool {
     let model_type = config_value.get("model_type").and_then(|v| v.as_str()).unwrap_or("");
     let is_vision = matches!(
         model_type,
-        "jina-clip-v2" | "siglip" | "siglip2" | "vit" | "clip" | "vision"
+        "jina-clip-v2" | "jina_clip" | "siglip" | "siglip2" | "vit" | "clip" | "vision"
     );
     let has_vision_config = config_value.get("vision_config").is_some();
     is_vision || has_vision_config

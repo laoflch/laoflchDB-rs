@@ -193,7 +193,7 @@ impl VisionPatchEmbed {
             config.hidden_size,          // out_channels
             config.patch_size,           // kernel_size
             conv_cfg,
-            vb.pp("patch_embed"),
+            vb,                          // 直接使用传入的 vb，调用方已提供 patch_embed 前缀
         )?;
         let num_patches = (config.image_size / config.patch_size).pow(2);
         Ok(Self {
@@ -510,9 +510,8 @@ impl VisionTransformer {
         let cls_token = self.cls_token.expand((b, 1, self.config.hidden_size))?;
         let hidden_states = Tensor::cat(&[&cls_token, &patch_embeds], 1)?; // [1, 1+num_patches, hidden]
 
-        // 4. 添加位置编码
-        let pos_embed = self.pos_embed.unsqueeze(0)?.expand((b, self.pos_embed.dim(1)?, self.pos_embed.dim(2)?))?;
-        let hidden_states = (hidden_states + pos_embed)?;
+        // 4. 添加位置编码（pos_embed 已是 [1, 1+num_patches, hidden] 形状）
+        let hidden_states = (hidden_states + self.pos_embed.clone())?;
 
         // 5. Pre-LayerNorm (可选)
         let hidden_states = if let Some(ref pre_ln) = self.pre_ln {
@@ -575,7 +574,7 @@ pub fn try_load_vision_model(model_path: &str, device: &Device) -> Option<Vision
 
     let is_vision_model = matches!(
         model_type,
-        "jina-clip-v2" | "siglip" | "siglip2" | "vit" | "clip" | "vision"
+        "jina-clip-v2" | "jina_clip" | "siglip" | "siglip2" | "vit" | "clip" | "vision"
     );
 
     // 如果没有明确的 model_type，尝试通过 vision_config 字段判断
@@ -615,12 +614,14 @@ pub fn map_vision_weights(
     mut tensors: HashMap<String, Tensor>,
     model_type: &str,
 ) -> HashMap<String, Tensor> {
-    // 处理 Jina-CLIP-v2 类型的命名差异
-    if model_type == "jina-clip-v2" {
-        // self_attn 命名映射
-        let mut mapped = HashMap::new();
-        for (key, tensor) in tensors.drain() {
-            let new_key = key
+    let mut mapped = HashMap::new();
+
+    for (key, tensor) in tensors.drain() {
+        let mut new_key = key;
+
+        // 处理 Jina-CLIP-v2 类型的命名差异
+        if model_type == "jina-clip-v2" || model_type == "jina_clip_vision" {
+            new_key = new_key
                 .replace("self_attn.q_proj", "attention.query")
                 .replace("self_attn.k_proj", "attention.key")
                 .replace("self_attn.v_proj", "attention.value")
@@ -629,14 +630,38 @@ pub fn map_vision_weights(
                 .replace("layer_norm2", "mlp_ln")
                 .replace("pre_layernorm", "pre_ln")
                 .replace("post_layernorm", "post_ln")
-                .replace("patch_embed", "patch_embed")
                 .replace("class_embedding", "cls_token")
                 .replace("position_embedding", "pos_embed");
-            mapped.insert(new_key, tensor);
         }
-        mapped
-    } else {
-        // 对于 SigLIP2 等模型，直接使用原始名称
-        tensors
+
+        // 处理 SigLIP2 类型的命名差异
+        if model_type == "siglip" || model_type == "siglip_vision_model" {
+            new_key = new_key
+                .replace("self_attn.q_proj", "attention.query")
+                .replace("self_attn.k_proj", "attention.key")
+                .replace("self_attn.v_proj", "attention.value")
+                .replace("self_attn.out_proj", "attention.output")
+                .replace("layer_norm1", "attention_ln")
+                .replace("layer_norm2", "mlp_ln")
+                .replace("pre_layernorm", "pre_ln")
+                .replace("post_layernorm", "post_ln")
+                .replace("class_embedding", "cls_token")
+                .replace("position_embedding", "pos_embed");
+        }
+
+        // 通用映射：处理 patch_embed.conv 到 patch_embed 的映射
+        // candle-nn 的 conv2d_no_bias 直接在 vb 下查找 "weight"，不需要 "conv" 子前缀
+        if new_key.starts_with("patch_embed.conv.") {
+            new_key = new_key.replacen("patch_embed.conv.", "patch_embed.", 1);
+        }
+
+        // 跳过不需要的 bias 权重（conv2d_no_bias 不使用 bias）
+        if new_key == "patch_embed.bias" {
+            continue;
+        }
+
+        mapped.insert(new_key, tensor);
     }
+
+    mapped
 }

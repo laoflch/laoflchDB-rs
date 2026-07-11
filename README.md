@@ -65,6 +65,26 @@ laoflchDB-rust/
 │   ├── src/lib.rs
 │   ├── Cargo.toml
 │   └── README.md
+├── laoflchdb_index_tantivy_engine/  # 全文索引引擎 crate - Tantivy
+│   ├── src/lib.rs
+│   └── Cargo.toml
+├── laoflchdb_vector_service/  # 向量化服务 crate - Candle/BERT/视觉模型
+│   ├── proto/
+│   │   └── vector.proto
+│   ├── src/
+│   │   ├── lib.rs
+│   │   └── vision_encoder.rs    # ViT 视觉编码器
+│   ├── Cargo.toml
+│   └── build.rs
+├── laoflchdb_embedding_service/  # 嵌入向量索引服务 crate - HNSW
+│   ├── proto/
+│   │   └── embedding.proto
+│   ├── src/lib.rs
+│   ├── Cargo.toml
+│   └── build.rs
+├── laoflchdb_kv_rocksdb_engine/  # 独立的 KV 引擎 crate
+│   ├── src/lib.rs
+│   └── Cargo.toml
 ├── multi_table_rocksdb/  # 独立的 RocksDB 引擎实现 crate
 │   ├── src/
 │   │   ├── lib.rs
@@ -77,12 +97,18 @@ laoflchDB-rust/
 │   ├── rest_tests.rs
 │   ├── permission_tests.rs
 │   ├── prefix_filter_tests.rs
-│   └── integration_tests.rs
+│   ├── integration_tests.rs
+│   ├── index_service_tests.rs
+│   ├── index_tantivy_integration_tests.rs
+│   └── cross_schema_join_tests.rs
 ├── tests_python/        # Python 自动化 E2E 测试
 │   ├── test_e2e_grpc.py
 │   ├── test_e2e_rest.py
 │   ├── test_sql_query_validation.py    # SQL 查询验证测试
 │   ├── test_grpc_sql_query.py          # gRPC SQL 查询测试
+│   ├── test_vector_service_grpc.py     # 向量化服务测试
+│   ├── test_embedding_service_grpc.py  # 嵌入向量索引服务测试
+│   ├── test_index_grpc.py              # 全文索引 gRPC 测试
 │   └── test_final.py
 ├── xtask/              # 构建和测试任务
 │   ├── src/main.rs
@@ -226,6 +252,113 @@ SELECT * FROM users WHERE (age > 25 AND score > 90) OR name = 'Alice'
     {"name": "view_count", "type": "INT", "indexed": true, "stored": true}
   ]
 }
+```
+
+---
+
+## 新增：向量化服务 (VectorService)
+
+### 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **文本向量化** | 基于 Candle 0.10 + CUDA 实现 BERT/XLM-RoBERTa 模型推理 |
+| **图片向量化** | 支持 ViT 架构视觉模型 (Jina-CLIP-v2, SigLIP2) |
+| **模型自动加载** | 启动时通过配置自动加载指定模型 |
+| **L2 归一化** | 输出向量自动进行 L2 归一化 |
+| **gRPC API** | 提供完整的 gRPC 向量化服务接口 |
+
+### 支持的模型
+
+| 模型 | 架构 | 类型 | 维度 |
+|------|------|------|------|
+| bge-small-zh-v1.5 | BERT | 文本 | 512 |
+| bge-m3 | XLM-RoBERTa | 文本 | 1024 |
+| jina-clip-v2 | ViT-L/14 | 视觉 | 1024 |
+| siglip2 | ViT-B/16 | 视觉 | 768 |
+
+### 图片向量化流程
+
+```
+图片输入 (PNG/JPEG) → ImageProcessor 解码
+    → resize 到模型指定尺寸
+    → 归一化 (mean/std)
+    → 转 Tensor
+    → Patch Embedding (Conv2d)
+    → 添加 CLS Token + Position Embedding
+    → Transformer Encoder 推理
+    → CLS 向量输出
+    → L2 归一化
+```
+
+### 向量化 API
+
+| 操作 | gRPC | 说明 |
+|------|------|------|
+| 创建向量 | `CreateEmbedding` | 文本/图片 → 向量 |
+| 计算相似度 | `ComputeSimilarity` | 向量间余弦相似度 |
+| 加载模型 | `LoadModel` | 加载指定模型 |
+| 卸载模型 | `UnloadModel` | 卸载指定模型 |
+| 列出模型 | `ListModels` | 列出已加载模型 |
+| 可加载模型 | `ListLoadableModels` | 列出可加载的模型列表 |
+| 模型信息 | `GetModelInfo` | 获取模型详细信息 |
+
+### 配置示例
+
+```yaml
+vector_service:
+  enabled: true
+  auto_load: true
+  load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
+```
+
+---
+
+## 新增：嵌入向量索引服务 (EmbeddingIndexService)
+
+### 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **ANN 搜索** | 基于 HNSW 算法实现近似最近邻搜索 |
+| **向量持久化** | 基于 RocksDB 的向量数据持久化存储 |
+| **快照管理** | 支持 HNSW 图拓扑快照保存和加载 |
+| **批量插入** | 支持批量向量插入 |
+| **范围搜索** | 支持范围搜索 |
+
+### 配置参数
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| dim | 向量维度 | 512 |
+| m | HNSW 图每个节点的最大连接数 | 32 |
+| ef_construction | 图构建时的搜索宽度 | 200 |
+| ef_search | 搜索时的搜索宽度 | 50 |
+| max_elements | 索引最大容量 | 1000000 |
+
+### 嵌入向量 API
+
+| 操作 | gRPC | 说明 |
+|------|------|------|
+| 插入向量 | `InsertEmbedding` | 插入向量到索引 |
+| 搜索向量 | `SearchEmbedding` | 搜索 Top-K 最近邻 |
+| 删除向量 | `DeleteEmbedding` | 从索引中删除向量 |
+| 获取信息 | `GetIndexInfo` | 获取索引统计信息 |
+| 保存快照 | `SaveSnapshot` | 保存索引快照 |
+| 加载快照 | `LoadSnapshot` | 加载索引快照 |
+
+### 配置示例
+
+```yaml
+embedding_index:
+  enabled: true
+  dim: 512
+  m: 32
+  ef_construction: 200
+  ef_search: 50
+  max_elements: 1000000
+  kv_db_path: ./laoflch_hnsw_data
+  snapshot_path: ./laoflch_hnsw_snapshots
 ```
 
 ---
@@ -918,6 +1051,10 @@ cargo all          # 编译所有 (Rust + ldb)
 | arrow-array | 58.3.0 | Arrow Array 实现 |
 | futures | 0.3 | 异步流处理 |
 | snowflake_me | 0.5 | Snowflake ID 生成 |
+| tantivy | 0.26 | 全文索引引擎 |
+| candle-core | 0.10 | 深度学习推理框架 (CPU/CUDA) |
+| candle-nn | 0.10 | 神经网络模块 (Candle) |
+| candle-kernels | 0.10 | CUDA 内核加速 (Candle) |
 
 ---
 
@@ -1083,6 +1220,8 @@ multi_table_rocksdb
 ---
 
 ### 0.1.4 (当前)
+- **向量化服务 (VectorService)**: 基于 Candle 0.10 + CUDA 实现文本和图片向量化推理，支持 BERT/XLM-RoBERTa/ViT 模型
+- **嵌入向量索引服务 (EmbeddingIndexService)**: 基于 HNSW 算法实现近似最近邻搜索，支持向量持久化和快照管理
 - **表和字段注释支持**: 在 `TableMeta` 和 `ColumnMeta` 中添加了 `comment` 字段，支持语义化注释
 - **订单交易系统示例**: `--example` 初始化时创建完整的订单交易系统表结构，包含表和字段注释
 - **lsql 命令行客户端**: 类似 PostgreSQL psql 的交互式 SQL 客户端，支持 `\v` 作为 `\version` 的别名

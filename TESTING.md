@@ -40,6 +40,8 @@ python3 tests_python/test_table_structure.py    # 表结构测试
 python3 tests_python/test_final.py              # 完整回归测试
 python3 tests_python/test_index_rest.py         # REST 全文索引测试
 python3 tests_python/test_index_grpc.py         # gRPC 全文索引测试
+python3 tests_python/test_vector_service_grpc.py  # 向量化服务测试
+python3 tests_python/test_embedding_service_grpc.py  # 嵌入向量索引服务测试
 ```
 
 ---
@@ -191,6 +193,42 @@ python3 tests_python/test_index_rest.py
 python3 tests_python/test_index_grpc.py
 ```
 
+#### 向量化服务 gRPC 测试
+- **文件**: `tests_python/test_vector_service_grpc.py`
+- **内容**: 测试向量化服务的完整功能
+- **测试场景**:
+  1. 创建文本向量（CreateEmbedding with texts）
+  2. 创建图片向量（CreateEmbedding with images）
+  3. 向量 L2 归一化验证
+  4. 向量化结果确定性验证
+  5. 计算向量相似度
+  6. 加载/卸载模型
+  7. 列出已加载模型
+  8. 列出可加载模型
+  9. 获取模型信息
+  10. 模型类型检测（文本/视觉）
+
+```bash
+python3 tests_python/test_vector_service_grpc.py
+```
+
+#### 嵌入向量索引服务 gRPC 测试
+- **文件**: `tests_python/test_embedding_service_grpc.py`
+- **内容**: 测试嵌入向量索引服务的完整功能
+- **测试场景**:
+  1. 插入向量到索引
+  2. 搜索 Top-K 最近邻
+  3. 搜索结果准确性验证
+  4. 从索引中删除向量
+  5. 获取索引统计信息
+  6. 索引快照保存和加载
+  7. 批量插入向量
+  8. 范围搜索
+
+```bash
+python3 tests_python/test_embedding_service_grpc.py
+```
+
 ---
 
 ## 测试覆盖率
@@ -210,6 +248,19 @@ python3 tests_python/test_index_grpc.py
 | **gRPC** | GetDocument | ✅ |
 | **gRPC** | DeleteDocument | ✅ |
 | **gRPC** | SearchIndex | ✅ |
+| **gRPC** | CreateEmbedding | ✅ |
+| **gRPC** | ComputeSimilarity | ✅ |
+| **gRPC** | LoadModel | ✅ |
+| **gRPC** | UnloadModel | ✅ |
+| **gRPC** | ListModels | ✅ |
+| **gRPC** | ListLoadableModels | ✅ |
+| **gRPC** | GetModelInfo | ✅ |
+| **gRPC** | InsertEmbedding | ✅ |
+| **gRPC** | SearchEmbedding | ✅ |
+| **gRPC** | DeleteEmbedding | ✅ |
+| **gRPC** | GetIndexInfo | ✅ |
+| **gRPC** | SaveSnapshot | ✅ |
+| **gRPC** | LoadSnapshot | ✅ |
 | **REST** | `/health` | ✅ |
 | **REST** | `/api/v1/tables` | ✅ |
 | **REST** | `/api/v1/schemas/{schema}/tables` | ✅ |
@@ -247,6 +298,16 @@ python3 tests_python/test_index_grpc.py
 | 多字段搜索 | ✅ |
 | 自动ID生成 | ✅ |
 | 认证拦截 | ✅ |
+| 文本向量化 | ✅ |
+| 图片向量化 | ✅ |
+| 向量 L2 归一化 | ✅ |
+| 模型加载/卸载 | ✅ |
+| 模型自动检测 | ✅ |
+| 向量相似度计算 | ✅ |
+| ANN 向量搜索 | ✅ |
+| 向量持久化存储 | ✅ |
+| 索引快照管理 | ✅ |
+| 批量向量插入 | ✅ |
 
 ---
 
@@ -280,6 +341,8 @@ python3 tests_python/test_index_grpc.py
 5. **Python 自动化测试**
    - gRPC 端到端测试
    - REST API 端到端测试
+   - 向量化服务测试
+   - 嵌入向量索引服务测试
 
 6. **清理**
    - 停止服务
@@ -304,7 +367,9 @@ python3 tests_python/test_index_grpc.py
 | Python 完整回归测试 | 1 | ✅ |
 | Python 全文索引REST测试 | 1 | ✅ |
 | Python 全文索引gRPC测试 | 1 | ✅ |
-| **总计** | **57** | **✅** |
+| Python 向量化服务测试 | 1 | ✅ |
+| Python 嵌入向量索引服务测试 | 1 | ✅ |
+| **总计** | **59** | **✅** |
 
 ---
 

@@ -5,7 +5,7 @@
 - **Base URL**: `http://localhost:8080`
 - **Content-Type**: `application/json`
 - **gRPC 端口**: `19777`
-- **版本**: v0.1.4
+- **版本**: v0.1.9
 
 ## 认证机制
 
@@ -693,10 +693,32 @@ cargo docker deploy
 ```yaml
 # 数据库配置
 db_path: ./laoflch_db_data
+index_path: ./laoflch_db_index
+model_path: ./laoflch_db_model
 log_level: info
 
 # 默认权限策略: allow 或 deny
 default_policy: allow
+
+# 运行时模式: multi_thread 或 single_thread
+runtime_mode: multi_thread
+
+# 向量化服务配置
+vector_service:
+  enabled: true
+  auto_load: true
+  load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
+
+# 嵌入向量索引服务配置
+embedding_index:
+  enabled: true
+  dim: 512
+  m: 32
+  ef_construction: 200
+  ef_search: 50
+  max_elements: 1000000
+  kv_db_path: ./laoflch_hnsw_data
+  snapshot_path: ./laoflch_hnsw_snapshots
 
 # 访问协议配置
 access_protocols:

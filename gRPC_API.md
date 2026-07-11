@@ -5,7 +5,7 @@
 - **服务地址**: `localhost:19777`
 - **协议**: gRPC (HTTP/2)
 - **语言**: Protocol Buffers 3
-- **版本**: v0.1.8
+- **版本**: v0.1.9
 
 ## 认证机制
 
@@ -95,8 +95,15 @@ service VectorService {
   rpc LoadModel(LoadModelRequest) returns (LoadModelResponse);
   rpc UnloadModel(UnloadModelRequest) returns (UnloadModelResponse);
   rpc ListLoadableModels(ListLoadableModelsRequest) returns (ListLoadableModelsResponse);
-}```
+}
 ```
+
+**支持的模型类型**：
+
+| 模型类型 | 示例模型 | 输入类型 | 说明 |
+|---------|---------|---------|------|
+| 文本模型 | bge-small-zh-v1.5, bge-m3 | `texts` | 基于 BERT/XLM-RoBERTa 的文本向量化 |
+| 视觉模型 | jina-clip-v2, siglip2 | `images` | 基于 ViT 的图片向量化，不需要 tokenizer |
 
 ### 3. EmbeddingIndexService 嵌入向量索引服务
 
@@ -824,8 +831,9 @@ JOIN inventory.products ON sales.orders.product_id = inventory.products.product_
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | model_name | string | 是 | 模型名称（需先注册） |
-| texts | repeated string | 是 | 要生成向量的文本列表 |
+| texts | repeated string | 否 | 要生成向量的文本列表（文本模型必填） |
 | dim | int32 | 是 | 向量维度 |
+| images | repeated bytes | 否 | 图片原始字节数据（PNG/JPEG，视觉模型必填） |
 
 #### EmbeddingResponse
 
@@ -839,7 +847,7 @@ JOIN inventory.products ON sales.orders.product_id = inventory.products.product_
 
 | 字段 | 类型 | 说明 |
 |------|------|------|
-| text | string | 原始文本 |
+| text | string | 原始文本（文本输入）或图片标识（图片输入） |
 | embedding | repeated float | 生成的向量 |
 | dim | int32 | 向量维度 |
 
@@ -969,10 +977,17 @@ vector_service:
   load_models: []             # 指定加载列表（空=加载 candle 目录下所有有效模型）
 ```
 
-模型文件需放置于 `{model_path}/candle/{model_name}/` 目录下，包含：
-- `config.json` — BERT 模型配置
+模型文件需放置于 `{model_path}/candle/{model_name}/` 目录下：
+
+**文本模型**（如 bge-small-zh-v1.5, bge-m3）：
+- `config.json` — BERT/XLM-RoBERTa 模型配置
 - `tokenizer.json` — HuggingFace tokenizer
 - `model.safetensors` — 模型权重 (SafeTensors 格式)
+
+**视觉模型**（如 jina-clip-v2, siglip2）：
+- `config.json` — 包含 `vision_config` 字段的模型配置
+- `model.safetensors` — 视觉 Transformer 权重
+- 视觉模型不需要 `tokenizer.json`，系统自动检测 `vision_config` 进行加载
 
 ---
 
@@ -1235,7 +1250,7 @@ resp = stub.SearchIndex(rpc_pb2.SearchIndexRequest(
 print(f"Search: {resp.success}, hits={len(resp.results)}")
 
 # ===== 向量化服务操作 =====
-# 12. 注册模型
+# 12. 注册模型（文本模型）
 resp = vec_stub.LoadModel(vector_pb2.LoadModelRequest(
     model_name="bert_base",
     model_path="/tmp/models/bert_base",
@@ -1243,7 +1258,7 @@ resp = vec_stub.LoadModel(vector_pb2.LoadModelRequest(
 ), metadata=metadata)
 print(f"Load model: {resp.success}")
 
-# 13. 生成向量
+# 13. 生成文本向量
 resp = vec_stub.CreateEmbedding(vector_pb2.EmbeddingRequest(
     model_name="bert_base",
     texts=["Hello World", "Rust Programming"],
@@ -1252,7 +1267,28 @@ resp = vec_stub.CreateEmbedding(vector_pb2.EmbeddingRequest(
 for r in resp.results:
     print(f"  text='{r.text[:20]}' embedding[:3]={r.embedding[:3]}")
 
-# 14. 计算相似度
+# 14. 图片向量化（视觉模型）
+# 需要先加载视觉模型（如 jina-clip-v2 或 siglip2）
+resp = vec_stub.LoadModel(vector_pb2.LoadModelRequest(
+    model_name="jina-clip-v2",
+    model_path="/path/to/models/candle/jina-clip-v2",
+    embedding_dim=1024,
+), metadata=metadata)
+print(f"Load vision model: {resp.success}")
+
+# 读取图片文件并生成向量
+with open("/path/to/image.jpg", "rb") as f:
+    image_bytes = f.read()
+resp = vec_stub.CreateEmbedding(vector_pb2.EmbeddingRequest(
+    model_name="jina-clip-v2",
+    texts=[],                          # 文本模型传 texts，视觉模型传 images
+    images=[image_bytes],              # 图片原始字节数据
+    dim=1024,
+), metadata=metadata)
+for r in resp.results:
+    print(f"  image embedding[:3]={r.embedding[:3]}")
+
+# 15. 计算相似度
 candidates = [
     vector_pb2.EmbeddingResult(text="Rust", embedding=[1.0, 0.0, 0.0], dim=3),
     vector_pb2.EmbeddingResult(text="Python", embedding=[0.9, 0.1, 0.0], dim=3),
@@ -1266,12 +1302,12 @@ resp = vec_stub.ComputeSimilarity(vector_pb2.SimilarityRequest(
 for r in resp.results:
     print(f"  rank={r.rank}: '{r.text}' score={r.score:.4f}")
 
-# 15. 列出模型
+# 16. 列出模型
 resp = vec_stub.ListModels(vector_pb2.ListModelsRequest(), metadata=metadata)
 for m in resp.models:
     print(f"  model: {m.model_name}, dim={m.embedding_dim}, device={m.device}")
 
-# 16. 列出可加载模型（扫描 candle 目录）
+# 17. 列出可加载模型（扫描 candle 目录）
 resp = vec_stub.ListLoadableModels(vector_pb2.ListLoadableModelsRequest(), metadata=metadata)
 print(f"ListLoadableModels: {resp.success}, dir={resp.model_dir}")
 for m in resp.models:
@@ -1427,3 +1463,4 @@ cargo auto-test prod
 | PERMISSION_DENIED (7) | 权限不足 |
 | UNAUTHENTICATED (16) | 未认证（无效或缺失的 Token） |
 | NOT_FOUND (5) | 资源不存在（如模型未找到） |
+| FAILED_PRECONDITION (9) | 前置条件不满足（如模型未正确加载完成） |

@@ -15,9 +15,12 @@
 9. [Query 接口设计](#9-query-接口设计)
 10. [异步调用设计](#10-异步调用设计)
 11. [前缀过滤与 Snowflake ID 设计](#11-前缀过滤与-snowflake-id-设计)
-12. [核心依赖](#12-核心依赖)
-13. [架构设计原则](#13-架构设计原则)
-14. [版本历史](#14-版本历史)
+12. [全文索引引擎设计](#12-全文索引引擎设计)
+13. [向量化服务设计 (VectorService)](#13-向量化服务设计-vectorservice)
+14. [嵌入向量索引服务设计 (EmbeddingIndexService)](#14-嵌入向量索引服务设计-embeddingindexservice)
+15. [核心依赖](#15-核心依赖)
+16. [架构设计原则](#16-架构设计原则)
+17. [版本历史](#17-版本历史)
 
 ---
 
@@ -76,6 +79,26 @@ laoflchDB-rust/
 │   ├── src/lib.rs
 │   ├── Cargo.toml
 │   └── README.md
+├── laoflchdb_index_tantivy_engine/  # 全文索引引擎 crate - Tantivy
+│   ├── src/lib.rs
+│   └── Cargo.toml
+├── laoflchdb_vector_service/  # 向量化服务 crate - Candle/BERT/视觉模型
+│   ├── proto/
+│   │   └── vector.proto
+│   ├── src/
+│   │   ├── lib.rs
+│   │   └── vision_encoder.rs    # ViT 视觉编码器
+│   ├── Cargo.toml
+│   └── build.rs
+├── laoflchdb_embedding_service/  # 嵌入向量索引服务 crate - HNSW
+│   ├── proto/
+│   │   └── embedding.proto
+│   ├── src/lib.rs
+│   ├── Cargo.toml
+│   └── build.rs
+├── laoflchdb_kv_rocksdb_engine/  # 独立的 KV 引擎 crate
+│   ├── src/lib.rs
+│   └── Cargo.toml
 ├── multi_table_rocksdb/  # 独立的 RocksDB 引擎实现 crate
 │   ├── src/
 │   │   ├── lib.rs
@@ -88,12 +111,19 @@ laoflchDB-rust/
 │   ├── rest_tests.rs
 │   ├── permission_tests.rs
 │   ├── prefix_filter_tests.rs
-│   └── integration_tests.rs
+│   ├── integration_tests.rs
+│   ├── index_service_tests.rs
+│   ├── index_tantivy_integration_tests.rs
+│   └── cross_schema_join_tests.rs
 ├── tests_python/        # Python 自动化 E2E 测试
 │   ├── test_e2e_grpc.py
 │   ├── test_e2e_rest.py
 │   ├── test_sql_query_validation.py
-│   └── test_grpc_sql_query.py
+│   ├── test_grpc_sql_query.py
+│   ├── test_vector_service_grpc.py   # 向量化服务测试
+│   ├── test_embedding_service_grpc.py # 嵌入向量索引服务测试
+│   ├── test_index_grpc.py            # 全文索引 gRPC 测试
+│   └── test_final.py
 ├── xtask/              # 构建和测试任务
 │   ├── src/main.rs
 │   └── Cargo.toml
@@ -981,7 +1011,163 @@ struct TantivyIndex {
 
 ---
 
-## 13. 核心依赖
+## 13. 向量化服务设计 (VectorService)
+
+### 13.1 架构概述
+
+向量化服务基于 **Candle 0.10 + CUDA** 实现，支持文本模型 (BERT/XLM-RoBERTa) 和视觉模型 (ViT) 的向量化推理。
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    LaoflchDBServer                            │
+│                           │                                   │
+│                           ▼                                   │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              VectorService (gRPC)                        │  │
+│  │  - CreateEmbedding / ComputeSimilarity                   │  │
+│  │  - LoadModel / UnloadModel / ListModels                 │  │
+│  │  - ListLoadableModels / GetModelInfo                    │  │
+│  └────────────────────────┬─────────────────────────────────┘  │
+│                           │                                    │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              VectorServiceImpl (核心引擎)                 │  │
+│  │  ┌─────────────────────┐ ┌───────────────────────────┐  │  │
+│  │  │   RealBertModel     │ │   VisionTransformer       │  │  │
+│  │  │  (文本模型推理)      │ │  (视觉模型推理)            │  │  │
+│  │  │  - BERT/XLM-RoBERTa │ │  - ViT Patch Embedding    │  │  │
+│  │  │  - Tokenizer 编码   │ │  - Multi-Head Attention   │  │  │
+│  │  │  - Mean Pooling     │ │  - CLS Pooling            │  │  │
+│  │  │  - L2 Normalization │ │  - L2 Normalization       │  │  │
+│  │  └─────────────────────┘ └───────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+│                           │                                    │
+│                           ▼                                    │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              Candle 推理引擎 (CPU/CUDA)                  │  │
+│  │  - 模型权重加载 (SafeTensors)                            │  │
+│  │  - CUDA 加速推理                                        │  │
+│  │  - 自动模型类型检测 (文本/视觉)                           │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 13.2 支持的模型类型
+
+| 模型类型 | 示例模型 | 架构 | 输入 | 维度 |
+|---------|---------|------|------|------|
+| 文本模型 | bge-small-zh-v1.5 | BERT | texts | 512 |
+| 文本模型 | bge-m3 | XLM-RoBERTa | texts | 1024 |
+| 视觉模型 | jina-clip-v2 | ViT-L/14 | images | 1024 |
+| 视觉模型 | siglip2 | ViT-B/16 | images | 768 |
+
+### 13.3 模型自动加载
+
+启动时通过配置控制模型加载：
+
+```yaml
+vector_service:
+  enabled: true
+  auto_load: true
+  load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
+```
+
+- **文本模型**: 需要 `config.json` + `tokenizer.json` + `model.safetensors`
+- **视觉模型**: 需要 `config.json` (含 `vision_config`) + `model.safetensors`，不需要 tokenizer
+
+### 13.4 图片向量化流程
+
+```
+图片输入 (PNG/JPEG) → ImageProcessor 解码
+    → resize 到模型指定尺寸 (224/512)
+    → 归一化 (mean/std)
+    → 转 Tensor
+    → Patch Embedding (Conv2d)
+    → 添加 CLS Token + Position Embedding
+    → Transformer Encoder 推理
+    → CLS 向量输出
+    → L2 归一化
+```
+
+**位置**: [laoflchdb_vector_service/src/vision_encoder.rs](laoflchdb_vector_service/src/vision_encoder.rs)
+
+---
+
+## 14. 嵌入向量索引服务设计 (EmbeddingIndexService)
+
+### 14.1 架构概述
+
+嵌入向量索引服务基于 **HNSW (Hierarchical Navigable Small World)** 算法实现，提供高性能的近似最近邻 (ANN) 搜索。
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    LaoflchDBServer                            │
+│                           │                                   │
+│                           ▼                                   │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │           EmbeddingIndexService (gRPC)                   │  │
+│  │  - InsertEmbedding / SearchEmbedding / DeleteEmbedding   │  │
+│  │  - GetIndexInfo / SaveSnapshot / LoadSnapshot           │  │
+│  └────────────────────────┬─────────────────────────────────┘  │
+│                           │                                    │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │           EmbeddingIndexServiceImpl                      │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │           HnswIndex (HNSW 算法)                    │  │  │
+│  │  │  - 分层图结构 (multi-layer graph)                  │  │  │
+│  │  │  - 余弦距离度量                                    │  │  │
+│  │  │  - 批量插入                                        │  │  │
+│  │  │  - 范围搜索                                        │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │           KvStore (向量持久化)                      │  │  │
+│  │  │  - RocksDB 存储向量 ID → 向量数据映射               │  │  │
+│  │  │  - 支持向量数据的持久化和恢复                        │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │           Snapshot Manager (快照管理)               │  │  │
+│  │  │  - HNSW 图拓扑快照保存和加载                       │  │  │
+│  │  │  - 支持快速重启恢复                                │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 14.2 配置参数
+
+```yaml
+embedding_index:
+  enabled: true
+  dim: 512
+  m: 32
+  ef_construction: 200
+  ef_search: 50
+  max_elements: 1000000
+  kv_db_path: ./laoflch_hnsw_data
+  snapshot_path: ./laoflch_hnsw_snapshots
+```
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| dim | 向量维度 | 512 |
+| m | HNSW 图每个节点的最大连接数 | 32 |
+| ef_construction | 图构建时的搜索宽度 | 200 |
+| ef_search | 搜索时的搜索宽度 | 50 |
+| max_elements | 索引最大容量 | 1000000 |
+
+### 14.3 搜索流程
+
+```
+搜索请求 → SearchEmbedding
+    → 余弦距离计算
+    → HNSW 图遍历 (多层搜索)
+    → 返回 Top-K 最近邻
+    → 从 KvStore 加载向量数据 (可选)
+    → 返回搜索结果
+```
+
+---
+
+## 15. 核心依赖
 
 | Rust Crate | 版本 | 用途 |
 |------------|------|------|
@@ -1006,16 +1192,16 @@ struct TantivyIndex {
 
 ---
 
-## 13. 架构设计原则
+## 16. 架构设计原则
 
-### 13.1 可扩展性设计
+### 16.1 可扩展性设计
 
 - **接入层**：可以添加新的协议实现
 - **引擎层**：可以添加新的存储引擎实现 (LevelDB、Memory DB 等)
 - **服务层**：可以添加新的服务能力 (事务、索引等)
 - **Schema 层**：可以轻松扩展新的 Schema，每个 Schema 独立管理
 
-### 13.2 关注点分离
+### 16.2 关注点分离
 
 - **Access 层**：只负责协议接入，不关心业务逻辑
 - **Service 层**：只关心业务逻辑，管理 Schema 生命周期
@@ -1024,9 +1210,11 @@ struct TantivyIndex {
 
 ---
 
-## 15. 版本历史
+## 17. 版本历史
 
 ### 0.1.4 (当前)
+- **向量化服务 (VectorService)**: 基于 Candle 0.10 + CUDA 实现文本和图片向量化推理，支持 BERT/XLM-RoBERTa/ViT 模型
+- **嵌入向量索引服务 (EmbeddingIndexService)**: 基于 HNSW 算法实现近似最近邻搜索，支持向量持久化和快照管理
 - **跨 Schema JOIN 支持**: 完整的跨不同 Schema 之间的表 JOIN 操作
 - **自定义 laoflchdb Catalog**: 使用 `TableReference::full("laoflchdb", schema, table)` 注册表
 - **动态 Schema 注册**: SQL 查询时动态注册缺失的 Schema 到 DataFusion
@@ -1078,5 +1266,5 @@ struct TantivyIndex {
 ---
 
 **文档版本**: v0.1.4  
-**最后更新**: 2026-06-11  
+**最后更新**: 2026-07-11  
 **项目**: laoflchDB-rust
