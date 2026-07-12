@@ -25,6 +25,7 @@ pub struct RestService {
     service_id: String,
     token_manager: Arc<TokenManager>,
     object_store_router: Option<axum::Router>,
+    image_router: Option<axum::Router>,
 }
 
 impl RestService {
@@ -36,6 +37,7 @@ impl RestService {
             service_id: "default".to_string(),
             token_manager: Arc::new(TokenManager::default()),
             object_store_router: None,
+            image_router: None,
         }
     }
 
@@ -47,6 +49,7 @@ impl RestService {
             service_id,
             token_manager: Arc::new(TokenManager::default()),
             object_store_router: None,
+            image_router: None,
         }
     }
 
@@ -58,6 +61,7 @@ impl RestService {
             service_id,
             token_manager,
             object_store_router: None,
+            image_router: None,
         }
     }
 
@@ -70,6 +74,12 @@ impl RestService {
     /// 设置对象存储 REST Router
     pub fn with_object_store_router(mut self, router: axum::Router) -> Self {
         self.object_store_router = Some(router);
+        self
+    }
+
+    /// 设置图片服务 REST Router
+    pub fn with_image_router(mut self, router: axum::Router) -> Self {
+        self.image_router = Some(router);
         self
     }
 
@@ -134,7 +144,12 @@ impl RestService {
         if let Some(ref os_router) = self.object_store_router {
             main_router = main_router.nest("/api/v1/object-store", os_router.clone());
         }
-        
+
+        // 如果设置了图片服务，添加图片服务路由
+        if let Some(ref img_router) = self.image_router {
+            main_router = main_router.nest("/api/v1/images", img_router.clone());
+        }
+
         main_router
     }
 

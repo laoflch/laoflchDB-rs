@@ -209,6 +209,8 @@ pub struct DatabaseConfig {
     pub embedding_index: Option<EmbeddingIndexConfig>,
     #[serde(default)]
     pub object_store: Option<ObjectStoreConfig>,
+    #[serde(default)]
+    pub image_service: Option<ImageServiceConfig>,
 }
 
 /// 对象存储服务配置（S3 兼容）
@@ -220,6 +222,21 @@ pub struct ObjectStoreConfig {
     /// 对象存储数据路径
     #[serde(default = "default_object_store_db_path")]
     pub db_path: String,
+}
+
+/// 图片服务配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct ImageServiceConfig {
+    /// 是否启用（必须同时启用 object_store）
+    #[serde(default)]
+    pub enabled: bool,
+    /// 默认 bucket 名称
+    #[serde(default = "default_image_bucket")]
+    pub default_bucket: String,
+}
+
+fn default_image_bucket() -> String {
+    "images".to_string()
 }
 
 fn default_object_store_db_path() -> String {
@@ -286,6 +303,7 @@ impl DatabaseConfig {
             vector_service: None,
             embedding_index: None,
             object_store: None,
+            image_service: None,
         }
     }
 

@@ -1,6 +1,6 @@
 [package]
 name = "laoflchDB-rust"
-version = "0.1.9+5ce86ef936ca36856c389dd76bc11da354e94d2e"
+version = "0.1.9+d9b2f55b92ac6d5ff4329a3cc35cde82df35f522"
 edition = "2021"
 
 [[bin]]
@@ -20,6 +20,7 @@ members = [
     "laoflchdb_kv_rocksdb_engine",
     "laoflchdb_embedding_service",
     "laoflchdb_object_store_service",
+    "laoflchdb_image_service",
 ]
 
 [dependencies]
@@ -31,6 +32,7 @@ laoflchdb_vector_service = { path = "./laoflchdb_vector_service" }
 laoflchdb_kv_rocksdb_engine = { path = "./laoflchdb_kv_rocksdb_engine" }
 laoflchdb_embedding_service = { path = "./laoflchdb_embedding_service" }
 laoflchdb_object_store_service = { path = "./laoflchdb_object_store_service" }
+laoflchdb_image_service = { path = "./laoflchdb_image_service" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}
 prost = "0.12"
 protobuf = "3.7"

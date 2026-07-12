@@ -1,0 +1,138 @@
+syntax = "proto3";
+package laoflchdb.image_service;
+
+// 图片服务 - 基于对象存储实现图片上传（自动生成三种缩略图）和浏览
+service ImageService {
+  // 上传图片（自动生成 thumbnail/small/medium 三种缩略图，并保存图片元数据）
+  rpc UploadImage(UploadImageRequest) returns (UploadImageResponse);
+  // 获取原图
+  rpc GetImage(GetImageRequest) returns (GetImageResponse);
+  // 获取缩略图（size: thumbnail/small/medium）
+  rpc GetThumbnail(GetThumbnailRequest) returns (GetThumbnailResponse);
+  // 获取图片元数据
+  rpc GetImageMetadata(GetImageMetadataRequest) returns (GetImageMetadataResponse);
+  // 列出图片（支持前缀过滤和分页）
+  rpc ListImages(ListImagesRequest) returns (ListImagesResponse);
+  // 删除图片（同时删除原图和所有缩略图及元数据）
+  rpc DeleteImage(DeleteImageRequest) returns (DeleteImageResponse);
+}
+
+// ── UploadImage ────────────────────────────
+
+message UploadImageRequest {
+  // 对象存储中的 bucket 名称（若不指定则使用默认 bucket "images"）
+  string bucket = 1;
+  // 图片 key（不指定则使用 UUID 自动生成；指定时覆盖同名图片）
+  string key = 2;
+  // 图片二进制数据
+  bytes data = 3;
+  // 原始 content_type（如 image/jpeg、image/png）
+  string content_type = 4;
+  // 用户自定义元数据
+  map<string, string> metadata = 5;
+}
+
+// 图片元数据
+message ImageMetadata {
+  string key = 1;
+  string content_type = 2;
+  int64 content_length = 3;
+  int32 width = 4;
+  int32 height = 5;
+  string etag = 6;
+  string last_modified = 7;
+  // 缩略图 key 列表（thumbnail/small/medium）
+  map<string, string> thumbnails = 8;
+  // 用户自定义元数据
+  map<string, string> user_metadata = 9;
+  // 图片格式（如 JPEG/PNG/GIF/WebP）
+  string format = 10;
+}
+
+message UploadImageResponse {
+  bool success = 1;
+  string message = 2;
+  string key = 3;
+  string etag = 4;
+  ImageMetadata metadata = 5;
+}
+
+// ── GetImage ────────────────────────────
+
+message GetImageRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message GetImageResponse {
+  bool success = 1;
+  string message = 2;
+  bytes data = 3;
+  string content_type = 4;
+  int64 content_length = 5;
+  string etag = 6;
+}
+
+// ── GetThumbnail ────────────────────────────
+
+message GetThumbnailRequest {
+  string bucket = 1;
+  string key = 2;
+  // 缩略图规格: "thumbnail"(128x128), "small"(256x256), "medium"(512x512)
+  string size = 3;
+}
+
+message GetThumbnailResponse {
+  bool success = 1;
+  string message = 2;
+  bytes data = 3;
+  string content_type = 4;
+  int64 content_length = 5;
+  int32 width = 6;
+  int32 height = 7;
+}
+
+// ── GetImageMetadata ────────────────────────────
+
+message GetImageMetadataRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message GetImageMetadataResponse {
+  bool success = 1;
+  string message = 2;
+  ImageMetadata metadata = 3;
+}
+
+// ── ListImages ────────────────────────────
+
+message ListImagesRequest {
+  string bucket = 1;
+  string prefix = 2;
+  int32 max_keys = 3;
+  string marker = 4;
+}
+
+message ListImagesResponse {
+  bool success = 1;
+  string message = 2;
+  string bucket = 3;
+  repeated ImageMetadata images = 4;
+  bool is_truncated = 5;
+  string next_marker = 6;
+}
+
+// ── DeleteImage ────────────────────────────
+
+message DeleteImageRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message DeleteImageResponse {
+  bool success = 1;
+  string message = 2;
+  // 实际删除的对象 key 列表（原图 + 缩略图 + 元数据）
+  repeated string deleted_keys = 3;
+}

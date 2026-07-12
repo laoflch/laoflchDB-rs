@@ -28,6 +28,11 @@ object_store:
   enabled: true
   db_path: /app/laoflch_db_oss
 
+# 图片服务配置（基于对象存储，自动生成三种缩略图）
+image_service:
+  enabled: true
+  default_bucket: images
+
 # Log configuration
 log_level: info
 

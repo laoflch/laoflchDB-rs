@@ -669,6 +669,179 @@ curl -X DELETE http://localhost:8080/api/v1/object-store/my-bucket \
 
 ---
 
+### 12. 图片服务 (ImageService REST API)
+
+图片服务基于对象存储服务实现，提供图片上传（自动生成三种规格缩略图）和浏览功能。所有端点挂载在 `/api/v1/images` 前缀下。
+
+#### 12.1 UploadImage - 上传图片
+
+**端点**: `POST /api/v1/images`
+
+**查询参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | Bucket 名称（为空时使用默认 bucket "images"） |
+| key | string | 否 | 图片 key（为空时自动生成 UUID） |
+
+**请求头**:
+- `Content-Type`: 图片的 MIME 类型（如 `image/jpeg`、`image/png`）
+
+**请求体**: 原始图片二进制数据（PNG/JPEG/GIF/WebP）
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "key": "photo.jpg",
+  "etag": "\"a1b2c3d4...\"",
+  "metadata": {
+    "key": "photo.jpg",
+    "content_type": "image/jpeg",
+    "content_length": 102400,
+    "width": 1920,
+    "height": 1080,
+    "etag": "\"a1b2c3d4...\"",
+    "last_modified": "1720000000",
+    "thumbnails": {
+      "thumbnail": "photo.jpg__thumbnail.jpg",
+      "small": "photo.jpg__small.jpg",
+      "medium": "photo.jpg__medium.jpg"
+    },
+    "format": "Jpeg"
+  }
+}
+```
+
+**说明**: 上传时自动生成三种缩略图：
+- `thumbnail`: 128x128，cover 模式（裁剪为正方形），JPEG 编码
+- `small`: 最大 256x256，contain 模式（等比缩放），JPEG 编码
+- `medium`: 最大 512x512，contain 模式（等比缩放），JPEG 编码
+
+#### 12.2 ListImages - 列出图片
+
+**端点**: `GET /api/v1/images`
+
+**查询参数**:
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| bucket | string | Bucket 名称 |
+| prefix | string | 仅列出 key 以该前缀开头的图片 |
+| max_keys | int32 | 返回数量上限（默认 100） |
+| marker | string | 分页起始键 |
+
+#### 12.3 GetImage - 获取原图
+
+**端点**: `GET /api/v1/images/{key}`
+
+**查询参数**: `bucket`（可选）
+
+**响应头**:
+- `Content-Type`: 图片的 MIME 类型
+- `Content-Length`: 图片字节数
+- `ETag`: 图片的 ETag
+
+**响应体**: 原始图片二进制数据
+
+#### 12.4 GetImageMetadata - 获取图片元数据
+
+**端点**: `GET /api/v1/images/{key}/meta`
+
+**查询参数**: `bucket`（可选）
+
+**响应**: 图片元数据 JSON（包含 width、height、format、thumbnails、user_metadata 等）
+
+#### 12.5 GetThumbnail - 获取缩略图
+
+**端点**: `GET /api/v1/images/{key}/thumbnails/{size}`
+
+**路径参数**:
+- `key`: 图片 key
+- `size`: 缩略图规格（`thumbnail`、`small`、`medium`）
+
+**查询参数**: `bucket`（可选）
+
+**响应头**:
+- `Content-Type`: `image/jpeg`
+- `Content-Length`: 缩略图字节数
+- `X-Thumbnail-Width`: 缩略图宽度
+- `X-Thumbnail-Height`: 缩略图高度
+
+**响应体**: JPEG 格式的缩略图二进制数据
+
+**错误**: 无效的 `size` 参数返回 `400 Bad Request`，图片不存在返回 `404 Not Found`
+
+#### 12.6 DeleteImage - 删除图片
+
+**端点**: `DELETE /api/v1/images/{key}`
+
+**查询参数**: `bucket`（可选）
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "deleted_keys": [
+    "photo.jpg",
+    "photo.jpg__thumbnail.jpg",
+    "photo.jpg__small.jpg",
+    "photo.jpg__medium.jpg",
+    "__img_meta__photo.jpg"
+  ]
+}
+```
+
+**说明**: 删除图片时级联删除原图、所有缩略图和元数据（共 5 个对象）。删除不存在的图片是幂等操作。
+
+#### 图片服务 cURL 示例
+
+```bash
+# 1. 上传图片（自动生成缩略图）
+curl -X POST "http://localhost:8080/api/v1/images?bucket=my-images&key=photo.jpg" \
+  -H "Content-Type: image/jpeg" \
+  -H "Authorization: Bearer <your_token>" \
+  --data-binary @/path/to/photo.jpg
+
+# 2. 获取原图
+curl "http://localhost:8080/api/v1/images/photo.jpg?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>" \
+  -o photo.jpg
+
+# 3. 获取 thumbnail 缩略图（128x128）
+curl "http://localhost:8080/api/v1/images/photo.jpg/thumbnails/thumbnail?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>" \
+  -o thumb.jpg
+
+# 4. 获取 small 缩略图（最大 256x256）
+curl "http://localhost:8080/api/v1/images/photo.jpg/thumbnails/small?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>" \
+  -o small.jpg
+
+# 5. 获取 medium 缩略图（最大 512x512）
+curl "http://localhost:8080/api/v1/images/photo.jpg/thumbnails/medium?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>" \
+  -o medium.jpg
+
+# 6. 获取图片元数据
+curl "http://localhost:8080/api/v1/images/photo.jpg/meta?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>"
+
+# 7. 列出图片
+curl "http://localhost:8080/api/v1/images?bucket=my-images&max_keys=100" \
+  -H "Authorization: Bearer <your_token>"
+
+# 8. 带前缀列出图片
+curl "http://localhost:8080/api/v1/images?bucket=my-images&prefix=album/&max_keys=100" \
+  -H "Authorization: Bearer <your_token>"
+
+# 9. 删除图片（级联删除原图+缩略图+元数据）
+curl -X DELETE "http://localhost:8080/api/v1/images/photo.jpg?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+---
+
 ## 使用示例
 
 ### cURL 示例

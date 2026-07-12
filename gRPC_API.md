@@ -157,6 +157,39 @@ service ObjectStoreService {
 
 **存储模型**: 每个 Bucket 对应一个 RocksDB 表（Column Family），对象数据以 `__obj__{key}` 为键存储在 BlobDB 中，对象元数据以 `__meta__{key}` 为键存储（JSON 格式，包含 `content_type`、`content_length`、`etag`、`last_modified`、`user_metadata` 字段）。
 
+### 5. ImageService 图片服务
+
+**位置**: [laoflchdb_image_service/proto/image_service.proto](laoflchdb_image_service/proto/image_service.proto)
+
+基于对象存储服务实现的图片服务，上传图片时自动生成三种规格缩略图（thumbnail/small/medium）并存储图片元数据。
+
+```protobuf
+service ImageService {
+  // 上传图片（自动生成三种缩略图，并保存图片元数据）
+  rpc UploadImage(UploadImageRequest) returns (UploadImageResponse);
+  // 获取原图
+  rpc GetImage(GetImageRequest) returns (GetImageResponse);
+  // 获取缩略图（size: thumbnail/small/medium）
+  rpc GetThumbnail(GetThumbnailRequest) returns (GetThumbnailResponse);
+  // 获取图片元数据
+  rpc GetImageMetadata(GetImageMetadataRequest) returns (GetImageMetadataResponse);
+  // 列出图片（支持前缀过滤和分页）
+  rpc ListImages(ListImagesRequest) returns (ListImagesResponse);
+  // 删除图片（同时删除原图和所有缩略图及元数据）
+  rpc DeleteImage(DeleteImageRequest) returns (DeleteImageResponse);
+}
+```
+
+**缩略图规格**:
+- `thumbnail`: 128x128，cover 模式（裁剪为正方形），JPEG 编码
+- `small`: 最大 256x256，contain 模式（等比缩放），JPEG 编码
+- `medium`: 最大 512x512，contain 模式（等比缩放），JPEG 编码
+
+**存储模型**: 每张图片分解为 5 个对象存储在 ObjectStoreService 中：
+- 原图: `{image_key}`（保持原格式）
+- 缩略图: `{image_key}__{size_name}.jpg`（JPEG）
+- 元数据: `__img_meta__{image_key}`（JSON）
+
 ---
 
 ## 消息类型
@@ -1354,6 +1387,146 @@ object_store:
 
 ---
 
+### 12. ImageService 图片服务
+
+#### UploadImageRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | Bucket 名称（为空时使用默认 bucket "images"） |
+| key | string | 否 | 图片 key（为空时自动生成 UUID） |
+| data | bytes | 是 | 图片二进制数据（PNG/JPEG/GIF/WebP） |
+| content_type | string | 否 | 图片 MIME 类型（如 image/jpeg） |
+| metadata | map<string, string> | 否 | 用户自定义元数据 |
+
+#### ImageMetadata
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| key | string | 图片 key |
+| content_type | string | 图片 MIME 类型 |
+| content_length | int64 | 原图字节数 |
+| width | int32 | 原图宽度（像素） |
+| height | int32 | 原图高度（像素） |
+| etag | string | 原图 ETag |
+| last_modified | string | 最后修改时间（Unix 时间戳字符串） |
+| thumbnails | map<string, string> | 缩略图 key 列表（key: thumbnail/small/medium） |
+| user_metadata | map<string, string> | 用户自定义元数据 |
+| format | string | 图片格式（如 Jpeg/Png/Gif/WebP） |
+
+#### UploadImageResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| key | string | 图片 key（可能是自动生成的 UUID） |
+| etag | string | 原图 ETag |
+| metadata | ImageMetadata | 图片元数据 |
+
+#### GetImageRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | Bucket 名称 |
+| key | string | 是 | 图片 key |
+
+#### GetImageResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| data | bytes | 原图二进制数据 |
+| content_type | string | 图片 MIME 类型 |
+| content_length | int64 | 原图字节数 |
+| etag | string | 原图 ETag |
+
+#### GetThumbnailRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | Bucket 名称 |
+| key | string | 是 | 图片 key |
+| size | string | 是 | 缩略图规格: "thumbnail"(128x128), "small"(256x256), "medium"(512x512) |
+
+#### GetThumbnailResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| data | bytes | 缩略图二进制数据（JPEG） |
+| content_type | string | 固定为 "image/jpeg" |
+| content_length | int64 | 缩略图字节数 |
+| width | int32 | 缩略图宽度 |
+| height | int32 | 缩略图高度 |
+
+#### GetImageMetadataRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | Bucket 名称 |
+| key | string | 是 | 图片 key |
+
+#### GetImageMetadataResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| metadata | ImageMetadata | 图片元数据 |
+
+#### ListImagesRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | Bucket 名称 |
+| prefix | string | 否 | 仅列出 key 以该前缀开头的图片 |
+| max_keys | int32 | 否 | 返回数量上限（默认 100） |
+| marker | string | 否 | 分页起始键 |
+
+#### ListImagesResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| bucket | string | Bucket 名称 |
+| images | repeated ImageMetadata | 图片元数据列表 |
+| is_truncated | bool | 是否被截断 |
+| next_marker | string | 下一页起始键 |
+
+#### DeleteImageRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | Bucket 名称 |
+| key | string | 是 | 图片 key |
+
+#### DeleteImageResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| deleted_keys | repeated string | 实际删除的对象 key 列表（原图 + 缩略图 + 元数据） |
+
+#### 图片服务配置
+
+```yaml
+# 图片服务依赖对象存储服务，需同时启用 object_store
+object_store:
+  enabled: true
+  db_path: ./laoflch_db_oss
+
+image_service:
+  enabled: true
+  default_bucket: images   # 默认 bucket 名称
+```
+
+---
+
 ## 使用示例
 
 ### Python 示例
@@ -1668,6 +1841,70 @@ print(f"Delete bucket: {resp.success}")
 # 33. 用户登出
 resp = stub.Logout(rpc_pb2.LogoutRequest(token=login_resp.token))
 print(f"Logout: {resp.success}")
+
+# ===== 图片服务操作 =====
+# 34. 连接图片服务
+import image_service_pb2
+import image_service_pb2_grpc
+
+img_stub = image_service_pb2_grpc.ImageServiceStub(channel)
+
+# 35. 上传图片（自动生成三种缩略图）
+# 使用 PIL 生成测试图片（或读取文件）
+from PIL import Image
+import io
+img = Image.new("RGB", (200, 200), (255, 0, 0))
+buf = io.BytesIO()
+img.save(buf, format="PNG")
+image_data = buf.getvalue()
+
+resp = img_stub.UploadImage(image_service_pb2.UploadImageRequest(
+    bucket="my-images",
+    key="photo.png",
+    data=image_data,
+    content_type="image/png",
+    metadata={"author": "alice"},
+), metadata=metadata)
+print(f"Upload image: {resp.success}, key={resp.key}")
+print(f"  size: {resp.metadata.width}x{resp.metadata.height}")
+print(f"  thumbnails: {dict(resp.metadata.thumbnails)}")
+
+# 36. 获取原图
+resp = img_stub.GetImage(image_service_pb2.GetImageRequest(
+    bucket="my-images",
+    key="photo.png",
+), metadata=metadata)
+print(f"Get image: {resp.success}, {resp.content_length} bytes")
+
+# 37. 获取缩略图（thumbnail 128x128）
+resp = img_stub.GetThumbnail(image_service_pb2.GetThumbnailRequest(
+    bucket="my-images",
+    key="photo.png",
+    size="thumbnail",
+), metadata=metadata)
+print(f"Get thumbnail: {resp.success}, {resp.width}x{resp.height}")
+
+# 38. 获取图片元数据
+resp = img_stub.GetImageMetadata(image_service_pb2.GetImageMetadataRequest(
+    bucket="my-images",
+    key="photo.png",
+), metadata=metadata)
+print(f"Metadata: {resp.metadata.width}x{resp.metadata.height}, format={resp.metadata.format}")
+
+# 39. 列出图片
+resp = img_stub.ListImages(image_service_pb2.ListImagesRequest(
+    bucket="my-images",
+    max_keys=100,
+), metadata=metadata)
+for img in resp.images:
+    print(f"  key={img.key}, {img.width}x{img.height}")
+
+# 40. 删除图片（级联删除原图+缩略图+元数据）
+resp = img_stub.DeleteImage(image_service_pb2.DeleteImageRequest(
+    bucket="my-images",
+    key="photo.png",
+), metadata=metadata)
+print(f"Delete image: {resp.success}, deleted {len(resp.deleted_keys)} objects")
 ```
 
 ### Go 示例
@@ -1746,6 +1983,12 @@ python3 tests_python/test_object_store_service_grpc.py
 
 # 运行对象存储服务 REST 测试（S3 兼容性）
 python3 tests_python/test_object_store_service_rest.py
+
+# 运行图片服务 gRPC 测试
+python3 tests_python/test_image_service_grpc.py
+
+# 运行图片服务 REST 测试
+python3 tests_python/test_image_service_rest.py
 
 # 运行完整测试
 cargo auto-test prod

@@ -3386,7 +3386,7 @@ dependencies = [
 
 [[package]]
 name = "laoflchDB-rust"
-version = "0.1.9+5ce86ef936ca36856c389dd76bc11da354e94d2e"
+version = "0.1.9+d9b2f55b92ac6d5ff4329a3cc35cde82df35f522"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
@@ -3397,6 +3397,7 @@ dependencies = [
  "hex",
  "laoflchdb_embedding_service",
  "laoflchdb_engines",
+ "laoflchdb_image_service",
  "laoflchdb_index_tantivy_engine",
  "laoflchdb_kv_rocksdb_engine",
  "laoflchdb_object_store_service",
@@ -3459,6 +3460,24 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "laoflchdb_image_service"
+version = "0.1.0"
+dependencies = [
+ "axum 0.7.9",
+ "bytes",
+ "image",
+ "laoflchdb_object_store_service",
+ "log",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "uuid",
 ]
 
 [[package]]
@@ -3753,7 +3772,7 @@ dependencies = [
 
 [[package]]
 name = "lsql"
-version = "0.1.9+5ce86ef936ca36856c389dd76bc11da354e94d2e"
+version = "0.1.9+d9b2f55b92ac6d5ff4329a3cc35cde82df35f522"
 dependencies = [
  "clap",
  "laoflchDB-rust",

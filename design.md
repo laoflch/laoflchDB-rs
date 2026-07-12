@@ -19,9 +19,10 @@
 13. [向量化服务设计 (VectorService)](#13-向量化服务设计-vectorservice)
 14. [嵌入向量索引服务设计 (EmbeddingIndexService)](#14-嵌入向量索引服务设计-embeddingindexservice)
 15. [对象存储服务设计 (ObjectStoreService)](#15-对象存储服务设计-objectstoreservice)
-16. [核心依赖](#16-核心依赖)
-17. [架构设计原则](#17-架构设计原则)
-18. [版本历史](#18-版本历史)
+16. [图片服务设计 (ImageService)](#16-图片服务设计-imageservice)
+17. [核心依赖](#17-核心依赖)
+18. [架构设计原则](#18-架构设计原则)
+19. [版本历史](#19-版本历史)
 
 ---
 
@@ -103,6 +104,12 @@ laoflchDB-rust/
 │   ├── src/lib.rs
 │   ├── Cargo.toml
 │   └── build.rs
+├── laoflchdb_image_service/  # 图片服务 crate - 缩略图生成（基于对象存储）
+│   ├── proto/
+│   │   └── image_service.proto
+│   ├── src/lib.rs
+│   ├── Cargo.toml
+│   └── build.rs
 ├── laoflchdb_kv_rocksdb_engine/  # 独立的 KV 引擎 crate
 │   ├── src/lib.rs
 │   └── Cargo.toml
@@ -132,6 +139,8 @@ laoflchDB-rust/
 │   ├── test_index_grpc.py            # 全文索引 gRPC 测试
 │   ├── test_object_store_service_grpc.py # 对象存储服务 gRPC 测试
 │   ├── test_object_store_service_rest.py # 对象存储服务 REST 测试（S3 兼容性）
+│   ├── test_image_service_grpc.py # 图片服务 gRPC 测试
+│   ├── test_image_service_rest.py # 图片服务 REST 测试
 │   └── test_final.py
 ├── xtask/              # 构建和测试任务
 │   ├── src/main.rs
@@ -1318,7 +1327,124 @@ pub fn create_rest_router(service: Arc<ObjectStoreServiceImpl>) -> Router {
 
 ---
 
-## 16. 核心依赖
+## 16. 图片服务设计 (ImageService)
+
+### 16.1 架构概述
+
+图片服务基于 **ObjectStoreService** 实现，提供图片上传（自动生成三种规格缩略图）和浏览功能。图片数据通过对象存储服务存储（复用 BlobDB 大对象存储能力），缩略图使用 `image` crate 在内存中生成并编码为 JPEG 格式。
+
+**位置**: [laoflchdb_image_service/src/lib.rs](laoflchdb_image_service/src/lib.rs)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    LaoflchDBServer                              │
+│                           │                                     │
+│            ┌──────────────┴──────────────┐                     │
+│            ▼                             ▼                      │
+│  ┌─────────────────────┐     ┌─────────────────────────┐       │
+│  │  ImageService       │     │  RestService            │       │
+│  │  (gRPC)             │     │  .with_image_router()   │       │
+│  │  - UploadImage      │     │  (REST: /api/v1/images) │       │
+│  │  - GetImage         │     │  - POST /images         │       │
+│  │  - GetThumbnail     │     │  - GET /images          │       │
+│  │  - GetImageMetadata │     │  - GET /images/:key     │       │
+│  │  - ListImages       │     │  - DELETE /images/:key  │       │
+│  │  - DeleteImage      │     │  - GET /images/:key/meta│       │
+│  └──────────┬──────────┘     │  - GET /images/:key/    │       │
+│             │                │    thumbnails/:size     │       │
+│             ▼                └────────────┬────────────┘       │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              ImageServiceImpl                            │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │  ObjectStoreService (依赖)                          │  │  │
+│  │  │  - 原图: bucket/{key}                               │  │  │
+│  │  │  - thumbnail: bucket/{key}__thumbnail.jpg           │  │  │
+│  │  │  - small: bucket/{key}__small.jpg                   │  │  │
+│  │  │  - medium: bucket/{key}__medium.jpg                 │  │  │
+│  │  │  - 元数据: bucket/__img_meta__{key} (JSON)          │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 16.2 存储模型
+
+图片服务将每张图片分解为 5 个对象存储在 ObjectStoreService 中：
+
+| 对象类型 | Key 格式 | 说明 |
+|---------|---------|------|
+| 原图 | `{image_key}` | 原始图片二进制数据（保持原格式：PNG/JPEG/GIF/WebP） |
+| thumbnail | `{image_key}__thumbnail.jpg` | 128x128 缩略图（cover 模式，JPEG） |
+| small | `{image_key}__small.jpg` | 最大 256x256 缩略图（contain 模式，JPEG） |
+| medium | `{image_key}__medium.jpg` | 最大 512x512 缩略图（contain 模式，JPEG） |
+| 元数据 | `__img_meta__{image_key}` | 图片元数据 JSON |
+
+**图片元数据 JSON 格式**:
+```json
+{
+  "key": "photo.jpg",
+  "content_type": "image/jpeg",
+  "content_length": 102400,
+  "width": 1920,
+  "height": 1080,
+  "etag": "\"a1b2c3d4...\"",
+  "last_modified": "1720000000",
+  "thumbnails": {
+    "thumbnail": "photo.jpg__thumbnail.jpg",
+    "small": "photo.jpg__small.jpg",
+    "medium": "photo.jpg__medium.jpg"
+  },
+  "user_metadata": {"author": "alice"},
+  "format": "Jpeg"
+}
+```
+
+### 16.3 缩略图生成策略
+
+| 规格 | 最大边长 | 缩放模式 | 编码 | 适用场景 |
+|------|---------|---------|------|---------|
+| `thumbnail` | 128 | cover（裁剪为正方形） | JPEG | 列表展示的小缩略图 |
+| `small` | 256 | contain（等比缩放） | JPEG | 卡片展示 |
+| `medium` | 512 | contain（等比缩放） | JPEG | 预览展示 |
+
+**cover 模式**: 使用 `resize_to_fill`，先等比缩放使图片填满目标尺寸，然后居中裁剪。适用于需要固定尺寸的场景（如头像）。
+
+**contain 模式**: 使用 `resize`，等比缩放使图片最长边不超过最大边长，不裁剪。保持原始宽高比。
+
+**统一 JPEG 编码**: 所有缩略图统一编码为 JPEG 格式，原因：
+1. JPEG 压缩率高，节省存储空间
+2. 缩略图用于展示，JPEG 的有损压缩可接受
+3. 统一格式简化前端处理
+
+### 16.4 REST 路由集成
+
+图片服务 REST 路由通过 `create_rest_router()` 函数创建，挂载在 `/api/v1/images` 前缀下：
+
+```rust
+pub fn create_rest_router(service: Arc<ImageServiceImpl>) -> Router {
+    Router::new()
+        .route("/images", post(upload_image_handler))
+        .route("/images", get(list_images_handler))
+        .route("/images/:key/meta", get(get_image_meta_handler))
+        .route("/images/:key",
+            get(get_image_handler).delete(delete_image_handler))
+        .route("/images/:key/thumbnails/:size", get(get_thumbnail_handler))
+        .with_state(service)
+}
+```
+
+**重要**: 上传图片时，`bucket` 和 `key` 通过 query 参数传递（`?bucket=&key=`），请求 body 为原始图片二进制数据。这避免了 multipart 解析的复杂性，同时保持 RESTful 风格。
+
+### 16.5 依赖关系
+
+图片服务强依赖对象存储服务：
+- 配置 `image_service.enabled: true` 时，**必须**同时配置 `object_store.enabled: true`
+- 若对象存储服务未启用，图片服务会输出警告并拒绝启动
+- 图片服务的所有数据（原图、缩略图、元数据）都存储在对象存储中
+
+---
+
+## 17. 核心依赖
 
 | Rust Crate | 版本 | 用途 |
 |------------|------|------|
@@ -1343,16 +1469,16 @@ pub fn create_rest_router(service: Arc<ObjectStoreServiceImpl>) -> Router {
 
 ---
 
-## 17. 架构设计原则
+## 18. 架构设计原则
 
-### 17.1 可扩展性设计
+### 18.1 可扩展性设计
 
 - **接入层**：可以添加新的协议实现
 - **引擎层**：可以添加新的存储引擎实现 (LevelDB、Memory DB 等)
 - **服务层**：可以添加新的服务能力 (事务、索引等)
 - **Schema 层**：可以轻松扩展新的 Schema，每个 Schema 独立管理
 
-### 17.2 关注点分离
+### 18.2 关注点分离
 
 - **Access 层**：只负责协议接入，不关心业务逻辑
 - **Service 层**：只关心业务逻辑，管理 Schema 生命周期
@@ -1361,7 +1487,7 @@ pub fn create_rest_router(service: Arc<ObjectStoreServiceImpl>) -> Router {
 
 ---
 
-## 18. 版本历史
+## 19. 版本历史
 
 ### 0.1.9 (当前)
 - **对象存储服务 (ObjectStoreService)**: 新增 S3 兼容的对象存储服务，基于 RocksDB BlobDB 实现大对象存储
@@ -1374,6 +1500,14 @@ pub fn create_rest_router(service: Arc<ObjectStoreServiceImpl>) -> Router {
 - **KV RocksDB 引擎扩展**: 在 `laoflchdb_kv_rocksdb_engine` 中新增 BlobDB 支持（`BlobDBConfig` 配置和 `new_with_blob_db` 构造方法）
 - **REST 路由集成**: 通过 `RestService::with_object_store_router()` 将对象存储 REST 路由挂载到主服务器
 - **测试覆盖**: 新增 `test_object_store_service_grpc.py`（29 个场景）和 `test_object_store_service_rest.py`（29 个场景，S3 兼容性测试）
+- **图片服务 (ImageService)**: 新增基于对象存储的图片服务，支持自动缩略图生成
+  - gRPC API：UploadImage/GetImage/GetThumbnail/GetImageMetadata/ListImages/DeleteImage
+  - REST API：`/api/v1/images` 前缀下的图片 HTTP 端点
+  - 上传图片时自动生成三种规格缩略图：thumbnail(128x128 cover)、small(256x256 contain)、medium(512x512 contain)
+  - 缩略图统一编码为 JPEG 格式
+  - 自动提取并存储图片元数据（width、height、format、content_type、etag、user_metadata）
+  - 删除图片时级联删除原图、所有缩略图和元数据
+  - 测试覆盖：`test_image_service_grpc.py`（25 个场景）和 `test_image_service_rest.py`（24 个场景）
 
 ### 0.1.4
 - **向量化服务 (VectorService)**: 基于 Candle 0.10 + CUDA 实现文本和图片向量化推理，支持 BERT/XLM-RoBERTa/ViT 模型

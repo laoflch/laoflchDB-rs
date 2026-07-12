@@ -88,6 +88,12 @@ laoflchDB-rust/
 │   ├── src/lib.rs
 │   ├── Cargo.toml
 │   └── build.rs
+├── laoflchdb_image_service/  # 图片服务 crate - 缩略图生成（基于对象存储）
+│   ├── proto/
+│   │   └── image_service.proto
+│   ├── src/lib.rs
+│   ├── Cargo.toml
+│   └── build.rs
 ├── laoflchdb_kv_rocksdb_engine/  # 独立的 KV 引擎 crate
 │   ├── src/lib.rs
 │   └── Cargo.toml
@@ -117,6 +123,8 @@ laoflchDB-rust/
 │   ├── test_index_grpc.py              # 全文索引 gRPC 测试
 │   ├── test_object_store_service_grpc.py # 对象存储服务 gRPC 测试
 │   ├── test_object_store_service_rest.py # 对象存储服务 REST 测试（S3 兼容性）
+│   ├── test_image_service_grpc.py # 图片服务 gRPC 测试
+│   ├── test_image_service_rest.py # 图片服务 REST 测试
 │   └── test_final.py
 ├── xtask/              # 构建和测试任务
 │   ├── src/main.rs
@@ -484,6 +492,103 @@ curl -X DELETE http://localhost:8080/api/v1/object-store/my-bucket/photos/cat.jp
 ```
 
 **位置**: [laoflchdb_object_store_service/src/lib.rs](laoflchdb_object_store_service/src/lib.rs)
+
+---
+
+## 新增：图片服务 (ImageService)
+
+### 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **自动缩略图生成** | 上传图片时自动生成三种规格缩略图：thumbnail(128x128)、small(256x256)、medium(512x512) |
+| **基于对象存储** | 图片数据通过 ObjectStoreService 存储，复用 BlobDB 大对象存储能力 |
+| **图片元数据** | 自动提取并存储图片宽度、高度、格式、ETag、Content-Type、自定义元数据 |
+| **cover/contain 模式** | thumbnail 使用 cover 模式裁剪为正方形，small/medium 使用 contain 模式等比缩放 |
+| **JPEG 编码缩略图** | 所有缩略图统一编码为 JPEG 格式以节省空间 |
+| **幂等删除** | 删除图片时同时删除原图、所有缩略图和元数据 |
+| **gRPC 和 REST 双协议** | 同时提供 gRPC 和 REST API |
+
+### 缩略图规格
+
+| 规格 | 最大边长 | 缩放模式 | 说明 |
+|------|---------|---------|------|
+| `thumbnail` | 128 | cover（裁剪为正方形） | 适用于列表展示的小缩略图 |
+| `small` | 256 | contain（等比缩放） | 适用于卡片展示 |
+| `medium` | 512 | contain（等比缩放） | 适用于预览展示 |
+
+### 图片服务 API
+
+#### gRPC API
+
+| 操作 | gRPC RPC | 说明 |
+|------|---------|------|
+| 上传图片 | `UploadImage` | 上传图片并自动生成缩略图和元数据 |
+| 获取原图 | `GetImage` | 下载原始图片数据 |
+| 获取缩略图 | `GetThumbnail` | 下载指定规格的缩略图 |
+| 获取元数据 | `GetImageMetadata` | 获取图片元数据（不含图片数据） |
+| 列出图片 | `ListImages` | 列出 Bucket 中的图片（支持前缀过滤） |
+| 删除图片 | `DeleteImage` | 删除原图、所有缩略图和元数据 |
+
+#### REST API
+
+所有 REST 端点挂载在 `/api/v1/images` 前缀下：
+
+| 操作 | HTTP 方法 & 路径 | 说明 |
+|------|------------------|------|
+| 上传图片 | `POST /api/v1/images?bucket=&key=` | 上传图片（body 为原始二进制数据） |
+| 列出图片 | `GET /api/v1/images?bucket=&prefix=&max_keys=` | 列出图片 |
+| 获取原图 | `GET /api/v1/images/{key}?bucket=` | 下载原图 |
+| 获取元数据 | `GET /api/v1/images/{key}/meta?bucket=` | 获取图片元数据 |
+| 获取缩略图 | `GET /api/v1/images/{key}/thumbnails/{size}?bucket=` | 下载缩略图（size: thumbnail/small/medium） |
+| 删除图片 | `DELETE /api/v1/images/{key}?bucket=` | 删除图片及所有缩略图 |
+
+### 配置示例
+
+```yaml
+# 图片服务依赖对象存储服务，需同时启用 object_store
+object_store:
+  enabled: true
+  db_path: ./laoflch_db_oss
+
+image_service:
+  enabled: true
+  default_bucket: images   # 默认 bucket 名称
+```
+
+### REST API 使用示例
+
+```bash
+# 上传图片（自动生成缩略图）
+curl -X POST "http://localhost:8080/api/v1/images?bucket=my-images&key=photo.jpg" \
+  -H "Content-Type: image/jpeg" \
+  -H "Authorization: Bearer <your_token>" \
+  --data-binary @/path/to/photo.jpg
+
+# 获取原图
+curl "http://localhost:8080/api/v1/images/photo.jpg?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>" \
+  -o photo.jpg
+
+# 获取 thumbnail 缩略图
+curl "http://localhost:8080/api/v1/images/photo.jpg/thumbnails/thumbnail?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>" \
+  -o thumb.jpg
+
+# 获取图片元数据
+curl "http://localhost:8080/api/v1/images/photo.jpg/meta?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>"
+
+# 列出图片
+curl "http://localhost:8080/api/v1/images?bucket=my-images&max_keys=100" \
+  -H "Authorization: Bearer <your_token>"
+
+# 删除图片
+curl -X DELETE "http://localhost:8080/api/v1/images/photo.jpg?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>"
+```
+
+**位置**: [laoflchdb_image_service/src/lib.rs](laoflchdb_image_service/src/lib.rs)
 
 ---
 
@@ -945,6 +1050,12 @@ service LaoflchDb {
 | `/api/v1/object-store/{bucket}/{key}` | GET | 下载对象 | 是 |
 | `/api/v1/object-store/{bucket}/{key}` | HEAD | 获取对象元数据 | 是 |
 | `/api/v1/object-store/{bucket}/{key}` | DELETE | 删除对象 | 是 |
+| `/api/v1/images` | POST | 上传图片（自动生成缩略图） | 是 |
+| `/api/v1/images` | GET | 列出图片 | 是 |
+| `/api/v1/images/{key}` | GET | 下载原图 | 是 |
+| `/api/v1/images/{key}` | DELETE | 删除图片及缩略图 | 是 |
+| `/api/v1/images/{key}/meta` | GET | 获取图片元数据 | 是 |
+| `/api/v1/images/{key}/thumbnails/{size}` | GET | 获取缩略图（thumbnail/small/medium） | 是 |
 
 ### 认证机制
 
@@ -1363,6 +1474,14 @@ multi_table_rocksdb
 - **KV RocksDB 引擎扩展**: 在 `laoflchdb_kv_rocksdb_engine` 中新增 BlobDB 支持（`BlobDBConfig` 配置和 `new_with_blob_db` 构造方法）
 - **REST 路由集成**: 通过 `RestService::with_object_store_router()` 将对象存储 REST 路由挂载到主服务器
 - **测试覆盖**: 新增 `test_object_store_service_grpc.py`（29 个场景）和 `test_object_store_service_rest.py`（29 个场景，S3 兼容性测试）
+- **图片服务 (ImageService)**: 新增基于对象存储的图片服务，支持自动缩略图生成
+  - gRPC API：UploadImage/GetImage/GetThumbnail/GetImageMetadata/ListImages/DeleteImage
+  - REST API：`/api/v1/images` 前缀下的图片 HTTP 端点
+  - 上传图片时自动生成三种规格缩略图：thumbnail(128x128 cover)、small(256x256 contain)、medium(512x512 contain)
+  - 缩略图统一编码为 JPEG 格式
+  - 自动提取并存储图片元数据（width、height、format、content_type、etag、user_metadata）
+  - 删除图片时级联删除原图、所有缩略图和元数据
+  - 测试覆盖：`test_image_service_grpc.py`（25 个场景）和 `test_image_service_rest.py`（24 个场景）
 
 ### 0.1.4
 - **向量化服务 (VectorService)**: 基于 Candle 0.10 + CUDA 实现文本和图片向量化推理，支持 BERT/XLM-RoBERTa/ViT 模型

@@ -44,6 +44,8 @@ python3 tests_python/test_vector_service_grpc.py  # 向量化服务测试
 python3 tests_python/test_embedding_service_grpc.py  # 嵌入向量索引服务测试
 python3 tests_python/test_object_store_service_grpc.py  # 对象存储服务 gRPC 测试
 python3 tests_python/test_object_store_service_rest.py  # 对象存储服务 REST 测试（S3 兼容性）
+python3 tests_python/test_image_service_grpc.py  # 图片服务 gRPC 测试
+python3 tests_python/test_image_service_rest.py  # 图片服务 REST 测试
 ```
 
 ---
@@ -310,6 +312,76 @@ python3 tests_python/test_object_store_service_rest.py
 
 **说明**: REST 测试覆盖了 S3 兼容的所有 HTTP 端点，包括 ListBuckets、CreateBucket、DeleteBucket、ListObjects、PutObject、GetObject、HeadObject、DeleteObject。测试验证了 Bucket CRUD、Object CRUD、大对象上传/下载、特殊字符路径、ETag 一致性、Content-Type 保留等关键功能。
 
+#### 图片服务 gRPC 测试
+- **文件**: `tests_python/test_image_service_grpc.py`
+- **内容**: 测试图片服务 gRPC 接口（上传、缩略图、元数据、列表、删除）
+- **测试场景**:
+  1. 用户登录
+  2. 上传 PNG 图片（验证元数据、缩略图 key 生成）
+  3. 上传 JPEG 图片
+  4. 上传图片自动生成 key（key 为空时）
+  5. 上传图片带自定义元数据
+  6. 覆盖上传同名图片（验证 ETag 更新）
+  7. 上传大图片 1000x1000
+  8. 上传长方形图片（验证 cover/contain 缩放模式）
+  9. 上传无效图片数据（应返回 INVALID_ARGUMENT）
+  10. 使用默认 bucket 上传
+  11. 获取原图
+  12. 获取不存在图片（应失败）
+  13. 获取 thumbnail 缩略图（验证 128x128）
+  14. 获取 small 缩略图（验证不超过 256x256）
+  15. 获取 medium 缩略图（验证不超过 512x512）
+  16. 获取无效 size 缩略图（应返回 INVALID_ARGUMENT）
+  17. 验证大图片缩略图尺寸（1000x1000 → medium 512x512）
+  18. 验证 thumbnail cover 模式（非正方形图片裁剪为 128x128）
+  19. 获取图片元数据
+  20. 获取不存在图片元数据（应返回 NOT_FOUND）
+  21. 列出图片
+  22. 带前缀列出图片
+  23. 删除图片（验证级联删除原图+缩略图+元数据）
+  24. 验证删除后不可访问
+  25. 删除不存在图片（幂等）
+
+```bash
+python3 tests_python/test_image_service_grpc.py
+```
+
+#### 图片服务 REST 测试
+- **文件**: `tests_python/test_image_service_rest.py`
+- **内容**: 测试图片服务 REST API 接口（`/api/v1/images` 前缀）
+- **默认端口**: `8080`（通过环境变量 `LAOFLCHDB_REST_PORT` 可覆盖）
+- **测试场景**:
+  1. 健康检查
+  2. 用户登录
+  3. 上传 PNG 图片
+  4. 上传 JPEG 图片
+  5. 上传图片自动生成 key
+  6. 上传带元数据图片
+  7. 上传大图片 1000x1000
+  8. 上传长方形图片（验证缩略图尺寸）
+  9. 上传无效图片数据（应返回 400）
+  10. 使用默认 bucket 上传
+  11. 获取原图
+  12. 获取不存在图片（应返回 404）
+  13. 获取 thumbnail 缩略图
+  14. 获取 small 缩略图
+  15. 获取 medium 缩略图
+  16. 获取无效 size 缩略图（应返回 400）
+  17. 获取图片元数据
+  18. 获取不存在图片元数据（应返回 404）
+  19. 列出图片
+  20. 带前缀列出图片
+  21. 删除图片
+  22. 验证删除后不可访问
+  23. 删除不存在图片（幂等）
+  24. 验证长方形图片 thumbnail cover 模式和 small contain 模式
+
+```bash
+python3 tests_python/test_image_service_rest.py
+```
+
+**说明**: 图片服务测试覆盖了上传（自动缩略图生成）、下载（原图和三种缩略图）、元数据获取、列表、删除（级联删除）等全部功能。测试使用 PIL 生成测试图片（无 PIL 时使用后备的最小化 PNG 生成器），验证了 cover/contain 缩放模式、JPEG 编码、ETag 一致性、元数据完整性等关键功能。
+
 ---
 
 ## 测试覆盖率
@@ -372,6 +444,18 @@ python3 tests_python/test_object_store_service_rest.py
 | **REST** | `/api/v1/object-store/{bucket}/{key}` (GetObject, GET) | ✅ |
 | **REST** | `/api/v1/object-store/{bucket}/{key}` (HeadObject, HEAD) | ✅ |
 | **REST** | `/api/v1/object-store/{bucket}/{key}` (DeleteObject, DELETE) | ✅ |
+| **gRPC** | ImageService/UploadImage | ✅ |
+| **gRPC** | ImageService/GetImage | ✅ |
+| **gRPC** | ImageService/GetThumbnail | ✅ |
+| **gRPC** | ImageService/GetImageMetadata | ✅ |
+| **gRPC** | ImageService/ListImages | ✅ |
+| **gRPC** | ImageService/DeleteImage | ✅ |
+| **REST** | `/api/v1/images` (UploadImage, POST) | ✅ |
+| **REST** | `/api/v1/images` (ListImages, GET) | ✅ |
+| **REST** | `/api/v1/images/{key}` (GetImage, GET) | ✅ |
+| **REST** | `/api/v1/images/{key}` (DeleteImage, DELETE) | ✅ |
+| **REST** | `/api/v1/images/{key}/meta` (GetImageMetadata, GET) | ✅ |
+| **REST** | `/api/v1/images/{key}/thumbnails/{size}` (GetThumbnail, GET) | ✅ |
 
 ### 功能覆盖率
 
@@ -451,6 +535,8 @@ python3 tests_python/test_object_store_service_rest.py
    - 嵌入向量索引服务测试
    - 对象存储服务 gRPC 测试
    - 对象存储服务 REST 测试（S3 兼容性）
+   - 图片服务 gRPC 测试
+   - 图片服务 REST 测试
 
 6. **清理**
    - 停止服务
@@ -479,7 +565,9 @@ python3 tests_python/test_object_store_service_rest.py
 | Python 嵌入向量索引服务测试 | 1 | ✅ |
 | Python 对象存储服务 gRPC 测试 | 1 | ✅ |
 | Python 对象存储服务 REST 测试 | 1 | ✅ |
-| **总计** | **61** | **✅** |
+| Python 图片服务 gRPC 测试 | 1 | ✅ |
+| Python 图片服务 REST 测试 | 1 | ✅ |
+| **总计** | **63** | **✅** |
 
 ---
 
