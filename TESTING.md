@@ -42,7 +42,8 @@ python3 tests_python/test_index_rest.py         # REST 全文索引测试
 python3 tests_python/test_index_grpc.py         # gRPC 全文索引测试
 python3 tests_python/test_vector_service_grpc.py  # 向量化服务测试
 python3 tests_python/test_embedding_service_grpc.py  # 嵌入向量索引服务测试
-python3 tests_python/test_object_store_service_grpc.py  # 对象存储服务测试
+python3 tests_python/test_object_store_service_grpc.py  # 对象存储服务 gRPC 测试
+python3 tests_python/test_object_store_service_rest.py  # 对象存储服务 REST 测试（S3 兼容性）
 ```
 
 ---
@@ -232,7 +233,7 @@ python3 tests_python/test_embedding_service_grpc.py
 
 #### 对象存储服务 gRPC 测试
 - **文件**: `tests_python/test_object_store_service_grpc.py`
-- **内容**: 测试对象存储服务的完整功能（S3 兼容 API）
+- **内容**: 测试对象存储服务 gRPC 接口的完整功能（S3 兼容 API）
 - **测试场景**:
   1. 创建 Bucket
   2. 重复创建 Bucket（幂等）
@@ -267,6 +268,47 @@ python3 tests_python/test_embedding_service_grpc.py
 ```bash
 python3 tests_python/test_object_store_service_grpc.py
 ```
+
+#### 对象存储服务 REST 测试（S3 兼容性）
+- **文件**: `tests_python/test_object_store_service_rest.py`
+- **内容**: 测试对象存储服务 S3 兼容的 REST API 接口（`/api/v1/object-store` 前缀下的 HTTP 端点）
+- **默认端口**: `8080`（通过环境变量 `LAOFLCHDB_REST_PORT` 可覆盖）
+- **测试场景**:
+  1. 用户登录获取 Token
+  2. ListBuckets - 列出所有 Bucket（GET /）
+  3. CreateBucket - 创建 Bucket（PUT /{bucket}）
+  4. CreateBucket 幂等性验证
+  5. PutObject - 上传普通对象（PUT /{bucket}/{key}）
+  6. PutObject 大对象上传（1MB，验证 BlobDB）
+  7. PutObject 空对象上传
+  8. PutObject 特殊字符路径（URL 编码）
+  9. PutObject 覆盖已有对象
+  10. GetObject - 下载对象（GET /{bucket}/{key}）
+  11. GetObject 大对象下载
+  12. GetObject 空对象下载
+  13. GetObject 不存在对象（应返回 404）
+  14. HeadObject - 获取对象元数据（HEAD /{bucket}/{key}）
+  15. HeadObject 不存在对象（应返回 404）
+  16. ListObjects - 列出对象（GET /{bucket}）
+  17. ListObjects 带前缀过滤
+  18. ListObjects 带分隔符（模拟目录结构，验证 common_prefixes）
+  19. ListObjects 空 Bucket
+  20. ListObjects 带 max_keys 分页
+  21. DeleteObject - 删除对象（DELETE /{bucket}/{key}）
+  22. DeleteObject 幂等性验证
+  23. DeleteBucket - 删除 Bucket（DELETE /{bucket}）
+  24. DeleteBucket 不存在 Bucket（应返回 500）
+  25. PutObject 向不存在 Bucket 上传（应自动创建 Bucket）
+  26. Content-Type 保留验证
+  27. ETag 一致性验证
+  28. 删除后列出对象验证
+  29. REST 健康检查
+
+```bash
+python3 tests_python/test_object_store_service_rest.py
+```
+
+**说明**: REST 测试覆盖了 S3 兼容的所有 HTTP 端点，包括 ListBuckets、CreateBucket、DeleteBucket、ListObjects、PutObject、GetObject、HeadObject、DeleteObject。测试验证了 Bucket CRUD、Object CRUD、大对象上传/下载、特殊字符路径、ETag 一致性、Content-Type 保留等关键功能。
 
 ---
 
@@ -322,6 +364,14 @@ python3 tests_python/test_object_store_service_grpc.py
 | **REST** | `/api/v1/index/indices/{name}/docs` | ✅ |
 | **REST** | `/api/v1/index/indices/{name}/docs/{doc_id}` | ✅ |
 | **REST** | `/api/v1/index/indices/{name}/search` | ✅ |
+| **REST** | `/api/v1/object-store` (ListBuckets, GET) | ✅ |
+| **REST** | `/api/v1/object-store/{bucket}` (CreateBucket, PUT) | ✅ |
+| **REST** | `/api/v1/object-store/{bucket}` (ListObjects, GET) | ✅ |
+| **REST** | `/api/v1/object-store/{bucket}` (DeleteBucket, DELETE) | ✅ |
+| **REST** | `/api/v1/object-store/{bucket}/{key}` (PutObject, PUT) | ✅ |
+| **REST** | `/api/v1/object-store/{bucket}/{key}` (GetObject, GET) | ✅ |
+| **REST** | `/api/v1/object-store/{bucket}/{key}` (HeadObject, HEAD) | ✅ |
+| **REST** | `/api/v1/object-store/{bucket}/{key}` (DeleteObject, DELETE) | ✅ |
 
 ### 功能覆盖率
 
@@ -399,7 +449,8 @@ python3 tests_python/test_object_store_service_grpc.py
    - REST API 端到端测试
    - 向量化服务测试
    - 嵌入向量索引服务测试
-   - 对象存储服务测试
+   - 对象存储服务 gRPC 测试
+   - 对象存储服务 REST 测试（S3 兼容性）
 
 6. **清理**
    - 停止服务
@@ -426,8 +477,9 @@ python3 tests_python/test_object_store_service_grpc.py
 | Python 全文索引gRPC测试 | 1 | ✅ |
 | Python 向量化服务测试 | 1 | ✅ |
 | Python 嵌入向量索引服务测试 | 1 | ✅ |
-| Python 对象存储服务测试 | 1 | ✅ |
-| **总计** | **60** | **✅** |
+| Python 对象存储服务 gRPC 测试 | 1 | ✅ |
+| Python 对象存储服务 REST 测试 | 1 | ✅ |
+| **总计** | **61** | **✅** |
 
 ---
 

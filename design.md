@@ -18,9 +18,10 @@
 12. [全文索引引擎设计](#12-全文索引引擎设计)
 13. [向量化服务设计 (VectorService)](#13-向量化服务设计-vectorservice)
 14. [嵌入向量索引服务设计 (EmbeddingIndexService)](#14-嵌入向量索引服务设计-embeddingindexservice)
-15. [核心依赖](#15-核心依赖)
-16. [架构设计原则](#16-架构设计原则)
-17. [版本历史](#17-版本历史)
+15. [对象存储服务设计 (ObjectStoreService)](#15-对象存储服务设计-objectstoreservice)
+16. [核心依赖](#16-核心依赖)
+17. [架构设计原则](#17-架构设计原则)
+18. [版本历史](#18-版本历史)
 
 ---
 
@@ -96,6 +97,12 @@ laoflchDB-rust/
 │   ├── src/lib.rs
 │   ├── Cargo.toml
 │   └── build.rs
+├── laoflchdb_object_store_service/  # 对象存储服务 crate - S3 兼容（BlobDB）
+│   ├── proto/
+│   │   └── object_store.proto
+│   ├── src/lib.rs
+│   ├── Cargo.toml
+│   └── build.rs
 ├── laoflchdb_kv_rocksdb_engine/  # 独立的 KV 引擎 crate
 │   ├── src/lib.rs
 │   └── Cargo.toml
@@ -123,6 +130,8 @@ laoflchDB-rust/
 │   ├── test_vector_service_grpc.py   # 向量化服务测试
 │   ├── test_embedding_service_grpc.py # 嵌入向量索引服务测试
 │   ├── test_index_grpc.py            # 全文索引 gRPC 测试
+│   ├── test_object_store_service_grpc.py # 对象存储服务 gRPC 测试
+│   ├── test_object_store_service_rest.py # 对象存储服务 REST 测试（S3 兼容性）
 │   └── test_final.py
 ├── xtask/              # 构建和测试任务
 │   ├── src/main.rs
@@ -1167,7 +1176,149 @@ embedding_index:
 
 ---
 
-## 15. 核心依赖
+## 15. 对象存储服务设计 (ObjectStoreService)
+
+### 15.1 架构概述
+
+对象存储服务基于 **RocksDB BlobDB** 实现，提供 S3 兼容的对象存储 API。BlobDB 是 RocksDB 的大对象存储扩展，将大对象分离存储到独立的 blob 文件中，而将小对象和元数据保留在 LSM 树中，从而优化大对象存储的读写性能和空间放大。
+
+**位置**: [laoflchdb_object_store_service/src/lib.rs](laoflchdb_object_store_service/src/lib.rs)
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    LaoflchDBServer                              │
+│                           │                                     │
+│            ┌──────────────┴──────────────┐                     │
+│            ▼                             ▼                      │
+│  ┌─────────────────────┐     ┌─────────────────────────┐       │
+│  │  ObjectStoreService │     │  RestService            │       │
+│  │  (gRPC)             │     │  .with_object_store_    │       │
+│  │  - PutObject        │     │   router()              │       │
+│  │  - GetObject        │     │  (REST: /api/v1/        │       │
+│  │  - ListObjects      │     │   object-store)         │       │
+│  │  - CopyObject       │     │  - GET / (ListBuckets)  │       │
+│  │  - DeleteObjects    │     │  - PUT /:bucket         │       │
+│  │  - CreateBucket     │     │  - GET /:bucket         │       │
+│  │  - DeleteBucket     │     │  - DELETE /:bucket      │       │
+│  │  - ListBuckets      │     │  - PUT /:bucket/*key    │       │
+│  └──────────┬──────────┘     │  - GET /:bucket/*key    │       │
+│             │                │  - HEAD /:bucket/*key   │       │
+│             │                │  - DELETE /:bucket/*key │       │
+│             │                └────────────┬────────────┘       │
+│             ▼                             ▼                     │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │              ObjectStoreServiceImpl                       │  │
+│  │  ┌────────────────────────────────────────────────────┐  │  │
+│  │  │  KVRocksDBEngine (BlobDB)                          │  │  │
+│  │  │  - 每个 Bucket = 一个 RocksDB Table (CF)            │  │  │
+│  │  │  - __obj__{key}  → 对象数据（BlobDB 大对象存储）    │  │  │
+│  │  │  - __meta__{key} → 对象元数据 JSON                  │  │  │
+│  │  │  - __bucket_meta__ → Bucket 创建时间                │  │  │
+│  │  └────────────────────────────────────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 15.2 存储模型
+
+每个 Bucket 对应一个 RocksDB 表（Column Family），同一个 Bucket 中的所有对象存储在同一表中：
+
+| Key 前缀 | 用途 | 存储位置 |
+|---------|------|---------|
+| `__obj__{key}` | 对象二进制数据 | BlobDB（大对象分离存储） |
+| `__meta__{key}` | 对象元数据 JSON | LSM 树（常规 KV） |
+| `__bucket_meta__` | Bucket 元数据（创建时间） | LSM 树（常规 KV） |
+
+**对象元数据 JSON 格式**:
+```json
+{
+  "key": "photos/cat.jpg",
+  "content_type": "image/jpeg",
+  "content_length": 102400,
+  "etag": "\"a1b2c3d4e5f67890a1b2c3d4e5f67890\"",
+  "last_modified": "1720000000",
+  "user_metadata": {"x-amz-meta-author": "alice"}
+}
+```
+
+**ETag 生成**: 基于UUID v4生成，去掉连字符后用双引号包裹（如 `"a1b2c3d4e5f67890a1b2c3d4e5f67890"`）。注意：每次 PutObject 都会生成新的 ETag，即使是覆盖同一对象。
+
+### 15.3 BlobDB 配置
+
+```yaml
+object_store:
+  enabled: true                        # 启用对象存储服务
+  db_path: ./laoflch_object_store_data # BlobDB 数据目录
+  schema_name: object_store            # Schema 名称
+  blob_db:
+    enabled: true                      # 启用 BlobDB
+    min_blob_size: 0                   # 最小大对象阈值（字节，0 = 所有对象都走 BlobDB）
+    blob_file_size: 268435456          # 单个 blob 文件大小（默认 256MB）
+    blob_compression_type: zstd        # 压缩算法（zstd/lz4/snappy/none）
+    enable_blob_garbage_collection: true
+    blob_garbage_collection_age_cutoff: 0.25
+```
+
+### 15.4 REST 路由集成
+
+对象存储 REST 路由通过 `create_rest_router()` 函数创建，返回一个带状态的 Axum Router，通过 `RestService::with_object_store_router()` 注入到主服务器：
+
+```rust
+// 创建对象存储服务
+let os_service = Arc::new(ObjectStoreServiceImpl::new(&os_config).await?);
+
+// 创建 REST 路由（已绑定状态）
+let os_router = laoflchdb_object_store_service::create_rest_router(os_service.clone());
+
+// 注入到 RestService
+let rest_service = RestService::with_token_manager(/* ... */)
+    .with_index_service(index_svc)
+    .with_object_store_router(os_router);
+
+// gRPC 服务注册
+server.add_object_store_service(os_service);
+```
+
+**路由定义**（Axum 0.7 语法）:
+```rust
+pub fn create_rest_router(service: Arc<ObjectStoreServiceImpl>) -> Router {
+    Router::new()
+        .route("/", get(list_buckets_handler))
+        .route("/:bucket",
+            put(create_bucket_handler)
+                .get(list_objects_handler)
+                .delete(delete_bucket_handler))
+        .route("/:bucket/*key",
+            put(put_object_handler)
+                .get(get_object_handler)
+                .head(head_object_handler)
+                .delete(delete_object_handler))
+        .with_state(service)
+}
+```
+
+**重要**: Axum 0.7 使用 `:param` 和 `/*catch_all` 语法（而非 Axum 0.8 的 `{param}` 和 `/{*catch_all}` 语法）。对象存储路由挂载在 `/api/v1/object-store` 前缀下。
+
+### 15.5 S3 兼容性说明
+
+| S3 操作 | 对应实现 | 兼容性说明 |
+|--------|---------|-----------|
+| ListBuckets | `GET /` | 返回所有 Bucket 列表 |
+| CreateBucket | `PUT /{bucket}` | 幂等创建，返回 200 |
+| DeleteBucket | `DELETE /{bucket}` | 删除 Bucket 及其所有对象 |
+| ListObjects | `GET /{bucket}` | 支持 prefix、delimiter、max_keys、marker 参数 |
+| PutObject | `PUT /{bucket}/{key}` | 支持任意二进制数据，Content-Type 通过请求头传递 |
+| GetObject | `GET /{bucket}/{key}` | 返回原始二进制数据和 Content-Type/ETag 头 |
+| HeadObject | `HEAD /{bucket}/{key}` | 仅返回元数据头，无响应体 |
+| DeleteObject | `DELETE /{bucket}/{key}` | 幂等删除，返回 204 |
+| CopyObject | gRPC only | 通过 source/destination 参数实现 |
+| DeleteObjects | gRPC only | 批量删除，返回实际删除的键列表 |
+
+**目录结构模拟**: 通过 `delimiter=/` 参数，ListObjects 会将 `photos/2024/cat.jpg` 和 `photos/2023/dog.jpg` 归类到 `common_prefixes: ["photos/2024/", "photos/2023/"]`，模拟 S3 的目录层级。
+
+---
+
+## 16. 核心依赖
 
 | Rust Crate | 版本 | 用途 |
 |------------|------|------|
@@ -1192,16 +1343,16 @@ embedding_index:
 
 ---
 
-## 16. 架构设计原则
+## 17. 架构设计原则
 
-### 16.1 可扩展性设计
+### 17.1 可扩展性设计
 
 - **接入层**：可以添加新的协议实现
 - **引擎层**：可以添加新的存储引擎实现 (LevelDB、Memory DB 等)
 - **服务层**：可以添加新的服务能力 (事务、索引等)
 - **Schema 层**：可以轻松扩展新的 Schema，每个 Schema 独立管理
 
-### 16.2 关注点分离
+### 17.2 关注点分离
 
 - **Access 层**：只负责协议接入，不关心业务逻辑
 - **Service 层**：只关心业务逻辑，管理 Schema 生命周期
@@ -1210,9 +1361,21 @@ embedding_index:
 
 ---
 
-## 17. 版本历史
+## 18. 版本历史
 
-### 0.1.4 (当前)
+### 0.1.9 (当前)
+- **对象存储服务 (ObjectStoreService)**: 新增 S3 兼容的对象存储服务，基于 RocksDB BlobDB 实现大对象存储
+  - 完整的 gRPC API：PutObject/GetObject/DeleteObject/ListObjects/HeadObject/CopyObject/DeleteObjects/CreateBucket/DeleteBucket/ListBuckets
+  - S3 兼容的 REST API：`/api/v1/object-store` 前缀下的 Bucket/Object HTTP 端点
+  - 支持大对象存储（BlobDB，默认单文件最大 256MB，zstd 压缩）
+  - 支持对象元数据管理（content_type、etag、last_modified、用户自定义元数据）
+  - 支持目录结构模拟（通过 delimiter + prefix 实现 S3 风格的 common_prefixes）
+  - 支持跨 Bucket 复制（CopyObject）和批量删除（DeleteObjects）
+- **KV RocksDB 引擎扩展**: 在 `laoflchdb_kv_rocksdb_engine` 中新增 BlobDB 支持（`BlobDBConfig` 配置和 `new_with_blob_db` 构造方法）
+- **REST 路由集成**: 通过 `RestService::with_object_store_router()` 将对象存储 REST 路由挂载到主服务器
+- **测试覆盖**: 新增 `test_object_store_service_grpc.py`（29 个场景）和 `test_object_store_service_rest.py`（29 个场景，S3 兼容性测试）
+
+### 0.1.4
 - **向量化服务 (VectorService)**: 基于 Candle 0.10 + CUDA 实现文本和图片向量化推理，支持 BERT/XLM-RoBERTa/ViT 模型
 - **嵌入向量索引服务 (EmbeddingIndexService)**: 基于 HNSW 算法实现近似最近邻搜索，支持向量持久化和快照管理
 - **跨 Schema JOIN 支持**: 完整的跨不同 Schema 之间的表 JOIN 操作
@@ -1265,6 +1428,6 @@ embedding_index:
 
 ---
 
-**文档版本**: v0.1.4  
-**最后更新**: 2026-07-11  
+**文档版本**: v0.1.9  
+**最后更新**: 2026-07-12  
 **项目**: laoflchDB-rust

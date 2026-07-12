@@ -82,6 +82,12 @@ laoflchDB-rust/
 │   ├── src/lib.rs
 │   ├── Cargo.toml
 │   └── build.rs
+├── laoflchdb_object_store_service/  # 对象存储服务 crate - S3 兼容（BlobDB）
+│   ├── proto/
+│   │   └── object_store.proto
+│   ├── src/lib.rs
+│   ├── Cargo.toml
+│   └── build.rs
 ├── laoflchdb_kv_rocksdb_engine/  # 独立的 KV 引擎 crate
 │   ├── src/lib.rs
 │   └── Cargo.toml
@@ -109,6 +115,8 @@ laoflchDB-rust/
 │   ├── test_vector_service_grpc.py     # 向量化服务测试
 │   ├── test_embedding_service_grpc.py  # 嵌入向量索引服务测试
 │   ├── test_index_grpc.py              # 全文索引 gRPC 测试
+│   ├── test_object_store_service_grpc.py # 对象存储服务 gRPC 测试
+│   ├── test_object_store_service_rest.py # 对象存储服务 REST 测试（S3 兼容性）
 │   └── test_final.py
 ├── xtask/              # 构建和测试任务
 │   ├── src/main.rs
@@ -360,6 +368,122 @@ embedding_index:
   kv_db_path: ./laoflch_hnsw_data
   snapshot_path: ./laoflch_hnsw_snapshots
 ```
+
+---
+
+## 新增：对象存储服务 (ObjectStoreService) - S3 兼容
+
+### 核心特性
+
+| 特性 | 说明 |
+|------|------|
+| **S3 兼容 API** | 提供 S3 风格的 Bucket/Object REST API 和完整 gRPC API |
+| **大对象存储** | 基于 RocksDB BlobDB 实现大对象分离存储 |
+| **元数据管理** | 自动维护 content_type、etag、last_modified、用户元数据 |
+| **目录结构模拟** | 通过 delimiter + prefix 支持 S3 风格的目录层级 |
+| **幂等操作** | Bucket 创建/删除、对象删除均为幂等操作 |
+| **跨 Bucket 复制** | 支持 CopyObject 在不同 Bucket 间复制对象 |
+| **批量删除** | 支持 DeleteObjects 批量删除多个对象 |
+
+### 存储模型
+
+每个 Bucket 对应一个 RocksDB 表（Column Family），对象数据通过 BlobDB 存储：
+
+```
+Bucket (RocksDB Table)
+├── __obj__{key}      → 对象二进制数据（存储在 BlobDB）
+├── __meta__{key}     → 对象元数据 JSON
+│   {
+│     "key": "photos/cat.jpg",
+│     "content_type": "image/jpeg",
+│     "content_length": 102400,
+│     "etag": "\"a1b2c3d4...\"",
+│     "last_modified": "1720000000",
+│     "user_metadata": {...}
+│   }
+└── __bucket_meta__   → Bucket 元数据（创建时间）
+```
+
+### 对象存储 API
+
+#### gRPC API
+
+| 操作 | gRPC RPC | 说明 |
+|------|---------|------|
+| 创建 Bucket | `CreateBucket` | 创建存储桶（幂等） |
+| 删除 Bucket | `DeleteBucket` | 删除存储桶 |
+| 列出 Buckets | `ListBuckets` | 列出所有存储桶 |
+| 上传对象 | `PutObject` | 上传对象数据 |
+| 下载对象 | `GetObject` | 下载对象数据 |
+| 删除对象 | `DeleteObject` | 删除单个对象（幂等） |
+| 批量删除 | `DeleteObjects` | 批量删除多个对象 |
+| 列出对象 | `ListObjects` | 列出 Bucket 中的对象 |
+| 获取元数据 | `HeadObject` | 仅获取对象元数据 |
+| 复制对象 | `CopyObject` | 跨 Bucket 复制对象 |
+
+#### REST API（S3 兼容）
+
+所有 REST 端点挂载在 `/api/v1/object-store` 前缀下：
+
+| 操作 | HTTP 方法 & 路径 | 说明 |
+|------|------------------|------|
+| ListBuckets | `GET /api/v1/object-store` | 列出所有 Bucket |
+| CreateBucket | `PUT /api/v1/object-store/{bucket}` | 创建 Bucket |
+| DeleteBucket | `DELETE /api/v1/object-store/{bucket}` | 删除 Bucket |
+| ListObjects | `GET /api/v1/object-store/{bucket}` | 列出对象（支持 prefix/delimiter/max_keys/marker） |
+| PutObject | `PUT /api/v1/object-store/{bucket}/{key}` | 上传对象 |
+| GetObject | `GET /api/v1/object-store/{bucket}/{key}` | 下载对象 |
+| HeadObject | `HEAD /api/v1/object-store/{bucket}/{key}` | 获取对象元数据 |
+| DeleteObject | `DELETE /api/v1/object-store/{bucket}/{key}` | 删除对象 |
+
+### 配置示例
+
+```yaml
+object_store:
+  enabled: true                        # 启用对象存储服务
+  db_path: ./laoflch_object_store_data # BlobDB 数据目录
+  schema_name: object_store            # Schema 名称
+  blob_db:
+    enabled: true                      # 启用 BlobDB
+    min_blob_size: 0                   # 最小大对象阈值（字节）
+    blob_file_size: 268435456          # Blob 文件大小（默认 256MB）
+    blob_compression_type: zstd        # 压缩算法（zstd/lz4/snappy/none）
+    enable_blob_garbage_collection: true
+    blob_garbage_collection_age_cutoff: 0.25
+```
+
+### REST API 使用示例
+
+```bash
+# 列出所有 Bucket
+curl http://localhost:8080/api/v1/object-store \
+  -H "Authorization: Bearer <your_token>"
+
+# 创建 Bucket
+curl -X PUT http://localhost:8080/api/v1/object-store/my-bucket \
+  -H "Authorization: Bearer <your_token>"
+
+# 上传文件
+curl -X PUT http://localhost:8080/api/v1/object-store/my-bucket/photos/cat.jpg \
+  -H "Content-Type: image/jpeg" \
+  -H "Authorization: Bearer <your_token>" \
+  --data-binary @/path/to/cat.jpg
+
+# 下载文件
+curl http://localhost:8080/api/v1/object-store/my-bucket/photos/cat.jpg \
+  -H "Authorization: Bearer <your_token>" \
+  -o cat.jpg
+
+# 列出对象（带前缀和分隔符）
+curl "http://localhost:8080/api/v1/object-store/my-bucket?prefix=photos/&delimiter=/" \
+  -H "Authorization: Bearer <your_token>"
+
+# 删除对象
+curl -X DELETE http://localhost:8080/api/v1/object-store/my-bucket/photos/cat.jpg \
+  -H "Authorization: Bearer <your_token>"
+```
+
+**位置**: [laoflchdb_object_store_service/src/lib.rs](laoflchdb_object_store_service/src/lib.rs)
 
 ---
 
@@ -813,6 +937,14 @@ service LaoflchDb {
 | `/api/v1/get` | GET | 读取数据 | 是 |
 | `/api/v1/delete` | POST | 删除数据 | 是 |
 | `/api/v1/sql_query` | POST | SQL 查询 | 是 |
+| `/api/v1/object-store` | GET | 列出所有 Bucket（S3 兼容） | 是 |
+| `/api/v1/object-store/{bucket}` | PUT | 创建 Bucket | 是 |
+| `/api/v1/object-store/{bucket}` | GET | 列出 Bucket 中的对象 | 是 |
+| `/api/v1/object-store/{bucket}` | DELETE | 删除 Bucket | 是 |
+| `/api/v1/object-store/{bucket}/{key}` | PUT | 上传对象 | 是 |
+| `/api/v1/object-store/{bucket}/{key}` | GET | 下载对象 | 是 |
+| `/api/v1/object-store/{bucket}/{key}` | HEAD | 获取对象元数据 | 是 |
+| `/api/v1/object-store/{bucket}/{key}` | DELETE | 删除对象 | 是 |
 
 ### 认证机制
 
@@ -1219,7 +1351,20 @@ multi_table_rocksdb
 
 ---
 
-### 0.1.4 (当前)
+### 0.1.9 (当前)
+- **对象存储服务 (ObjectStoreService)**: 新增 S3 兼容的对象存储服务，基于 RocksDB BlobDB 实现大对象存储
+  - 完整的 gRPC API：PutObject/GetObject/DeleteObject/ListObjects/HeadObject/CopyObject/DeleteObjects/CreateBucket/DeleteBucket/ListBuckets
+  - S3 兼容的 REST API：`/api/v1/object-store` 前缀下的 Bucket/Object HTTP 端点
+  - 支持大对象存储（BlobDB，默认单文件最大 256MB，zstd 压缩）
+  - 支持对象元数据管理（content_type、etag、last_modified、用户自定义元数据）
+  - 支持目录结构模拟（通过 delimiter + prefix 实现 S3 风格的 common_prefixes）
+  - 支持跨 Bucket 复制（CopyObject）和批量删除（DeleteObjects）
+  - 所有 Bucket/Object 操作均为幂等操作
+- **KV RocksDB 引擎扩展**: 在 `laoflchdb_kv_rocksdb_engine` 中新增 BlobDB 支持（`BlobDBConfig` 配置和 `new_with_blob_db` 构造方法）
+- **REST 路由集成**: 通过 `RestService::with_object_store_router()` 将对象存储 REST 路由挂载到主服务器
+- **测试覆盖**: 新增 `test_object_store_service_grpc.py`（29 个场景）和 `test_object_store_service_rest.py`（29 个场景，S3 兼容性测试）
+
+### 0.1.4
 - **向量化服务 (VectorService)**: 基于 Candle 0.10 + CUDA 实现文本和图片向量化推理，支持 BERT/XLM-RoBERTa/ViT 模型
 - **嵌入向量索引服务 (EmbeddingIndexService)**: 基于 HNSW 算法实现近似最近邻搜索，支持向量持久化和快照管理
 - **表和字段注释支持**: 在 `TableMeta` 和 `ColumnMeta` 中添加了 `comment` 字段，支持语义化注释

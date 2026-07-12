@@ -124,6 +124,39 @@ service EmbeddingIndexService {
 }
 ```
 
+### 4. ObjectStoreService 对象存储服务
+
+**位置**: [laoflchdb_object_store_service/proto/object_store.proto](laoflchdb_object_store_service/proto/object_store.proto)
+
+基于 RocksDB BlobDB 实现的 S3 兼容对象存储服务，支持大对象存储和元数据管理。
+
+```protobuf
+service ObjectStoreService {
+  // 存储对象（PutObject）
+  rpc PutObject(PutObjectRequest) returns (PutObjectResponse);
+  // 获取对象（GetObject）
+  rpc GetObject(GetObjectRequest) returns (GetObjectResponse);
+  // 删除对象（DeleteObject）
+  rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse);
+  // 列出对象（ListObjects）
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
+  // 获取对象元数据（HeadObject）
+  rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse);
+  // 复制对象（CopyObject）
+  rpc CopyObject(CopyObjectRequest) returns (CopyObjectResponse);
+  // 批量删除对象（DeleteObjects）
+  rpc DeleteObjects(DeleteObjectsRequest) returns (DeleteObjectsResponse);
+  // 创建存储桶（CreateBucket）
+  rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse);
+  // 删除存储桶（DeleteBucket）
+  rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse);
+  // 列出存储桶（ListBuckets）
+  rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse);
+}
+```
+
+**存储模型**: 每个 Bucket 对应一个 RocksDB 表（Column Family），对象数据以 `__obj__{key}` 为键存储在 BlobDB 中，对象元数据以 `__meta__{key}` 为键存储（JSON 格式，包含 `content_type`、`content_length`、`etag`、`last_modified`、`user_metadata` 字段）。
+
 ---
 
 ## 消息类型
@@ -1120,6 +1153,207 @@ embedding_index:
 
 ---
 
+### 11. ObjectStoreService 对象存储服务
+
+#### PutObjectRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 是 | Bucket 名称 |
+| key | string | 是 | 对象键 |
+| data | bytes | 是 | 对象二进制数据 |
+| content_type | string | 否 | 对象 MIME 类型 |
+| metadata | map<string, string> | 否 | 用户自定义元数据 |
+
+#### PutObjectResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| etag | string | 对象 ETag（UUID 格式，带双引号） |
+
+#### GetObjectRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 是 | Bucket 名称 |
+| key | string | 是 | 对象键 |
+
+#### GetObjectResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| data | bytes | 对象二进制数据 |
+| content_type | string | 对象 MIME 类型 |
+| content_length | int64 | 对象字节数 |
+| etag | string | 对象 ETag |
+| metadata | map<string, string> | 用户自定义元数据 |
+
+#### DeleteObjectRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 是 | Bucket 名称 |
+| key | string | 是 | 对象键 |
+
+#### DeleteObjectResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+
+#### ListObjectsRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 是 | Bucket 名称 |
+| prefix | string | 否 | 仅列出键以该前缀开头的对象 |
+| delimiter | string | 否 | 目录分隔符（通常为 `/`） |
+| max_keys | int32 | 否 | 返回对象数量上限（默认 1000） |
+| marker | string | 否 | 分页起始键 |
+
+#### ObjectInfo
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| key | string | 对象键 |
+| size | int64 | 对象字节数 |
+| etag | string | 对象 ETag |
+| last_modified | string | 最后修改时间（Unix 时间戳字符串） |
+| content_type | string | 对象 MIME 类型 |
+
+#### ListObjectsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| bucket | string | Bucket 名称 |
+| objects | repeated ObjectInfo | 对象列表 |
+| common_prefixes | repeated string | 公共前缀列表（用于模拟目录结构） |
+| is_truncated | bool | 是否被截断（达到 max_keys） |
+| next_marker | string | 下一页起始键（仅当 is_truncated 为 true 时有效） |
+
+#### HeadObjectRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 是 | Bucket 名称 |
+| key | string | 是 | 对象键 |
+
+#### HeadObjectResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| content_type | string | 对象 MIME 类型 |
+| content_length | int64 | 对象字节数 |
+| etag | string | 对象 ETag |
+| last_modified | string | 最后修改时间 |
+| metadata | map<string, string> | 用户自定义元数据 |
+
+#### CopyObjectRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| source_bucket | string | 是 | 源 Bucket 名称 |
+| source_key | string | 是 | 源对象键 |
+| destination_bucket | string | 是 | 目标 Bucket 名称 |
+| destination_key | string | 是 | 目标对象键 |
+
+#### CopyObjectResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| etag | string | 新对象的 ETag |
+
+#### DeleteObjectsRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 是 | Bucket 名称 |
+| keys | repeated string | 是 | 要删除的对象键列表 |
+
+#### DeleteObjectsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| deleted_keys | repeated string | 实际删除成功的对象键列表 |
+
+#### CreateBucketRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 是 | Bucket 名称 |
+
+#### CreateBucketResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+
+#### DeleteBucketRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 是 | Bucket 名称 |
+
+#### DeleteBucketResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+
+#### ListBucketsRequest
+
+无参数。
+
+#### BucketInfo
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| name | string | Bucket 名称 |
+| creation_date | string | 创建时间（Unix 时间戳字符串） |
+
+#### ListBucketsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| buckets | repeated BucketInfo | Bucket 列表 |
+
+#### 对象存储配置
+
+启动时通过 `laoflchdb.yaml` 的 `object_store` 配置节控制对象存储服务：
+
+```yaml
+object_store:
+  enabled: true                        # 启用对象存储服务
+  db_path: ./laoflch_object_store_data # BlobDB 数据目录
+  schema_name: object_store            # Schema 名称
+  blob_db:
+    enabled: true                      # 启用 BlobDB
+    min_blob_size: 0                   # 最小大对象阈值（字节）
+    blob_file_size: 268435456          # Blob 文件大小（默认 256MB）
+    blob_compression_type: zstd        # 压缩算法
+    enable_blob_garbage_collection: true
+    blob_garbage_collection_age_cutoff: 0.25
+```
+
+---
+
 ## 使用示例
 
 ### Python 示例
@@ -1371,7 +1605,67 @@ resp = stub.DropTable(rpc_pb2.DropTableRequest(
 ), metadata=metadata)
 print(f"Drop table: {resp.success}")
 
-# 25. 用户登出
+# ===== 对象存储服务操作 =====
+# 25. 连接对象存储服务
+import object_store_pb2
+import object_store_pb2_grpc
+
+os_stub = object_store_pb2_grpc.ObjectStoreServiceStub(channel)
+
+# 26. 创建 Bucket
+resp = os_stub.CreateBucket(object_store_pb2.CreateBucketRequest(
+    bucket="my-bucket",
+), metadata=metadata)
+print(f"Create bucket: {resp.success}")
+
+# 27. 上传对象
+resp = os_stub.PutObject(object_store_pb2.PutObjectRequest(
+    bucket="my-bucket",
+    key="hello.txt",
+    data=b"Hello, Object Store!",
+    content_type="text/plain",
+), metadata=metadata)
+print(f"Put object: {resp.success}, etag={resp.etag}")
+
+# 28. 下载对象
+resp = os_stub.GetObject(object_store_pb2.GetObjectRequest(
+    bucket="my-bucket",
+    key="hello.txt",
+), metadata=metadata)
+print(f"Get object: {resp.success}, data={resp.data.decode()}")
+
+# 29. 列出 Bucket 中的对象
+resp = os_stub.ListObjects(object_store_pb2.ListObjectsRequest(
+    bucket="my-bucket",
+    max_keys=100,
+), metadata=metadata)
+for obj in resp.objects:
+    print(f"  key={obj.key} size={obj.size} etag={obj.etag}")
+
+# 30. 复制对象（跨 Bucket）
+os_stub.CreateBucket(object_store_pb2.CreateBucketRequest(bucket="backup"), metadata=metadata)
+resp = os_stub.CopyObject(object_store_pb2.CopyObjectRequest(
+    source_bucket="my-bucket",
+    source_key="hello.txt",
+    destination_bucket="backup",
+    destination_key="hello.txt.bak",
+), metadata=metadata)
+print(f"Copy object: {resp.success}, etag={resp.etag}")
+
+# 31. 批量删除对象
+resp = os_stub.DeleteObjects(object_store_pb2.DeleteObjectsRequest(
+    bucket="my-bucket",
+    keys=["hello.txt", "nonexistent"],
+), metadata=metadata)
+print(f"Delete objects: {resp.success}, deleted={resp.deleted_keys}")
+
+# 32. 删除 Bucket
+resp = os_stub.DeleteBucket(object_store_pb2.DeleteBucketRequest(
+    bucket="backup",
+), metadata=metadata)
+print(f"Delete bucket: {resp.success}")
+
+# 33. 用户登出
 resp = stub.Logout(rpc_pb2.LogoutRequest(token=login_resp.token))
 print(f"Logout: {resp.success}")
 ```
@@ -1446,6 +1740,12 @@ python3 tests_python/test_vector_service_grpc.py
 
 # 运行嵌入向量索引服务 gRPC 测试
 python3 tests_python/test_embedding_service_grpc.py
+
+# 运行对象存储服务 gRPC 测试
+python3 tests_python/test_object_store_service_grpc.py
+
+# 运行对象存储服务 REST 测试（S3 兼容性）
+python3 tests_python/test_object_store_service_rest.py
 
 # 运行完整测试
 cargo auto-test prod
