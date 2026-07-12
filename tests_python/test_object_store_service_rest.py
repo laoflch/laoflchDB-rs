@@ -15,7 +15,7 @@ import urllib.parse
 import requests
 
 # REST 服务端口（从配置文件可知 REST 服务运行在 8080）
-REST_PORT = os.environ.get("LAOFLCHDB_REST_PORT", "38080")
+REST_PORT = os.environ.get("LAOFLCHDB_REST_PORT", "8080")
 BASE_URL = f"http://127.0.0.1:{REST_PORT}"
 # 对象存储 REST API 基础路径
 OSS_BASE = f"{BASE_URL}/api/v1/object-store"
@@ -77,9 +77,9 @@ def test_login():
 
 def test_s3_list_buckets():
     """S3 ListBuckets: GET / 列出所有 Bucket"""
-    print(f"[S3] ListBuckets: GET {OSS_BASE}/ ...")
+    print(f"[S3] ListBuckets: GET {OSS_BASE} ...")
     try:
-        resp = requests.get(f"{OSS_BASE}/", headers=_get_auth_headers(), timeout=5)
+        resp = requests.get(f"{OSS_BASE}", headers=_get_auth_headers(), timeout=5)
         assert resp.status_code == 200, f"状态码错误: {resp.status_code}"
         data = resp.json()
         assert "buckets" in data, f"响应缺少 buckets 字段: {data}"
@@ -593,7 +593,7 @@ def test_s3_delete_bucket():
 
         # 验证 Bucket 已删除
         resp2 = requests.get(
-            f"{OSS_BASE}/",
+            f"{OSS_BASE}",
             headers=_get_auth_headers(),
             timeout=5,
         )

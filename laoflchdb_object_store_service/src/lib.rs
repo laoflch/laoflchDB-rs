@@ -661,13 +661,13 @@ pub fn create_rest_router(service: Arc<ObjectStoreServiceImpl>) -> Router {
     Router::new()
         .route("/", get(list_buckets_handler))
         .route(
-            "/{bucket}",
+            "/:bucket",
             put(create_bucket_handler)
                 .get(list_objects_handler)
                 .delete(delete_bucket_handler),
         )
         .route(
-            "/{bucket}/*key",
+            "/:bucket/*key",
             put(put_object_handler)
                 .get(get_object_handler)
                 .head(head_object_handler)
