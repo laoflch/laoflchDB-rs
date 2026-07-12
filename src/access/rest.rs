@@ -24,6 +24,7 @@ pub struct RestService {
     permission_checker: Arc<PermissionChecker>,
     service_id: String,
     token_manager: Arc<TokenManager>,
+    object_store_router: Option<axum::Router>,
 }
 
 impl RestService {
@@ -34,6 +35,7 @@ impl RestService {
             permission_checker: Arc::new(PermissionChecker::new(true)),
             service_id: "default".to_string(),
             token_manager: Arc::new(TokenManager::default()),
+            object_store_router: None,
         }
     }
 
@@ -44,6 +46,7 @@ impl RestService {
             permission_checker,
             service_id,
             token_manager: Arc::new(TokenManager::default()),
+            object_store_router: None,
         }
     }
 
@@ -54,12 +57,19 @@ impl RestService {
             permission_checker,
             service_id,
             token_manager,
+            object_store_router: None,
         }
     }
 
     /// 设置 IndexService
     pub fn with_index_service(mut self, index_service: Arc<dyn IndexService>) -> Self {
         self.index_service = Some(index_service);
+        self
+    }
+
+    /// 设置对象存储 REST Router
+    pub fn with_object_store_router(mut self, router: axum::Router) -> Self {
+        self.object_store_router = Some(router);
         self
     }
 
@@ -118,6 +128,11 @@ impl RestService {
                 .with_state(index_state);
             
             main_router = main_router.nest("/api/v1/index", index_router);
+        }
+        
+        // 如果设置了对象存储服务，添加对象存储路由
+        if let Some(ref os_router) = self.object_store_router {
+            main_router = main_router.nest("/api/v1/object-store", os_router.clone());
         }
         
         main_router

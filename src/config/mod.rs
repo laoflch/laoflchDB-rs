@@ -207,6 +207,23 @@ pub struct DatabaseConfig {
     pub vector_service: Option<VectorServiceConfig>,
     #[serde(default)]
     pub embedding_index: Option<EmbeddingIndexConfig>,
+    #[serde(default)]
+    pub object_store: Option<ObjectStoreConfig>,
+}
+
+/// 对象存储服务配置（S3 兼容）
+#[derive(Debug, Deserialize, Clone)]
+pub struct ObjectStoreConfig {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// 对象存储数据路径
+    #[serde(default = "default_object_store_db_path")]
+    pub db_path: String,
+}
+
+fn default_object_store_db_path() -> String {
+    "./laoflch_object_store_data".to_string()
 }
 
 fn default_addr() -> String {
@@ -268,6 +285,7 @@ impl DatabaseConfig {
             runtime_mode: RuntimeMode::default(),
             vector_service: None,
             embedding_index: None,
+            object_store: None,
         }
     }
 

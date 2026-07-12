@@ -12,6 +12,29 @@ use laoflchdb_engines::{
     META_SCHEMA_PREFIX, META_TABLE_PREFIX, META_COLUMN_PREFIX,
 };
 
+#[derive(Debug, Clone)]
+pub struct BlobDBConfig {
+    pub enabled: bool,
+    pub min_blob_size: u64,
+    pub blob_file_size: u64,
+    pub blob_compression_type: String,
+    pub enable_blob_garbage_collection: bool,
+    pub blob_garbage_collection_age_cutoff: f64,
+}
+
+impl Default for BlobDBConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            min_blob_size: 0,
+            blob_file_size: 256 * 1024 * 1024, // 256MB
+            blob_compression_type: "zstd".to_string(),
+            enable_blob_garbage_collection: true,
+            blob_garbage_collection_age_cutoff: 0.25,
+        }
+    }
+}
+
 fn write_proto_to_vec<T: protobuf::Message>(msg: &T) -> Vec<u8> {
     let mut v = Vec::new();
     msg.write_to_vec(&mut v).expect("Failed to serialize protobuf");
@@ -70,6 +93,45 @@ impl KVRocksDBEngine {
         let engine = Self { db, schema_name };
         engine.init_schema_meta()?;
 
+        Ok(engine)
+    }
+
+    pub fn new_with_blob_db(options: &EngineOptions, blob_config: &BlobDBConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let path = &options.db_path;
+        let schema_name = options.schema_name.clone();
+
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        opts.create_missing_column_families(true);
+
+        // Apply BlobDB options
+        if blob_config.enabled {
+            opts.set_enable_blob_files(true);
+            opts.set_min_blob_size(blob_config.min_blob_size);
+            opts.set_blob_file_size(blob_config.blob_file_size);
+            match blob_config.blob_compression_type.as_str() {
+                "snappy" => opts.set_blob_compression_type(rocksdb::DBCompressionType::Snappy),
+                "zstd" => opts.set_blob_compression_type(rocksdb::DBCompressionType::Zstd),
+                "lz4" => opts.set_blob_compression_type(rocksdb::DBCompressionType::Lz4),
+                _ => {}
+            }
+            opts.set_enable_blob_gc(blob_config.enable_blob_garbage_collection);
+            opts.set_blob_gc_age_cutoff(blob_config.blob_garbage_collection_age_cutoff);
+        }
+
+        let cf_list = DB::list_cf(&opts, path).unwrap_or_else(|_| vec!["default".to_string()]);
+        let cf_descriptors: Vec<ColumnFamilyDescriptor> = if cf_list.is_empty() {
+            vec![ColumnFamilyDescriptor::new("default", Options::default())]
+        } else {
+            cf_list.into_iter()
+                .map(|name| ColumnFamilyDescriptor::new(name, Options::default()))
+                .collect()
+        };
+
+        let db = DB::open_cf_descriptors(&opts, path, cf_descriptors)?;
+        let db = Arc::new(RwLock::new(db));
+        let engine = Self { db, schema_name };
+        engine.init_schema_meta()?;
         Ok(engine)
     }
 

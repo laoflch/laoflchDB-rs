@@ -19,6 +19,7 @@ members = [
     "laoflchdb_vector_service",
     "laoflchdb_kv_rocksdb_engine",
     "laoflchdb_embedding_service",
+    "laoflchdb_object_store_service",
 ]
 
 [dependencies]
@@ -29,6 +30,7 @@ laoflchdb_index_tantivy_engine = { path = "./laoflchdb_index_tantivy_engine" }
 laoflchdb_vector_service = { path = "./laoflchdb_vector_service" }
 laoflchdb_kv_rocksdb_engine = { path = "./laoflchdb_kv_rocksdb_engine" }
 laoflchdb_embedding_service = { path = "./laoflchdb_embedding_service" }
+laoflchdb_object_store_service = { path = "./laoflchdb_object_store_service" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}
 prost = "0.12"
 protobuf = "3.7"

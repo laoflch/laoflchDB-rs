@@ -3399,6 +3399,7 @@ dependencies = [
  "laoflchdb_engines",
  "laoflchdb_index_tantivy_engine",
  "laoflchdb_kv_rocksdb_engine",
+ "laoflchdb_object_store_service",
  "laoflchdb_sql_df_engine",
  "laoflchdb_vector_service",
  "log",
@@ -3497,6 +3498,26 @@ dependencies = [
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "laoflchdb_object_store_service"
+version = "0.1.0"
+dependencies = [
+ "axum 0.7.9",
+ "base64 0.22.1",
+ "bytes",
+ "chrono",
+ "laoflchdb_engines",
+ "laoflchdb_kv_rocksdb_engine",
+ "log",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "uuid",
 ]
 
 [[package]]

@@ -1,0 +1,182 @@
+syntax = "proto3";
+package laoflchdb.object_store;
+
+// S3 兼容的对象存储服务
+service ObjectStoreService {
+  // 存储对象（PutObject）
+  rpc PutObject(PutObjectRequest) returns (PutObjectResponse);
+  // 获取对象（GetObject）
+  rpc GetObject(GetObjectRequest) returns (GetObjectResponse);
+  // 删除对象（DeleteObject）
+  rpc DeleteObject(DeleteObjectRequest) returns (DeleteObjectResponse);
+  // 列出对象（ListObjects）
+  rpc ListObjects(ListObjectsRequest) returns (ListObjectsResponse);
+  // 获取对象元数据（HeadObject）
+  rpc HeadObject(HeadObjectRequest) returns (HeadObjectResponse);
+  // 复制对象（CopyObject）
+  rpc CopyObject(CopyObjectRequest) returns (CopyObjectResponse);
+  // 批量删除对象（DeleteObjects）
+  rpc DeleteObjects(DeleteObjectsRequest) returns (DeleteObjectsResponse);
+  // 创建存储桶（CreateBucket）
+  rpc CreateBucket(CreateBucketRequest) returns (CreateBucketResponse);
+  // 删除存储桶（DeleteBucket）
+  rpc DeleteBucket(DeleteBucketRequest) returns (DeleteBucketResponse);
+  // 列出存储桶（ListBuckets）
+  rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse);
+}
+
+// ── PutObject ────────────────────────────
+
+message PutObjectRequest {
+  string bucket = 1;
+  string key = 2;
+  bytes data = 3;
+  string content_type = 4;
+  map<string, string> metadata = 5;
+}
+
+message PutObjectResponse {
+  bool success = 1;
+  string message = 2;
+  string etag = 3;
+}
+
+// ── GetObject ────────────────────────────
+
+message GetObjectRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message GetObjectResponse {
+  bool success = 1;
+  string message = 2;
+  bytes data = 3;
+  string content_type = 4;
+  int64 content_length = 5;
+  string etag = 6;
+  map<string, string> metadata = 7;
+}
+
+// ── DeleteObject ────────────────────────────
+
+message DeleteObjectRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message DeleteObjectResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ── ListObjects ────────────────────────────
+
+message ListObjectsRequest {
+  string bucket = 1;
+  string prefix = 2;
+  string delimiter = 3;
+  int32 max_keys = 4;
+  string marker = 5;
+}
+
+message ObjectInfo {
+  string key = 1;
+  int64 size = 2;
+  string etag = 3;
+  string last_modified = 4;
+  string content_type = 5;
+}
+
+message ListObjectsResponse {
+  bool success = 1;
+  string message = 2;
+  string bucket = 3;
+  repeated ObjectInfo objects = 4;
+  repeated string common_prefixes = 5;
+  bool is_truncated = 6;
+  string next_marker = 7;
+}
+
+// ── HeadObject ────────────────────────────
+
+message HeadObjectRequest {
+  string bucket = 1;
+  string key = 2;
+}
+
+message HeadObjectResponse {
+  bool success = 1;
+  string message = 2;
+  string content_type = 3;
+  int64 content_length = 4;
+  string etag = 5;
+  string last_modified = 6;
+  map<string, string> metadata = 7;
+}
+
+// ── CopyObject ────────────────────────────
+
+message CopyObjectRequest {
+  string source_bucket = 1;
+  string source_key = 2;
+  string destination_bucket = 3;
+  string destination_key = 4;
+}
+
+message CopyObjectResponse {
+  bool success = 1;
+  string message = 2;
+  string etag = 3;
+}
+
+// ── DeleteObjects ────────────────────────────
+
+message DeleteObjectsRequest {
+  string bucket = 1;
+  repeated string keys = 2;
+}
+
+message DeleteObjectsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated string deleted_keys = 3;
+}
+
+// ── CreateBucket ────────────────────────────
+
+message CreateBucketRequest {
+  string bucket = 1;
+}
+
+message CreateBucketResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ── DeleteBucket ────────────────────────────
+
+message DeleteBucketRequest {
+  string bucket = 1;
+}
+
+message DeleteBucketResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ── ListBuckets ────────────────────────────
+
+message ListBucketsRequest {
+}
+
+message BucketInfo {
+  string name = 1;
+  string creation_date = 2;
+}
+
+message ListBucketsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated BucketInfo buckets = 3;
+}

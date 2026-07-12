@@ -96,6 +96,33 @@ impl LaoflchDBServer {
             }
         };
 
+        // 创建对象存储服务（如果配置启用）
+        let object_store_service = match &config.object_store {
+            Some(obj_cfg) if obj_cfg.enabled => {
+                let obj_config = laoflchdb_object_store_service::ObjectStoreConfig {
+                    enabled: true,
+                    db_path: obj_cfg.db_path.clone(),
+                    schema_name: "object_store".to_string(),
+                    blob_db: laoflchdb_kv_rocksdb_engine::BlobDBConfig::default(),
+                };
+                match laoflchdb_object_store_service::ObjectStoreServiceImpl::new(&obj_config).await {
+                    Ok(svc) => {
+                        info!("对象存储服务已启动");
+                        Some(Arc::new(svc))
+                    }
+                    Err(e) => {
+                        log::error!("对象存储服务启动失败: {}", e);
+                        None
+                    }
+                }
+            }
+            _ => {
+                info!("对象存储服务未启用");
+                None
+            }
+        };
+            let object_store_service = object_store_service.clone();
+
         if config.access_protocols.is_empty() {
             let vector_service = laoflchdb_vector_service::VectorServiceImpl::new_with_config(
                 &config.model_path,
@@ -109,7 +136,7 @@ impl LaoflchDBServer {
             let grpc_service: crate::GrpcService = self.access_service.get_grpc_service(None);
             
             tokio::spawn(async move {
-                if let Err(e) = start_grpc_server(grpc_service, vector_service, embedding_service, &addr).await {
+                if let Err(e) = start_grpc_server(grpc_service, vector_service, embedding_service, object_store_service, &addr).await {
                     log::error!("gRPC 服务错误: {}", e);
                 }
             });
@@ -137,8 +164,10 @@ impl LaoflchDBServer {
                         );
                         let embedding_service_clone = embedding_service.clone();
                         
+                        let object_store_service_clone = object_store_service.clone();
+                        
                         tokio::spawn(async move {
-                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, embedding_service_clone, &addr_owned).await {
+                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, embedding_service_clone, object_store_service_clone, &addr_owned).await {
                                 log::error!("gRPC 服务错误: {}", e);
                             }
                         });
@@ -146,7 +175,12 @@ impl LaoflchDBServer {
                     "rest" | "http" => {
                         info!("启动 REST 服务: {} (service_id: {:?})", addr, service_id);
                         started_protocols.push((protocol.to_string(), addr.to_string()));
-                        let rest_service = self.access_service.get_rest_service(service_id);
+                        let mut rest_service = self.access_service.get_rest_service(service_id);
+                        // 如果对象存储服务已启用，创建并挂载其 REST 路由
+                        if let Some(ref os_svc) = object_store_service {
+                            let os_router = laoflchdb_object_store_service::create_rest_router(os_svc.clone());
+                            rest_service = rest_service.with_object_store_router(os_router);
+                        }
                         let addr_owned = addr.to_string();
                         
                         tokio::spawn(async move {
@@ -183,12 +217,14 @@ async fn start_grpc_server(
     laoflchdb_service: impl crate::pb::rpc::laoflch_db_server::LaoflchDb,
     vector_service: impl laoflchdb_vector_service::proto::vector_service_server::VectorService,
     embedding_service: Option<std::sync::Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
+    object_store_service: Option<std::sync::Arc<laoflchdb_object_store_service::ObjectStoreServiceImpl>>,
     addr: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tonic::transport::Server;
     use crate::pb::rpc::laoflch_db_server::LaoflchDbServer;
     use laoflchdb_vector_service::proto::vector_service_server::VectorServiceServer;
     use laoflchdb_embedding_service::proto::embedding_index_service_server::EmbeddingIndexServiceServer;
+    use laoflchdb_object_store_service::proto::object_store_service_server::ObjectStoreServiceServer;
     
     let addr_copy = addr.to_string();
     info!("gRPC 服务监听: {}", addr_copy);
@@ -200,6 +236,11 @@ async fn start_grpc_server(
     // 如果有嵌入向量索引服务配置，则注册
     if let Some(embedding) = embedding_service {
         server = server.add_service(EmbeddingIndexServiceServer::new(embedding));
+    }
+
+    // 如果有对象存储服务配置，则注册
+    if let Some(object_store) = object_store_service {
+        server = server.add_service(ObjectStoreServiceServer::new(object_store));
     }
 
     server.serve(addr_copy.parse()?).await?;
