@@ -1,6 +1,9 @@
-# Exclude all target/ directories (37GB of build artifacts)
+# Exclude all target/ directories (build artifacts)
+# 根 target/ (~30G) + 各子 crate 的 target/ (~11.7G)
 target/
 **/target/
+lsql/target/
+laoflchdb_index_tantivy_engine/target/
 
 # But re-include the pre-compiled binary for Docker packaging
 !target/release/laoflchdb
@@ -19,11 +22,17 @@ target/
 .DS_Store
 Thumbs.db
 
+# 模型文件（9.8G，运行时通过 volume 挂载，不应打进镜像）
+laoflch_db_model/
+
 # Project data directories (runtime data, not needed for building)
 laoflch_db_data*/
 laoflch_db_index*/
 laoflch_db_vec_test/
+laoflch_hnsw*/
+laoflch_db_oss*/
 laoflch_index_data/
+
 
 # Python test files
 tests_python/
@@ -44,4 +53,5 @@ design.md
 # Docker files
 Dockerfile
 Dockerfile.local
+Dockerfile.prod
 docker-compose.yml

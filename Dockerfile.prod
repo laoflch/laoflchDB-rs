@@ -4,7 +4,7 @@
 FROM ubuntu:24.04
 
 # 版本号参数（从 Cargo.toml 获取前半段，如 0.1.3+xxx 取 0.1.3）
-ARG VERSION=0.1.8
+ARG VERSION=0.1.9
 LABEL version="${VERSION}"
 
 # Create app directories
@@ -13,7 +13,8 @@ RUN mkdir -p /app/data && \
     mkdir -p /usr/local/cuda && \
     mkdir -p /app/model && \
     mkdir -p /app/laoflch_hnsw_data && \
-    mkdir -p /app/laoflch_hnsw_snapshots
+    mkdir -p /app/laoflch_hnsw_snapshots && \
+    mkdir -p /app/laoflch_db_oss
 
 # Set working directory
 WORKDIR /app
@@ -26,8 +27,8 @@ COPY target/release/laoflchdb /app/laoflchdb
 COPY config/prod.yaml /app/config/prod.yaml
 
 # Expose ports
-EXPOSE 29777
-EXPOSE 38080
+EXPOSE 19777
+EXPOSE 8080
 
 # Environment variables
 ENV RUST_LOG=info

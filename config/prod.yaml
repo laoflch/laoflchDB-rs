@@ -23,6 +23,11 @@ embedding_index:
   kv_db_path: /app/laoflch_hnsw_data
   snapshot_path: /app/laoflch_hnsw_snapshots
 
+# 对象存储服务配置（S3 兼容，基于 RocksDB BlobDB）
+object_store:
+  enabled: true
+  db_path: /app/laoflch_db_oss
+
 # Log configuration
 log_level: info
 
