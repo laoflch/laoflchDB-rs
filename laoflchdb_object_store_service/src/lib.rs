@@ -99,7 +99,7 @@ impl ObjectStoreServiceImpl {
 
     /// 确保 bucket 对应的表存在
     async fn ensure_bucket_table(&self, bucket: &str) -> Result<(), Status> {
-        let engine = self.engine.lock().await;
+        let mut engine = self.engine.lock().await;
         if !engine.table_exists(bucket) {
             drop(engine);
             let mut engine = self.engine.lock().await;
@@ -124,6 +124,82 @@ impl ObjectStoreServiceImpl {
     }
 }
 
+/// 允许通过 `Arc<ObjectStoreServiceImpl>` 直接作为 gRPC 服务注册
+#[tonic::async_trait]
+impl proto::object_store_service_server::ObjectStoreService
+    for std::sync::Arc<ObjectStoreServiceImpl>
+{
+    async fn put_object(
+        &self,
+        request: tonic::Request<PutObjectRequest>,
+    ) -> std::result::Result<tonic::Response<PutObjectResponse>, tonic::Status> {
+        self.as_ref().put_object(request).await
+    }
+
+    async fn get_object(
+        &self,
+        request: tonic::Request<GetObjectRequest>,
+    ) -> std::result::Result<tonic::Response<GetObjectResponse>, tonic::Status> {
+        self.as_ref().get_object(request).await
+    }
+
+    async fn delete_object(
+        &self,
+        request: tonic::Request<DeleteObjectRequest>,
+    ) -> std::result::Result<tonic::Response<DeleteObjectResponse>, tonic::Status> {
+        self.as_ref().delete_object(request).await
+    }
+
+    async fn list_objects(
+        &self,
+        request: tonic::Request<ListObjectsRequest>,
+    ) -> std::result::Result<tonic::Response<ListObjectsResponse>, tonic::Status> {
+        self.as_ref().list_objects(request).await
+    }
+
+    async fn head_object(
+        &self,
+        request: tonic::Request<HeadObjectRequest>,
+    ) -> std::result::Result<tonic::Response<HeadObjectResponse>, tonic::Status> {
+        self.as_ref().head_object(request).await
+    }
+
+    async fn copy_object(
+        &self,
+        request: tonic::Request<CopyObjectRequest>,
+    ) -> std::result::Result<tonic::Response<CopyObjectResponse>, tonic::Status> {
+        self.as_ref().copy_object(request).await
+    }
+
+    async fn delete_objects(
+        &self,
+        request: tonic::Request<DeleteObjectsRequest>,
+    ) -> std::result::Result<tonic::Response<DeleteObjectsResponse>, tonic::Status> {
+        self.as_ref().delete_objects(request).await
+    }
+
+    async fn create_bucket(
+        &self,
+        request: tonic::Request<CreateBucketRequest>,
+    ) -> std::result::Result<tonic::Response<CreateBucketResponse>, tonic::Status> {
+        self.as_ref().create_bucket(request).await
+    }
+
+    async fn delete_bucket(
+        &self,
+        request: tonic::Request<DeleteBucketRequest>,
+    ) -> std::result::Result<tonic::Response<DeleteBucketResponse>, tonic::Status> {
+        self.as_ref().delete_bucket(request).await
+    }
+
+    async fn list_buckets(
+        &self,
+        request: tonic::Request<ListBucketsRequest>,
+    ) -> std::result::Result<tonic::Response<ListBucketsResponse>, tonic::Status> {
+        self.as_ref().list_buckets(request).await
+    }
+}
+
 #[tonic::async_trait]
 impl ObjectStoreService for ObjectStoreServiceImpl {
     async fn put_object(
@@ -139,7 +215,7 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
         let now = Self::now_string();
 
         // 存储对象数据
-        let engine = self.engine.lock().await;
+        let mut engine = self.engine.lock().await;
         engine
             .put(&req.bucket, data_key.as_bytes(), &req.data)
             .await
@@ -178,7 +254,7 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
         let data_key = format!("{}{}", OBJECT_DATA_PREFIX, req.key);
         let meta_key = format!("{}{}", OBJECT_META_PREFIX, req.key);
 
-        let engine = self.engine.lock().await;
+        let mut engine = self.engine.lock().await;
         let data = engine
             .get(&req.bucket, data_key.as_bytes())
             .await
@@ -240,7 +316,7 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
         let data_key = format!("{}{}", OBJECT_DATA_PREFIX, req.key);
         let meta_key = format!("{}{}", OBJECT_META_PREFIX, req.key);
 
-        let engine = self.engine.lock().await;
+        let mut engine = self.engine.lock().await;
         engine
             .delete(&req.bucket, data_key.as_bytes())
             .await
@@ -273,7 +349,7 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
             Some(req.delimiter.clone())
         };
 
-        let engine = self.engine.lock().await;
+        let mut engine = self.engine.lock().await;
         let data_prefix = format!("{}{}", OBJECT_DATA_PREFIX, prefix);
         let keys = engine
             .list_keys(
@@ -378,7 +454,7 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
         let req = request.into_inner();
         let meta_key = format!("{}{}", OBJECT_META_PREFIX, req.key);
 
-        let engine = self.engine.lock().await;
+        let mut engine = self.engine.lock().await;
         let meta_bytes = engine
             .get(&req.bucket, meta_key.as_bytes())
             .await
@@ -514,7 +590,7 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
     ) -> Result<Response<DeleteBucketResponse>, Status> {
         let req = request.into_inner();
 
-        let engine = self.engine.lock().await;
+        let mut engine = self.engine.lock().await;
         if engine.table_exists(&req.bucket) {
             drop(engine);
             let mut engine = self.engine.lock().await;
@@ -534,7 +610,7 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
         &self,
         _request: Request<ListBucketsRequest>,
     ) -> Result<Response<ListBucketsResponse>, Status> {
-        let engine = self.engine.lock().await;
+        let mut engine = self.engine.lock().await;
 
         let tables = engine
             .list_tables()
@@ -591,7 +667,7 @@ pub fn create_rest_router(service: Arc<ObjectStoreServiceImpl>) -> Router {
                 .delete(delete_bucket_handler),
         )
         .route(
-            "/{bucket}/{*key}",
+            "/{bucket}/*key",
             put(put_object_handler)
                 .get(get_object_handler)
                 .head(head_object_handler)
@@ -741,6 +817,8 @@ async fn put_object_handler(
         .unwrap_or("application/octet-stream")
         .to_string();
 
+    let key = key.strip_prefix('/').unwrap_or(&key).to_string();
+
     let req = tonic::Request::new(PutObjectRequest {
         bucket,
         key,
@@ -770,6 +848,7 @@ async fn get_object_handler(
     State(service): State<Arc<ObjectStoreServiceImpl>>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    let key = key.strip_prefix('/').unwrap_or(&key).to_string();
     let req = tonic::Request::new(GetObjectRequest { bucket, key });
 
     match service.get_object(req).await {
@@ -801,6 +880,7 @@ async fn head_object_handler(
     State(service): State<Arc<ObjectStoreServiceImpl>>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    let key = key.strip_prefix('/').unwrap_or(&key).to_string();
     let req = tonic::Request::new(HeadObjectRequest { bucket, key });
 
     match service.head_object(req).await {
@@ -829,6 +909,7 @@ async fn delete_object_handler(
     State(service): State<Arc<ObjectStoreServiceImpl>>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    let key = key.strip_prefix('/').unwrap_or(&key).to_string();
     let req = tonic::Request::new(DeleteObjectRequest { bucket, key });
 
     match service.delete_object(req).await {

@@ -42,6 +42,7 @@ python3 tests_python/test_index_rest.py         # REST 全文索引测试
 python3 tests_python/test_index_grpc.py         # gRPC 全文索引测试
 python3 tests_python/test_vector_service_grpc.py  # 向量化服务测试
 python3 tests_python/test_embedding_service_grpc.py  # 嵌入向量索引服务测试
+python3 tests_python/test_object_store_service_grpc.py  # 对象存储服务测试
 ```
 
 ---
@@ -229,6 +230,44 @@ python3 tests_python/test_vector_service_grpc.py
 python3 tests_python/test_embedding_service_grpc.py
 ```
 
+#### 对象存储服务 gRPC 测试
+- **文件**: `tests_python/test_object_store_service_grpc.py`
+- **内容**: 测试对象存储服务的完整功能（S3 兼容 API）
+- **测试场景**:
+  1. 创建 Bucket
+  2. 重复创建 Bucket（幂等）
+  3. 列出 Buckets
+  4. 存储对象（PutObject）
+  5. 存储大对象（1MB，验证 BlobDB 大对象存储）
+  6. 存储空对象
+  7. 存储特殊字符路径对象
+  8. 带自定义元数据存储对象
+  9. 覆盖已有对象
+  10. 向不存在 Bucket 存储对象
+  11. 获取对象（GetObject）
+  12. 获取大对象
+  13. 获取空对象
+  14. 获取不存在对象
+  15. 获取对象元数据（HeadObject）
+  16. 获取不存在对象元数据
+  17. 列出对象（ListObjects）
+  18. 带前缀列出对象
+  19. 带分隔符列出对象（模拟目录结构）
+  20. 空 Bucket 列出对象
+  21. 复制对象（CopyObject）
+  22. 跨 Bucket 复制对象
+  23. 删除对象（DeleteObject）
+  24. 删除不存在对象（幂等）
+  25. 批量删除对象（DeleteObjects）
+  26. 批量删除部分不存在对象
+  27. 删除后列出对象验证
+  28. 删除 Bucket
+  29. 创建无效 Bucket 名称
+
+```bash
+python3 tests_python/test_object_store_service_grpc.py
+```
+
 ---
 
 ## 测试覆盖率
@@ -261,6 +300,16 @@ python3 tests_python/test_embedding_service_grpc.py
 | **gRPC** | GetIndexInfo | ✅ |
 | **gRPC** | SaveSnapshot | ✅ |
 | **gRPC** | LoadSnapshot | ✅ |
+| **gRPC** | PutObject | ✅ |
+| **gRPC** | GetObject | ✅ |
+| **gRPC** | DeleteObject | ✅ |
+| **gRPC** | ListObjects | ✅ |
+| **gRPC** | HeadObject | ✅ |
+| **gRPC** | CopyObject | ✅ |
+| **gRPC** | DeleteObjects | ✅ |
+| **gRPC** | CreateBucket | ✅ |
+| **gRPC** | DeleteBucket | ✅ |
+| **gRPC** | ListBuckets | ✅ |
 | **REST** | `/health` | ✅ |
 | **REST** | `/api/v1/tables` | ✅ |
 | **REST** | `/api/v1/schemas/{schema}/tables` | ✅ |
@@ -308,6 +357,13 @@ python3 tests_python/test_embedding_service_grpc.py
 | 向量持久化存储 | ✅ |
 | 索引快照管理 | ✅ |
 | 批量向量插入 | ✅ |
+| 对象存储 Bucket 管理 | ✅ |
+| 对象存储/获取/删除 | ✅ |
+| 对象存储大对象（BlobDB） | ✅ |
+| 对象存储元数据管理 | ✅ |
+| 对象存储批量删除 | ✅ |
+| 对象存储跨 Bucket 复制 | ✅ |
+| 对象存储目录结构模拟 | ✅ |
 
 ---
 
@@ -343,6 +399,7 @@ python3 tests_python/test_embedding_service_grpc.py
    - REST API 端到端测试
    - 向量化服务测试
    - 嵌入向量索引服务测试
+   - 对象存储服务测试
 
 6. **清理**
    - 停止服务
@@ -369,7 +426,8 @@ python3 tests_python/test_embedding_service_grpc.py
 | Python 全文索引gRPC测试 | 1 | ✅ |
 | Python 向量化服务测试 | 1 | ✅ |
 | Python 嵌入向量索引服务测试 | 1 | ✅ |
-| **总计** | **59** | **✅** |
+| Python 对象存储服务测试 | 1 | ✅ |
+| **总计** | **60** | **✅** |
 
 ---
 

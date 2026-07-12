@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use log::{info, debug, warn};
 
-use laoflchdb_engines::{ColumnType, ColumnMeta, TableMeta, StorageEngine, Row, SpecialFields, EnumOrUnknown, RowType};
+use laoflchdb_engines::{ColumnType, ColumnMeta, TableMeta, StorageEngine, Row, SpecialFields, EnumOrUnknown};
 use laoflchdb_index_tantivy_engine::TantivyStorageEngine;
 
 /// 全文索引服务 trait

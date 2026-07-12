@@ -23,6 +23,11 @@ embedding_index:
   kv_db_path: /workspace/rust_space/laoflchDB-rust/laoflch_hnsw_data
   snapshot_path: /workspace/rust_space/laoflchDB-rust/laoflch_hnsw_snapshots
 
+# 对象存储服务配置（S3 兼容，基于 RocksDB BlobDB）
+object_store:
+  enabled: true
+  db_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_oss
+
 # Log configuration
 log_level: info
 
@@ -40,6 +45,7 @@ access_protocols:
     enabled: true
     addr: 0.0.0.0:19777
     service_id: grpc_admin
+
 
   # REST Admin Service
   - protocol: rest
@@ -69,6 +75,25 @@ permissions:
       - query
 
   - service_id: rest_admin
+    default_policy: allow
+    allowed_actions:
+      - get
+      - put
+      - delete
+      - create_table
+      - drop_table
+      - list_tables
+      - list_table_cols
+      - add_row
+      - get_row
+      - update_row
+      - delete_row
+      - get_all_meta
+      - get_schema_info
+      - get_table_meta
+      - query
+
+  - service_id: grpc_test
     default_policy: allow
     allowed_actions:
       - get
