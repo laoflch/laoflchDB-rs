@@ -3,7 +3,7 @@ pub mod proto {
 }
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -21,6 +21,7 @@ use laoflchdb_object_store_service::proto::{
     ListObjectsRequest, PutObjectRequest,
 };
 use log::info;
+use snowflake_me::Snowflake;
 use proto::image_service_server::ImageService;
 use proto::*;
 use tonic::{Request, Response, Status};
@@ -64,6 +65,8 @@ impl Default for ImageServiceConfig {
 pub struct ImageServiceImpl {
     object_store: Arc<laoflchdb_object_store_service::ObjectStoreServiceImpl>,
     config: ImageServiceConfig,
+    /// Snowflake ID 生成器，用于自动生成图片的唯一 key
+    snowflake: Mutex<Snowflake>,
 }
 
 impl ImageServiceImpl {
@@ -73,6 +76,15 @@ impl ImageServiceImpl {
         object_store: Arc<laoflchdb_object_store_service::ObjectStoreServiceImpl>,
         config: ImageServiceConfig,
     ) -> Self {
+        // 优先用默认配置（基于 IP 推导 machine_id）；失败时回退到 machine_id=0, data_center_id=0
+        let snowflake = Snowflake::new().unwrap_or_else(|_| {
+            log::warn!("Snowflake 默认初始化失败，回退到 machine_id=0, data_center_id=0");
+            Snowflake::builder()
+                .machine_id(&|| Ok(0u16))
+                .data_center_id(&|| Ok(0u16))
+                .finalize()
+                .expect("Snowflake with machine_id=0, data_center_id=0 must succeed")
+        });
         info!(
             "ImageService 初始化完成: default_bucket='{}'",
             config.default_bucket
@@ -80,7 +92,31 @@ impl ImageServiceImpl {
         Self {
             object_store,
             config,
+            snowflake: Mutex::new(snowflake),
         }
+    }
+
+    /// 生成基于 Snowflake 算法的唯一图片 key
+    /// Snowflake ID 为 64 位整数，保证分布式唯一且单调递增
+    /// 失败时回退到当前毫秒级时间戳
+    fn generate_image_key(&self) -> String {
+        let id = match self.snowflake.lock() {
+            Ok(guard) => guard.next_id().unwrap_or_else(|_| {
+                log::warn!("Snowflake next_id 失败，回退到毫秒时间戳");
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64
+            }),
+            Err(_) => {
+                log::warn!("Snowflake mutex 锁定失败，回退到毫秒时间戳");
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64
+            }
+        };
+        format!("{}", id)
     }
 
     /// 解析 bucket，若为空则使用默认 bucket
@@ -271,9 +307,9 @@ impl ImageService for ImageServiceImpl {
         let bucket = self.resolve_bucket(&req.bucket);
         self.ensure_bucket(&bucket).await?;
 
-        // 生成图片 key（若未指定则使用 UUID）
+        // 生成图片 key（若未指定则使用 Snowflake ID 自动生成）
         let image_key = if req.key.is_empty() {
-            format!("{}", uuid::Uuid::new_v4())
+            self.generate_image_key()
         } else {
             req.key.clone()
         };

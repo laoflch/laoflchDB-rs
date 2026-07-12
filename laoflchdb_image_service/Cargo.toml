@@ -11,7 +11,8 @@ tokio = { version = "1.0", features = ["full"] }
 log = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-uuid = { version = "1.0", features = ["v4"] }
+# Snowflake ID 生成器（生成分布式唯一 ID，用于自动生成图片 key）
+snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 axum = "0.7"
 bytes = "1.6"
 # 图片处理：解码/编码/缩放

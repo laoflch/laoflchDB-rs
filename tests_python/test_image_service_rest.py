@@ -188,7 +188,9 @@ def test_upload_image_auto_key():
         result = resp.json()
         assert result["success"], f"上传失败: {result}"
         assert result["key"], "自动生成的 key 不应为空"
-        print(f"    ✓ 自动生成 key 成功: {result['key']}")
+        # Snowflake ID 为纯数字字符串
+        assert result["key"].isdigit(), f"自动生成的 key 应为 Snowflake ID（纯数字）: {result['key']}"
+        print(f"    ✓ 自动生成 Snowflake ID key 成功: {result['key']}")
         return True
     except Exception as e:
         print(f"    ✗ 上传失败: {e}")

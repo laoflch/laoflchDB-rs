@@ -3474,10 +3474,10 @@ dependencies = [
  "prost",
  "serde",
  "serde_json",
+ "snowflake_me",
  "tokio",
  "tonic",
  "tonic-build",
- "uuid",
 ]
 
 [[package]]

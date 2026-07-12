@@ -22,7 +22,7 @@ service ImageService {
 message UploadImageRequest {
   // 对象存储中的 bucket 名称（若不指定则使用默认 bucket "images"）
   string bucket = 1;
-  // 图片 key（不指定则使用 UUID 自动生成；指定时覆盖同名图片）
+  // 图片 key（不指定则使用 Snowflake ID 自动生成；指定时覆盖同名图片）
   string key = 2;
   // 图片二进制数据
   bytes data = 3;

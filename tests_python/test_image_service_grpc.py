@@ -185,14 +185,16 @@ def test_upload_image_auto_key():
         data = _make_test_png(50, 50, (0, 0, 255))
         req = image_service_pb2.UploadImageRequest(
             bucket=TEST_BUCKET,
-            key="",  # 空 key，服务端应自动生成 UUID
+            key="",  # 空 key，服务端应自动生成 Snowflake ID
             data=data,
             content_type="image/png",
         )
         resp = img_stub.UploadImage(req, metadata=get_metadata())
         assert resp.success, f"上传失败: {resp.message}"
         assert resp.key, "自动生成的 key 不应为空"
-        print(f"    ✓ 自动生成 key 成功: {resp.key}")
+        # Snowflake ID 为纯数字字符串
+        assert resp.key.isdigit(), f"自动生成的 key 应为 Snowflake ID（纯数字）: {resp.key}"
+        print(f"    ✓ 自动生成 Snowflake ID key 成功: {resp.key}")
         # 保存 key 供后续测试使用
         test_upload_image_auto_key.generated_key = resp.key
         return True
