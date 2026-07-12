@@ -203,6 +203,136 @@ def test_upload_image_auto_key():
         return False
 
 
+def test_snowflake_id_uniqueness_and_monotonic():
+    """测试连续上传多张图片时 Snowflake ID 的唯一性和单调递增"""
+    print(f"[测试] Snowflake ID 唯一性与单调递增（连续上传 5 张）...")
+    try:
+        keys = []
+        for i in range(5):
+            data = _make_test_png(30, 30, (i * 50, 0, 0))
+            req = image_service_pb2.UploadImageRequest(
+                bucket=TEST_BUCKET,
+                key="",  # 自动生成 Snowflake ID
+                data=data,
+                content_type="image/png",
+            )
+            resp = img_stub.UploadImage(req, metadata=get_metadata())
+            assert resp.success, f"第 {i+1} 张上传失败: {resp.message}"
+            assert resp.key.isdigit(), f"key 应为 Snowflake ID（纯数字）: {resp.key}"
+            keys.append(int(resp.key))
+        # 唯一性
+        assert len(set(keys)) == len(keys), f"Snowflake ID 应唯一，实际: {keys}"
+        # 单调递增
+        assert keys == sorted(keys), f"Snowflake ID 应单调递增，实际: {keys}"
+        print(f"    ✓ 5 个 Snowflake ID 唯一且单调递增: {keys}")
+        # 保存 keys 供后续测试使用
+        test_snowflake_id_uniqueness_and_monotonic.keys = [str(k) for k in keys]
+        return True
+    except Exception as e:
+        print(f"    ✗ 测试失败: {e}")
+        return False
+
+
+def test_snowflake_key_full_lifecycle():
+    """测试使用自动生成的 Snowflake ID key 完成完整生命周期：获取原图/缩略图/元数据"""
+    # 使用前一个测试保存的 Snowflake key
+    snowflake_key = getattr(test_upload_image_auto_key, "generated_key", None)
+    if not snowflake_key:
+        print(f"[测试] Snowflake key 完整生命周期: 跳过（无可用 Snowflake key）")
+        return False
+    print(f"[测试] Snowflake key 完整生命周期: key={snowflake_key}...")
+    try:
+        # 1. 获取原图
+        get_req = image_service_pb2.GetImageRequest(bucket=TEST_BUCKET, key=snowflake_key)
+        get_resp = img_stub.GetImage(get_req, metadata=get_metadata())
+        assert get_resp.success, f"获取原图失败: {get_resp.message}"
+        assert get_resp.data, "原图数据不应为空"
+        print(f"    ✓ 获取原图成功: {get_resp.content_length} bytes")
+
+        # 2. 获取元数据
+        meta_req = image_service_pb2.GetImageMetadataRequest(bucket=TEST_BUCKET, key=snowflake_key)
+        meta_resp = img_stub.GetImageMetadata(meta_req, metadata=get_metadata())
+        assert meta_resp.success, f"获取元数据失败: {meta_resp.message}"
+        assert meta_resp.metadata.key == snowflake_key, "元数据 key 应与 Snowflake key 一致"
+        assert meta_resp.metadata.width == 50 and meta_resp.metadata.height == 50, \
+            f"元数据尺寸应为 50x50，实际: {meta_resp.metadata.width}x{meta_resp.metadata.height}"
+        print(f"    ✓ 获取元数据成功: {meta_resp.metadata.width}x{meta_resp.metadata.height}")
+
+        # 3. 获取三种缩略图
+        for size_name, expected_max in [("thumbnail", 128), ("small", 256), ("medium", 512)]:
+            thumb_req = image_service_pb2.GetThumbnailRequest(
+                bucket=TEST_BUCKET, key=snowflake_key, size=size_name,
+            )
+            thumb_resp = img_stub.GetThumbnail(thumb_req, metadata=get_metadata())
+            assert thumb_resp.success, f"获取 {size_name} 缩略图失败: {thumb_resp.message}"
+            assert thumb_resp.data, f"{size_name} 缩略图数据不应为空"
+            # thumbnail 为 128x128（cover 模式）；small/medium 最大边不超过 expected_max
+            if size_name == "thumbnail":
+                assert thumb_resp.width == 128 and thumb_resp.height == 128, \
+                    f"thumbnail 应为 128x128，实际: {thumb_resp.width}x{thumb_resp.height}"
+            else:
+                assert max(thumb_resp.width, thumb_resp.height) <= expected_max, \
+                    f"{size_name} 最大边应 <= {expected_max}，实际: {thumb_resp.width}x{thumb_resp.height}"
+            print(f"    ✓ 获取 {size_name} 缩略图成功: {thumb_resp.width}x{thumb_resp.height}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 测试失败: {e}")
+        return False
+
+
+def test_snowflake_key_listable_and_deletable():
+    """测试 Snowflake key 可被列出和删除"""
+    snowflake_keys = getattr(test_snowflake_id_uniqueness_and_monotonic, "keys", None)
+    if not snowflake_keys:
+        print(f"[测试] Snowflake key 列出与删除: 跳过（无可用 Snowflake keys）")
+        return False
+    print(f"[测试] Snowflake key 列出与删除: {len(snowflake_keys)} 个 keys...")
+    try:
+        # 1. 列出图片，验证 Snowflake key 出现在列表中
+        list_req = image_service_pb2.ListImagesRequest(bucket=TEST_BUCKET, max_keys=1000)
+        list_resp = img_stub.ListImages(list_req, metadata=get_metadata())
+        assert list_resp.success, f"列出失败: {list_resp.message}"
+        listed_keys = {img.key for img in list_resp.images}
+        for sk in snowflake_keys:
+            assert sk in listed_keys, f"Snowflake key '{sk}' 未出现在列表中"
+        print(f"    ✓ 所有 Snowflake key 均在列表中")
+
+        # 2. 删除第一个 Snowflake key
+        target_key = snowflake_keys[0]
+        del_req = image_service_pb2.DeleteImageRequest(bucket=TEST_BUCKET, key=target_key)
+        del_resp = img_stub.DeleteImage(del_req, metadata=get_metadata())
+        assert del_resp.success, f"删除失败: {del_resp.message}"
+        # 应删除原图 + 3 个缩略图 + 1 个元数据 = 5 个对象
+        assert len(del_resp.deleted_keys) >= 5, \
+            f"应删除至少 5 个对象（原图+3缩略图+元数据），实际: {len(del_resp.deleted_keys)}"
+        print(f"    ✓ 删除 Snowflake key '{target_key}' 成功，共删除 {len(del_resp.deleted_keys)} 个对象")
+
+        # 3. 验证删除后不可访问
+        get_req = image_service_pb2.GetImageRequest(bucket=TEST_BUCKET, key=target_key)
+        try:
+            get_resp = img_stub.GetImage(get_req, metadata=get_metadata())
+            assert not get_resp.success, "删除后应无法获取原图"
+        except grpc.RpcError as e:
+            # NOT_FOUND 也是正确的（服务端对不存在的对象返回 NOT_FOUND）
+            assert e.code() == grpc.StatusCode.NOT_FOUND, \
+                f"应返回 NOT_FOUND，实际: {e.code()}"
+        print(f"    ✓ 删除后原图不可访问")
+
+        # 4. 验证元数据也被删除
+        meta_req = image_service_pb2.GetImageMetadataRequest(bucket=TEST_BUCKET, key=target_key)
+        try:
+            meta_resp = img_stub.GetImageMetadata(meta_req, metadata=get_metadata())
+            assert not meta_resp.success, "删除后应无法获取元数据"
+        except grpc.RpcError as e:
+            # NOT_FOUND 也是正确的
+            assert e.code() == grpc.StatusCode.NOT_FOUND, f"应返回 NOT_FOUND，实际: {e.code()}"
+        print(f"    ✓ 删除后元数据不可访问")
+        return True
+    except Exception as e:
+        print(f"    ✗ 测试失败: {e}")
+        return False
+
+
 def test_upload_image_with_metadata():
     """测试上传图片时带自定义元数据"""
     key = "test_metadata.png"
@@ -695,6 +825,9 @@ def run_all_tests():
         ("上传 PNG 图片", test_upload_image_png),
         ("上传 JPEG 图片", test_upload_image_jpeg),
         ("上传图片自动生成 key", test_upload_image_auto_key),
+        ("Snowflake ID 唯一性与单调递增", test_snowflake_id_uniqueness_and_monotonic),
+        ("Snowflake key 完整生命周期", test_snowflake_key_full_lifecycle),
+        ("Snowflake key 列出与删除", test_snowflake_key_listable_and_deletable),
         ("上传图片带元数据", test_upload_image_with_metadata),
         ("覆盖上传同名图片", test_upload_image_overwrite),
         ("上传大图片 1000x1000", test_upload_large_image),

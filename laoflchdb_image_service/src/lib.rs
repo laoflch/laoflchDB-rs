@@ -593,7 +593,12 @@ impl ImageService for ImageServiceImpl {
         let bucket = self.resolve_bucket(&req.bucket);
 
         // 先获取元数据，以便知道要删除哪些缩略图
-        let metadata = self.get_metadata_from_store(&bucket, &req.key).await?;
+        // 元数据不存在时（图片已被删除），返回 None 实现幂等删除
+        let metadata = match self.get_metadata_from_store(&bucket, &req.key).await {
+            Ok(m) => m,
+            Err(e) if e.code() == tonic::Code::NotFound => None,
+            Err(e) => return Err(e),
+        };
 
         let mut deleted_keys = Vec::new();
 
@@ -649,21 +654,22 @@ impl ImageService for ImageServiceImpl {
 
 /// 创建 REST API Router
 /// 返回的 Router 已绑定状态，可直接合并到主服务器 Router 中
+/// 注意：路由路径使用根相对路径（如 "/", "/:key"），因为此 Router 会被 nest 到 "/api/v1/images" 下
 pub fn create_rest_router(service: Arc<ImageServiceImpl>) -> Router {
     Router::new()
-        // 上传图片: POST /images (multipart/form-data 或 raw body)
-        .route("/images", post(upload_image_handler))
-        // 列出图片: GET /images
-        .route("/images", get(list_images_handler))
-        // 获取图片元数据: GET /images/:key/meta
-        .route("/images/:key/meta", get(get_image_meta_handler))
-        // 获取或删除图片: GET/DELETE /images/:key
+        // 上传图片: POST / (multipart/form-data 或 raw body)
+        .route("/", post(upload_image_handler))
+        // 列出图片: GET /
+        .route("/", get(list_images_handler))
+        // 获取图片元数据: GET /:key/meta
+        .route("/:key/meta", get(get_image_meta_handler))
+        // 获取或删除图片: GET/DELETE /:key
         .route(
-            "/images/:key",
+            "/:key",
             get(get_image_handler).delete(delete_image_handler),
         )
-        // 获取缩略图: GET /images/:key/thumbnails/:size
-        .route("/images/:key/thumbnails/:size", get(get_thumbnail_handler))
+        // 获取缩略图: GET /:key/thumbnails/:size
+        .route("/:key/thumbnails/:size", get(get_thumbnail_handler))
         .with_state(service)
 }
 

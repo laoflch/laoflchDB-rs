@@ -97,7 +97,9 @@ def test_login():
         assert resp.status_code == 200, f"登录失败: HTTP {resp.status_code}"
         data = resp.json()
         assert data.get("success"), f"登录失败: {data}"
-        TOKEN = data["token"]
+        # token 嵌套在 data 字段中
+        TOKEN = data.get("token") or data.get("data", {}).get("token")
+        assert TOKEN, f"未获取到 token: {data}"
         print(f"    ✓ 登录成功")
         return True
     except Exception as e:
@@ -191,9 +193,161 @@ def test_upload_image_auto_key():
         # Snowflake ID 为纯数字字符串
         assert result["key"].isdigit(), f"自动生成的 key 应为 Snowflake ID（纯数字）: {result['key']}"
         print(f"    ✓ 自动生成 Snowflake ID key 成功: {result['key']}")
+        # 保存 key 供后续测试使用
+        test_upload_image_auto_key.generated_key = result["key"]
         return True
     except Exception as e:
         print(f"    ✗ 上传失败: {e}")
+        return False
+
+
+def test_snowflake_id_uniqueness_and_monotonic():
+    """测试连续上传多张图片时 Snowflake ID 的唯一性和单调递增"""
+    print(f"[测试] Snowflake ID 唯一性与单调递增（连续上传 5 张）...")
+    try:
+        keys = []
+        for i in range(5):
+            data = _make_test_png(30, 30, (i * 50, 0, 0))
+            resp = requests.post(
+                f"{IMG_BASE}?bucket={TEST_BUCKET}",
+                headers={**_get_auth_headers(), "Content-Type": "image/png"},
+                data=data,
+                timeout=10,
+            )
+            assert resp.status_code == 200, f"第 {i+1} 张上传失败: HTTP {resp.status_code}"
+            result = resp.json()
+            assert result["success"], f"第 {i+1} 张上传失败: {result}"
+            key = result["key"]
+            assert key.isdigit(), f"key 应为 Snowflake ID（纯数字）: {key}"
+            keys.append(int(key))
+        # 唯一性
+        assert len(set(keys)) == len(keys), f"Snowflake ID 应唯一，实际: {keys}"
+        # 单调递增
+        assert keys == sorted(keys), f"Snowflake ID 应单调递增，实际: {keys}"
+        print(f"    ✓ 5 个 Snowflake ID 唯一且单调递增: {keys}")
+        # 保存 keys 供后续测试使用
+        test_snowflake_id_uniqueness_and_monotonic.keys = [str(k) for k in keys]
+        return True
+    except Exception as e:
+        print(f"    ✗ 测试失败: {e}")
+        return False
+
+
+def test_snowflake_key_full_lifecycle():
+    """测试使用自动生成的 Snowflake ID key 完成完整生命周期：获取原图/缩略图/元数据"""
+    snowflake_key = getattr(test_upload_image_auto_key, "generated_key", None)
+    if not snowflake_key:
+        print(f"[测试] Snowflake key 完整生命周期: 跳过（无可用 Snowflake key）")
+        return False
+    print(f"[测试] Snowflake key 完整生命周期: key={snowflake_key}...")
+    try:
+        # 1. 获取原图
+        resp = requests.get(
+            f"{IMG_BASE}/{snowflake_key}?bucket={TEST_BUCKET}",
+            headers=_get_auth_headers(),
+            timeout=10,
+        )
+        assert resp.status_code == 200, f"获取原图失败: HTTP {resp.status_code}"
+        assert resp.headers.get("content-type") == "image/png", \
+            f"content-type 不匹配: {resp.headers.get('content-type')}"
+        assert resp.content, "原图数据不应为空"
+        print(f"    ✓ 获取原图成功: {len(resp.content)} bytes")
+
+        # 2. 获取元数据
+        resp = requests.get(
+            f"{IMG_BASE}/{snowflake_key}/meta?bucket={TEST_BUCKET}",
+            headers=_get_auth_headers(),
+            timeout=10,
+        )
+        assert resp.status_code == 200, f"获取元数据失败: HTTP {resp.status_code}"
+        result = resp.json()
+        assert result["key"] == snowflake_key, "元数据 key 应与 Snowflake key 一致"
+        assert result["width"] == 50 and result["height"] == 50, \
+            f"元数据尺寸应为 50x50，实际: {result['width']}x{result['height']}"
+        print(f"    ✓ 获取元数据成功: {result['width']}x{result['height']}")
+
+        # 3. 获取三种缩略图
+        for size_name, expected_max in [("thumbnail", 128), ("small", 256), ("medium", 512)]:
+            resp = requests.get(
+                f"{IMG_BASE}/{snowflake_key}/thumbnails/{size_name}?bucket={TEST_BUCKET}",
+                headers=_get_auth_headers(),
+                timeout=10,
+            )
+            assert resp.status_code == 200, f"获取 {size_name} 缩略图失败: HTTP {resp.status_code}"
+            assert resp.headers.get("content-type") == "image/jpeg", \
+                f"{size_name} 应为 JPEG: {resp.headers.get('content-type')}"
+            width = int(resp.headers.get("x-thumbnail-width", 0))
+            height = int(resp.headers.get("x-thumbnail-height", 0))
+            if size_name == "thumbnail":
+                assert width == 128 and height == 128, \
+                    f"thumbnail 应为 128x128，实际: {width}x{height}"
+            else:
+                assert max(width, height) <= expected_max, \
+                    f"{size_name} 最大边应 <= {expected_max}，实际: {width}x{height}"
+            print(f"    ✓ 获取 {size_name} 缩略图成功: {width}x{height}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 测试失败: {e}")
+        return False
+
+
+def test_snowflake_key_listable_and_deletable():
+    """测试 Snowflake key 可被列出和删除"""
+    snowflake_keys = getattr(test_snowflake_id_uniqueness_and_monotonic, "keys", None)
+    if not snowflake_keys:
+        print(f"[测试] Snowflake key 列出与删除: 跳过（无可用 Snowflake keys）")
+        return False
+    print(f"[测试] Snowflake key 列出与删除: {len(snowflake_keys)} 个 keys...")
+    try:
+        # 1. 列出图片，验证 Snowflake key 出现在列表中
+        resp = requests.get(
+            f"{IMG_BASE}?bucket={TEST_BUCKET}&max_keys=1000",
+            headers=_get_auth_headers(),
+            timeout=10,
+        )
+        assert resp.status_code == 200, f"列出失败: HTTP {resp.status_code}"
+        result = resp.json()
+        listed_keys = {img["key"] for img in result["images"]}
+        for sk in snowflake_keys:
+            assert sk in listed_keys, f"Snowflake key '{sk}' 未出现在列表中"
+        print(f"    ✓ 所有 Snowflake key 均在列表中")
+
+        # 2. 删除第一个 Snowflake key
+        target_key = snowflake_keys[0]
+        resp = requests.delete(
+            f"{IMG_BASE}/{target_key}?bucket={TEST_BUCKET}",
+            headers=_get_auth_headers(),
+            timeout=10,
+        )
+        assert resp.status_code == 200, f"删除失败: HTTP {resp.status_code}"
+        result = resp.json()
+        assert result["success"], f"删除失败: {result}"
+        # 应删除原图 + 3 个缩略图 + 1 个元数据 = 5 个对象
+        assert len(result["deleted_keys"]) >= 5, \
+            f"应删除至少 5 个对象（原图+3缩略图+元数据），实际: {len(result['deleted_keys'])}"
+        assert target_key in result["deleted_keys"], "应包含原图 key"
+        print(f"    ✓ 删除 Snowflake key '{target_key}' 成功，共删除 {len(result['deleted_keys'])} 个对象")
+
+        # 3. 验证删除后不可访问
+        resp = requests.get(
+            f"{IMG_BASE}/{target_key}?bucket={TEST_BUCKET}",
+            headers=_get_auth_headers(),
+            timeout=5,
+        )
+        assert resp.status_code == 404, f"删除后应返回 404，实际: HTTP {resp.status_code}"
+        print(f"    ✓ 删除后原图不可访问")
+
+        # 4. 验证元数据也被删除
+        resp = requests.get(
+            f"{IMG_BASE}/{target_key}/meta?bucket={TEST_BUCKET}",
+            headers=_get_auth_headers(),
+            timeout=5,
+        )
+        assert resp.status_code == 404, f"删除后元数据应返回 404，实际: HTTP {resp.status_code}"
+        print(f"    ✓ 删除后元数据不可访问")
+        return True
+    except Exception as e:
+        print(f"    ✗ 测试失败: {e}")
         return False
 
 
@@ -636,6 +790,9 @@ def run_all_tests():
         ("上传 PNG 图片", test_upload_image_png),
         ("上传 JPEG 图片", test_upload_image_jpeg),
         ("上传图片自动生成 key", test_upload_image_auto_key),
+        ("Snowflake ID 唯一性与单调递增", test_snowflake_id_uniqueness_and_monotonic),
+        ("Snowflake key 完整生命周期", test_snowflake_key_full_lifecycle),
+        ("Snowflake key 列出与删除", test_snowflake_key_listable_and_deletable),
         ("上传带元数据图片", test_upload_image_with_metadata),
         ("上传大图片 1000x1000", test_upload_large_image),
         ("上传长方形图片", test_upload_rectangular_image),
