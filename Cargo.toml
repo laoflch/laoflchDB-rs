@@ -11,6 +11,7 @@ path = "src/main.rs"
 members = [
     ".",
     "lsql",
+    "ltool",
     "xtask",
     "laoflchdb_engines",
     "multi_table_rocksdb",
@@ -22,6 +23,7 @@ members = [
     "laoflchdb_object_store_service",
     "laoflchdb_image_service",
     "laoflchdb_face_service",
+    "laoflchdb_face_service_proto",
 ]
 
 [dependencies]

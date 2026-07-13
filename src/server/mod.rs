@@ -317,7 +317,7 @@ async fn start_grpc_server(
 
     // 如果有 face 服务配置，则注册
     if let Some(face) = face_service {
-        server = server.add_service(FaceServiceServer::new(face));
+        server = server.add_service(FaceServiceServer::from_arc(face));
     }
 
     server.serve(addr_copy.parse()?).await?;

@@ -24,9 +24,8 @@ use log::{info, warn};
 use snowflake_me::Snowflake;
 use tonic::{Request, Response as TonicResponse, Status};
 
-pub mod proto {
-    tonic::include_proto!("laoflchdb.face_service");
-}
+// Proto 定义来自独立的 laoflchdb_face_service_proto crate（避免客户端拉入 candle-onnx）
+pub use laoflchdb_face_service_proto::proto;
 
 use proto::face_service_server::{FaceService, FaceServiceServer};
 use proto::*;
@@ -838,37 +837,9 @@ fn mean_2d(points: &[[f32; 2]; 5]) -> [f32; 2] {
 
 // ── gRPC 服务实现 ────────────────────────────────────────────────
 
-/// 为 Arc<FaceServiceImpl> 实现 FaceService trait（便于注册到 tonic Server）
-#[tonic::async_trait]
-impl FaceService for std::sync::Arc<FaceServiceImpl> {
-    async fn detect_faces(
-        &self,
-        request: Request<DetectFacesRequest>,
-    ) -> Result<TonicResponse<DetectFacesResponse>, Status> {
-        self.as_ref().detect_faces(request).await
-    }
-
-    async fn extract_face_features(
-        &self,
-        request: Request<ExtractFaceFeaturesRequest>,
-    ) -> Result<TonicResponse<ExtractFaceFeaturesResponse>, Status> {
-        self.as_ref().extract_face_features(request).await
-    }
-
-    async fn extract_feature_from_aligned(
-        &self,
-        request: Request<ExtractFeatureFromAlignedRequest>,
-    ) -> Result<TonicResponse<ExtractFeatureFromAlignedResponse>, Status> {
-        self.as_ref().extract_feature_from_aligned(request).await
-    }
-
-    async fn compare_features(
-        &self,
-        request: Request<CompareFeaturesRequest>,
-    ) -> Result<TonicResponse<CompareFeaturesResponse>, Status> {
-        self.as_ref().compare_features(request).await
-    }
-}
+// 注意：原本这里还有 `impl FaceService for Arc<FaceServiceImpl>`，
+// 但这违反了 orphan rule（FaceService 来自 proto crate，Arc 来自 std）。
+// 改为在 server 注册时使用 `FaceServiceServer::from_arc(arc)` 直接构造。
 
 #[tonic::async_trait]
 impl FaceService for FaceServiceImpl {

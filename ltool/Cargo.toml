@@ -1,0 +1,29 @@
+[package]
+name = "ltool"
+version = "0.1.0"
+edition = "2021"
+description = "LaoflchDB TUI 客户端 - 图片/人脸/向量/SQL 可视化管理工具"
+
+[[bin]]
+name = "ltool"
+path = "src/main.rs"
+
+[dependencies]
+# 主 crate（复用 LaoflchDbClient：认证、SQL、版本）
+laoflchDB-rust = { path = ".." }
+# 各服务的 proto client（image/embedding 本身轻量，face 用抽出的 proto crate 避免拉入 candle）
+laoflchdb_image_service = { path = "../laoflchdb_image_service" }
+laoflchdb_embedding_service = { path = "../laoflchdb_embedding_service" }
+laoflchdb_face_service_proto = { path = "../laoflchdb_face_service_proto" }
+# gRPC
+tonic = "0.11"
+prost = "0.12"
+tokio = { version = "1.0", features = ["full"] }
+# TUI
+ratatui = "0.26"
+crossterm = "0.27"
+# 命令行参数
+clap = { version = "4.5", features = ["derive"] }
+# 工具
+anyhow = "1.0"
+log = "0.4"

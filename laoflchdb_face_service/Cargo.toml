@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+# Proto 定义（抽出的独立 crate，避免 ltool 等纯客户端拉入 candle-onnx）
+laoflchdb_face_service_proto = { path = "../laoflchdb_face_service_proto" }
 # 图片服务依赖（用于保存对齐后的人脸图片）
 laoflchdb_image_service = { path = "../laoflchdb_image_service" }
 laoflchdb_object_store_service = { path = "../laoflchdb_object_store_service" }
@@ -33,6 +35,3 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 [features]
 # 启用 CUDA GPU 加速（与根 crate 的 cuda feature 联动）
 cuda = ["candle-core/cuda"]
-
-[build-dependencies]
-tonic-build = "0.11"

@@ -1,0 +1,404 @@
+//! App 全局状态管理
+//!
+//! 包含 4 个 Tab 的状态、gRPC 客户端、登录状态、命令模式输入等。
+
+use crate::grpc_client::GrpcClients;
+
+/// 当前激活的 Tab
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Image,
+    Face,
+    Vector,
+    Sql,
+}
+
+impl Tab {
+    /// 转为 Tab 栏显示用的中文名称
+    pub fn title(self) -> &'static str {
+        match self {
+            Tab::Image => "1:图片",
+            Tab::Face => "2:人脸",
+            Tab::Vector => "3:向量",
+            Tab::Sql => "4:SQL",
+        }
+    }
+
+    /// Tab 在栏中的索引（0..4）
+    pub fn index(self) -> usize {
+        match self {
+            Tab::Image => 0,
+            Tab::Face => 1,
+            Tab::Vector => 2,
+            Tab::Sql => 3,
+        }
+    }
+
+    /// 按数字键 1..=4 切换 Tab
+    pub fn from_index(i: usize) -> Option<Self> {
+        match i {
+            0 => Some(Tab::Image),
+            1 => Some(Tab::Face),
+            2 => Some(Tab::Vector),
+            3 => Some(Tab::Sql),
+            _ => None,
+        }
+    }
+}
+
+/// 单个输入框的状态
+#[derive(Debug, Clone)]
+pub struct InputState {
+    pub value: String,
+    pub cursor: usize,
+}
+
+impl Default for InputState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl InputState {
+    pub fn new() -> Self {
+        Self {
+            value: String::new(),
+            cursor: 0,
+        }
+    }
+
+    pub fn with_value(v: impl Into<String>) -> Self {
+        let value = v.into();
+        let cursor = value.chars().count();
+        Self { value, cursor }
+    }
+
+    pub fn set_value(&mut self, v: impl Into<String>) {
+        self.value = v.into();
+        self.cursor = self.value.chars().count();
+    }
+
+    /// 在光标位置插入字符（支持 UTF-8 中文）
+    pub fn insert_char(&mut self, c: char) {
+        let idx = self.char_to_byte_idx();
+        self.value.insert(idx, c);
+        self.cursor += 1;
+    }
+
+    /// 在光标位置插入字符串
+    pub fn insert_str(&mut self, s: &str) {
+        let idx = self.char_to_byte_idx();
+        let n = s.chars().count();
+        self.value.insert_str(idx, s);
+        self.cursor += n;
+    }
+
+    /// 删除光标前一个字符（Backspace）
+    pub fn backspace(&mut self) {
+        if self.cursor > 0 {
+            let idx = self.char_to_byte_idx();
+            // 找到前一个字符的字节边界
+            let prev = self.value[..idx].char_indices().last().map(|(b, _)| b);
+            if let Some(prev_idx) = prev {
+                self.value.remove(prev_idx);
+                self.cursor -= 1;
+            }
+        }
+    }
+
+    /// 删除光标位置的字符（Delete）
+    pub fn delete(&mut self) {
+        let idx = self.char_to_byte_idx();
+        if idx < self.value.len() {
+            // 找到当前字符的字节长度
+            if let Some(c) = self.value[idx..].chars().next() {
+                let len = c.len_utf8();
+                let _ = len;
+                self.value.remove(idx);
+            }
+        }
+    }
+
+    /// 光标左移
+    pub fn left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor -= 1;
+        }
+    }
+
+    /// 光标右移
+    pub fn right(&mut self) {
+        let total = self.value.chars().count();
+        if self.cursor < total {
+            self.cursor += 1;
+        }
+    }
+
+    /// 光标到开头
+    pub fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    /// 光标到结尾
+    pub fn end(&mut self) {
+        self.cursor = self.value.chars().count();
+    }
+
+    fn char_to_byte_idx(&self) -> usize {
+        self.value
+            .char_indices()
+            .nth(self.cursor)
+            .map(|(b, _)| b)
+            .unwrap_or(self.value.len())
+    }
+}
+
+/// 图片 Tab 状态
+#[derive(Debug, Clone)]
+pub struct ImageTabState {
+    pub focus: ImageFocus,
+    pub bucket: InputState,
+    pub file_path: InputState,
+    pub key: InputState,
+    pub images: Vec<laoflchdb_image_service::proto::ImageMetadata>,
+    pub upload_result: Option<String>,
+    pub meta_detail: Option<String>,
+    pub list_scroll: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageFocus {
+    Bucket,
+    FilePath,
+    Key,
+}
+
+impl Default for ImageTabState {
+    fn default() -> Self {
+        Self {
+            focus: ImageFocus::FilePath,
+            bucket: InputState::with_value("images"),
+            file_path: InputState::new(),
+            key: InputState::new(),
+            images: Vec::new(),
+            upload_result: None,
+            meta_detail: None,
+            list_scroll: 0,
+        }
+    }
+}
+
+/// 人脸 Tab 状态
+#[derive(Debug, Clone)]
+pub struct FaceTabState {
+    pub focus: FaceFocus,
+    pub file_path: InputState,
+    pub det_threshold: InputState,
+    pub max_faces: InputState,
+    pub save_aligned_images: bool,
+    pub index_embedding: bool,
+    pub bucket: InputState,
+    /// 检测到的人脸列表（编号 / score / bbox / saved_key / vector_id）
+    pub faces: Vec<(usize, f32, Vec<f32>, String, u64)>,
+    /// 当前选中的人脸索引，用于显示 embedding 预览
+    pub selected_face: usize,
+    /// 当前选中人脸的 embedding（前 10 个值预览用）
+    pub embedding_preview: Vec<f32>,
+    pub list_scroll: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaceFocus {
+    FilePath,
+    DetThreshold,
+    MaxFaces,
+    Bucket,
+}
+
+impl Default for FaceTabState {
+    fn default() -> Self {
+        Self {
+            focus: FaceFocus::FilePath,
+            file_path: InputState::new(),
+            det_threshold: InputState::with_value("0.5"),
+            max_faces: InputState::with_value("0"),
+            save_aligned_images: true,
+            index_embedding: true,
+            bucket: InputState::with_value("faces"),
+            faces: Vec::new(),
+            selected_face: 0,
+            embedding_preview: Vec::new(),
+            list_scroll: 0,
+        }
+    }
+}
+
+/// 向量 Tab 状态
+#[derive(Debug, Clone)]
+pub struct VectorTabState {
+    pub focus: VectorFocus,
+    pub index_name: InputState,
+    pub query_vec: InputState,
+    pub top_k: InputState,
+    /// 索引信息（num_elements, dim, distance_metric, max_layers）
+    pub index_info: Option<(u64, u32, String, u32)>,
+    /// 搜索结果列表 (id, distance)
+    pub search_results: Vec<(u64, f32)>,
+    pub delete_id: InputState,
+    pub list_scroll: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorFocus {
+    IndexName,
+    QueryVec,
+    TopK,
+    DeleteId,
+}
+
+impl Default for VectorTabState {
+    fn default() -> Self {
+        Self {
+            focus: VectorFocus::IndexName,
+            index_name: InputState::with_value("face"),
+            query_vec: InputState::new(),
+            top_k: InputState::with_value("5"),
+            index_info: None,
+            search_results: Vec::new(),
+            delete_id: InputState::new(),
+            list_scroll: 0,
+        }
+    }
+}
+
+/// SQL Tab 状态
+#[derive(Debug, Clone)]
+pub struct SqlTabState {
+    pub sql: InputState,
+    pub schema: InputState,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+    pub list_scroll: usize,
+    pub focus_sql: bool,
+}
+
+impl Default for SqlTabState {
+    fn default() -> Self {
+        Self {
+            sql: InputState::with_value("SELECT 1"),
+            schema: InputState::with_value("sys"),
+            columns: Vec::new(),
+            rows: Vec::new(),
+            list_scroll: 0,
+            focus_sql: true,
+        }
+    }
+}
+
+/// 命令模式状态
+#[derive(Debug, Clone)]
+pub struct CommandMode {
+    pub active: bool,
+    pub input: InputState,
+}
+
+impl Default for CommandMode {
+    fn default() -> Self {
+        Self {
+            active: false,
+            input: InputState::new(),
+        }
+    }
+}
+
+/// 全局 App 状态
+pub struct App {
+    pub clients: Option<GrpcClients>,
+    pub current_tab: Tab,
+    pub host: String,
+    pub username: String,
+    pub password: String,
+    pub logged_in: bool,
+    pub status_message: String,
+    pub status_is_error: bool,
+    pub should_quit: bool,
+    pub image_tab: ImageTabState,
+    pub face_tab: FaceTabState,
+    pub vector_tab: VectorTabState,
+    pub sql_tab: SqlTabState,
+    pub command_mode: CommandMode,
+}
+
+impl App {
+    pub fn new(host: String, username: String, password: String) -> Self {
+        Self {
+            clients: None,
+            current_tab: Tab::Image,
+            host,
+            username,
+            password,
+            logged_in: false,
+            status_message: "ltool - LaoflchDB TUI 客户端，按 1/2/3/4 切换 Tab，Ctrl+Q 退出".to_string(),
+            status_is_error: false,
+            should_quit: false,
+            image_tab: ImageTabState::default(),
+            face_tab: FaceTabState::default(),
+            vector_tab: VectorTabState::default(),
+            sql_tab: SqlTabState::default(),
+            command_mode: CommandMode::default(),
+        }
+    }
+
+    /// 设置普通状态消息
+    pub fn set_status(&mut self, msg: impl Into<String>) {
+        self.status_message = msg.into();
+        self.status_is_error = false;
+    }
+
+    /// 设置错误状态消息
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        self.status_message = msg.into();
+        self.status_is_error = true;
+    }
+
+    /// 切换到下一个 Tab（Tab 键）
+    pub fn next_tab(&mut self) {
+        self.current_tab = match self.current_tab {
+            Tab::Image => Tab::Face,
+            Tab::Face => Tab::Vector,
+            Tab::Vector => Tab::Sql,
+            Tab::Sql => Tab::Image,
+        };
+    }
+
+    /// 切换到上一个 Tab（Shift+Tab）
+    pub fn prev_tab(&mut self) {
+        self.current_tab = match self.current_tab {
+            Tab::Image => Tab::Sql,
+            Tab::Face => Tab::Image,
+            Tab::Vector => Tab::Face,
+            Tab::Sql => Tab::Vector,
+        };
+    }
+
+    /// 进入命令模式
+    pub fn enter_command(&mut self) {
+        self.command_mode.active = true;
+        self.command_mode.input = InputState::new();
+    }
+
+    /// 退出命令模式
+    pub fn exit_command(&mut self) {
+        self.command_mode.active = false;
+    }
+
+    /// 检查是否已登录，未登录则设置状态提示并返回 false
+    pub fn require_login(&mut self) -> bool {
+        if self.logged_in {
+            true
+        } else {
+            self.set_error("请先登录（输入 :login 用户名 密码）");
+            false
+        }
+    }
+}
