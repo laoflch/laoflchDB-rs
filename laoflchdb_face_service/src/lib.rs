@@ -179,7 +179,26 @@ impl FaceServiceImpl {
 
         info!("加载 SCRFD 模型: {}", model_path.display());
         match candle_onnx::read_file(&model_path) {
-            Ok(model) => {
+            Ok(mut model) => {
+                // 预处理 Resize 算子：清空冲突的 scales 输入（保留 sizes）
+                // ONNX Resize 输入顺序: [X, roi, scales, sizes]
+                // SCRFD 模型中 scales 和 roi 用了同一个 initializer，导致 candle-onnx 报错
+                // 解决：将 scales 输入（第 3 个，index=2）设为空字符串
+                if let Some(ref mut graph) = model.graph.as_mut() {
+                    let mut fixed = 0;
+                    for node in &mut graph.node {
+                        if node.op_type == "Resize" && node.input.len() >= 4 {
+                            // input[2] 是 scales，清空它让 candle-onnx 忽略
+                            if !node.input[2].is_empty() {
+                                node.input[2] = String::new();
+                                fixed += 1;
+                            }
+                        }
+                    }
+                    if fixed > 0 {
+                        info!("SCRFD 模型预处理: 修复了 {} 个 Resize 节点的 scales/sizes 冲突", fixed);
+                    }
+                }
                 info!("SCRFD 模型加载成功");
                 Some(ScrfdModel {
                     model,
@@ -320,17 +339,17 @@ impl ScrfdModel {
         let mut all_faces = Vec::new();
 
         // 按输出顺序解析（3 个尺度）
-        let output_names: Vec<&String> = outputs.keys().collect();
         let mut sorted_outputs: Vec<(&String, &Tensor)> = outputs.iter().collect();
         sorted_outputs.sort_by(|a, b| a.0.cmp(b.0));
 
-        // SCRFD 有 9 个输出：3 个 score + 3 个 bbox + 3 个 kps
-        // 按 stride 8/16/32 分组
+        // SCRFD 有 9 个输出，按 stride 分组：每组 3 个 (score, bbox, kps)
+        // 模型实际输出顺序（按名称排序后）：[s8_score, s8_bbox, s8_kps, s16_score, s16_bbox, s16_kps, s32_score, s32_bbox, s32_kps]
+        // 因此连续 3 个为一组，而不是 i, i+3, i+6
         let strides = [8u32, 16, 32];
         for (i, &stride) in strides.iter().enumerate() {
-            let score_idx = i;
-            let bbox_idx = i + 3;
-            let kps_idx = i + 6;
+            let score_idx = i * 3;
+            let bbox_idx = i * 3 + 1;
+            let kps_idx = i * 3 + 2;
 
             if sorted_outputs.len() < 9 {
                 break;
@@ -457,23 +476,53 @@ impl ScrfdModel {
             Status::internal(format!("kps tensor 转换失败: {}", e))
         })?;
 
+        // SCRFD 输出维度可能为 [num_anchors, 1] (2D) 或 [batch, num_anchors, 1] (3D)
+        // 这里统一 flatten 到 1D 处理
         let score_dims = score_tensor.dims();
-        let num_anchors = score_dims.get(1).copied().unwrap_or(0);
+        let num_anchors = if score_dims.len() >= 2 {
+            score_dims[score_dims.len() - 2]
+        } else {
+            score_dims.first().copied().unwrap_or(0)
+        };
 
+        // 将 score_tensor flatten 到 1D: [num_anchors * 1] → [num_anchors]
         let scores = score_tensor
+            .flatten_all()
+            .map_err(|e| Status::internal(format!("score flatten 失败: {}", e)))?
             .to_vec1::<f32>()
             .map_err(|e| Status::internal(format!("score 提取失败: {}", e)))?;
-        let bboxes = bbox_tensor
-            .to_vec2::<f32>()
-            .map_err(|e| Status::internal(format!("bbox 提取失败: {}", e)))?;
-        let kps = kps_tensor
-            .to_vec2::<f32>()
-            .map_err(|e| Status::internal(format!("kps 提取失败: {}", e)))?;
+        // bbox/kps 可能是 2D [num_anchors, 4/10] 或 3D [batch, num_anchors, 4/10]
+        // 去掉 batch 维度（如果有）
+        let bboxes = if bbox_tensor.dims().len() == 3 {
+            bbox_tensor
+                .squeeze(0)
+                .map_err(|e| Status::internal(format!("bbox squeeze 失败: {}", e)))?
+                .to_vec2::<f32>()
+                .map_err(|e| Status::internal(format!("bbox 提取失败: {}", e)))?
+        } else {
+            bbox_tensor
+                .to_vec2::<f32>()
+                .map_err(|e| Status::internal(format!("bbox 提取失败: {}", e)))?
+        };
+        let kps = if kps_tensor.dims().len() == 3 {
+            kps_tensor
+                .squeeze(0)
+                .map_err(|e| Status::internal(format!("kps squeeze 失败: {}", e)))?
+                .to_vec2::<f32>()
+                .map_err(|e| Status::internal(format!("kps 提取失败: {}", e)))?
+        } else {
+            kps_tensor
+                .to_vec2::<f32>()
+                .map_err(|e| Status::internal(format!("kps 提取失败: {}", e)))?
+        };
 
         let _ = device; // 已转 CPU
 
         // 计算每个 anchor 的中心点
-        let num_cells = input_size / stride;
+        // SCRFD 每个特征图 cell 有 num_anchors_per_pos 个 anchor（默认 2）
+        // num_cells = (input_size / stride)^2，每个 cell 对应 num_anchors_per_pos 个 anchor
+        let num_cells_per_row = input_size / stride;
+        let num_anchors_per_pos = 2u32; // SCRFD 默认每个位置 2 个 anchor
         let mut faces = Vec::new();
 
         for i in 0..num_anchors {
@@ -487,8 +536,10 @@ impl ScrfdModel {
             if row.len() < 4 {
                 continue;
             }
-            let cx = (i as u32 % num_cells) as f32 * stride as f32 + stride as f32 / 2.0;
-            let cy = (i as u32 / num_cells) as f32 * stride as f32 + stride as f32 / 2.0;
+            // 每个 cell 有 num_anchors_per_pos 个 anchor，所以 cell_idx = i / num_anchors_per_pos
+            let cell_idx = i as u32 / num_anchors_per_pos;
+            let cx = (cell_idx % num_cells_per_row) as f32 * stride as f32 + stride as f32 / 2.0;
+            let cy = (cell_idx / num_cells_per_row) as f32 * stride as f32 + stride as f32 / 2.0;
 
             // 解码 bbox（距离 → 绝对坐标）
             let x1 = cx - row[0] * stride as f32;
@@ -559,7 +610,10 @@ impl ArcfaceModel {
             .to_device(&Device::Cpu)
             .map_err(|e| Status::internal(format!("embedding tensor 转换失败: {}", e)))?;
 
+        // ArcFace 输出维度可能是 [1, 512] (2D) 或 [512] (1D)，统一 flatten 到 1D
         let embedding = embedding_tensor
+            .flatten_all()
+            .map_err(|e| Status::internal(format!("embedding flatten 失败: {}", e)))?
             .to_vec1::<f32>()
             .map_err(|e| Status::internal(format!("embedding 提取失败: {}", e)))?;
 

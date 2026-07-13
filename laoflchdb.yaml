@@ -37,8 +37,8 @@ image_service:
 face_service:
   enabled: true
   model_dir: ./laoflch_db_model
-  scrfd_model_file: scrfd_2.5g.onnx
-  arcface_model_file: arcface_r100.onnx
+  scrfd_model_file: scrfd_10g.onnx
+  arcface_model_file: arcface_w600k_r50.onnx
   det_threshold: 0.5
   max_faces: 0
 

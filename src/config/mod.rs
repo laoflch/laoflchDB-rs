@@ -265,11 +265,11 @@ fn default_face_model_dir() -> String {
 }
 
 fn default_scrfd_model_file() -> String {
-    "scrfd_2.5g.onnx".to_string()
+    "scrfd_10g.onnx".to_string()
 }
 
 fn default_arcface_model_file() -> String {
-    "arcface_r100.onnx".to_string()
+    "arcface_w600k_r50.onnx".to_string()
 }
 
 fn default_det_threshold() -> f32 {
