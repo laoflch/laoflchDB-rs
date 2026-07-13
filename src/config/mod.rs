@@ -211,6 +211,8 @@ pub struct DatabaseConfig {
     pub object_store: Option<ObjectStoreConfig>,
     #[serde(default)]
     pub image_service: Option<ImageServiceConfig>,
+    #[serde(default)]
+    pub face_service: Option<FaceServiceConfig>,
 }
 
 /// 对象存储服务配置（S3 兼容）
@@ -233,6 +235,45 @@ pub struct ImageServiceConfig {
     /// 默认 bucket 名称
     #[serde(default = "default_image_bucket")]
     pub default_bucket: String,
+}
+
+/// 人脸服务配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct FaceServiceConfig {
+    /// 是否启用（必须同时启用 image_service）
+    #[serde(default)]
+    pub enabled: bool,
+    /// 模型根目录（SCRFD 和 ArcFace 的 ONNX 模型应位于此目录下）
+    #[serde(default = "default_face_model_dir")]
+    pub model_dir: String,
+    /// SCRFD 模型文件名（相对 model_dir）
+    #[serde(default = "default_scrfd_model_file")]
+    pub scrfd_model_file: String,
+    /// ArcFace 模型文件名（相对 model_dir）
+    #[serde(default = "default_arcface_model_file")]
+    pub arcface_model_file: String,
+    /// 默认检测阈值（0~1）
+    #[serde(default = "default_det_threshold")]
+    pub det_threshold: f32,
+    /// 默认最大检测人脸数（0=不限）
+    #[serde(default)]
+    pub max_faces: i32,
+}
+
+fn default_face_model_dir() -> String {
+    "./laoflch_db_model".to_string()
+}
+
+fn default_scrfd_model_file() -> String {
+    "scrfd_2.5g.onnx".to_string()
+}
+
+fn default_arcface_model_file() -> String {
+    "arcface_r100.onnx".to_string()
+}
+
+fn default_det_threshold() -> f32 {
+    0.5
 }
 
 fn default_image_bucket() -> String {
@@ -304,6 +345,7 @@ impl DatabaseConfig {
             embedding_index: None,
             object_store: None,
             image_service: None,
+            face_service: None,
         }
     }
 

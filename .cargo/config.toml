@@ -1,2 +1,2 @@
 [env]
-CUDAHOSTCXX = "/usr/bin/g++-10"
+CUDAHOSTCXX = "/usr/bin/g++-9"

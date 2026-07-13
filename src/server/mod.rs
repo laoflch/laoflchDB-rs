@@ -142,6 +142,35 @@ impl LaoflchDBServer {
                 None
             }
         };
+
+        // 创建人脸服务（如果配置启用）
+        let face_service = match (&config.face_service, &image_service) {
+            (Some(face_cfg), Some(img_svc)) if face_cfg.enabled => {
+                let face_config = laoflchdb_face_service::FaceServiceConfig {
+                    enabled: true,
+                    model_dir: face_cfg.model_dir.clone(),
+                    scrfd_model_file: face_cfg.scrfd_model_file.clone(),
+                    arcface_model_file: face_cfg.arcface_model_file.clone(),
+                    det_threshold: face_cfg.det_threshold,
+                    max_faces: face_cfg.max_faces,
+                };
+                let face_svc = laoflchdb_face_service::FaceServiceImpl::new(
+                    face_config,
+                    Some(img_svc.clone()),
+                );
+                info!("人脸服务已启动");
+                Some(Arc::new(face_svc))
+            }
+            (Some(face_cfg), _) if face_cfg.enabled => {
+                log::warn!("人脸服务已启用但图片服务未启用，人脸服务需要图片服务支持保存对齐人脸图片，将不启动人脸服务");
+                None
+            }
+            _ => {
+                info!("人脸服务未启用");
+                None
+            }
+        };
+
             let object_store_service = object_store_service.clone();
 
         if config.access_protocols.is_empty() {
@@ -157,7 +186,7 @@ impl LaoflchDBServer {
             let grpc_service: crate::GrpcService = self.access_service.get_grpc_service(None);
 
             tokio::spawn(async move {
-                if let Err(e) = start_grpc_server(grpc_service, vector_service, embedding_service, object_store_service, image_service, &addr).await {
+                if let Err(e) = start_grpc_server(grpc_service, vector_service, embedding_service, object_store_service, image_service, face_service, &addr).await {
                     log::error!("gRPC 服务错误: {}", e);
                 }
             });
@@ -187,9 +216,10 @@ impl LaoflchDBServer {
 
                         let object_store_service_clone = object_store_service.clone();
                         let image_service_clone = image_service.clone();
+                        let face_service_clone = face_service.clone();
 
                         tokio::spawn(async move {
-                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, embedding_service_clone, object_store_service_clone, image_service_clone, &addr_owned).await {
+                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, embedding_service_clone, object_store_service_clone, image_service_clone, face_service_clone, &addr_owned).await {
                                 log::error!("gRPC 服务错误: {}", e);
                             }
                         });
@@ -207,6 +237,11 @@ impl LaoflchDBServer {
                         if let Some(ref img_svc) = image_service {
                             let img_router = laoflchdb_image_service::create_rest_router(img_svc.clone());
                             rest_service = rest_service.with_image_router(img_router);
+                        }
+                        // 如果人脸服务已启用，创建并挂载其 REST 路由
+                        if let Some(ref face_svc) = face_service {
+                            let face_router = laoflchdb_face_service::create_rest_router(face_svc.clone());
+                            rest_service = rest_service.with_face_router(face_router);
                         }
                         let addr_owned = addr.to_string();
 
@@ -246,6 +281,7 @@ async fn start_grpc_server(
     embedding_service: Option<std::sync::Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
     object_store_service: Option<std::sync::Arc<laoflchdb_object_store_service::ObjectStoreServiceImpl>>,
     image_service: Option<std::sync::Arc<laoflchdb_image_service::ImageServiceImpl>>,
+    face_service: Option<std::sync::Arc<laoflchdb_face_service::FaceServiceImpl>>,
     addr: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tonic::transport::Server;
@@ -254,6 +290,7 @@ async fn start_grpc_server(
     use laoflchdb_embedding_service::proto::embedding_index_service_server::EmbeddingIndexServiceServer;
     use laoflchdb_object_store_service::proto::object_store_service_server::ObjectStoreServiceServer;
     use laoflchdb_image_service::proto::image_service_server::ImageServiceServer;
+    use laoflchdb_face_service::proto::face_service_server::FaceServiceServer;
 
     let addr_copy = addr.to_string();
     info!("gRPC 服务监听: {}", addr_copy);
@@ -275,6 +312,11 @@ async fn start_grpc_server(
     // 如果有图片服务配置，则注册
     if let Some(image) = image_service {
         server = server.add_service(ImageServiceServer::new(image));
+    }
+
+    // 如果有 face 服务配置，则注册
+    if let Some(face) = face_service {
+        server = server.add_service(FaceServiceServer::new(face));
     }
 
     server.serve(addr_copy.parse()?).await?;

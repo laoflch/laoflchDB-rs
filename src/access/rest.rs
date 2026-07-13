@@ -26,6 +26,7 @@ pub struct RestService {
     token_manager: Arc<TokenManager>,
     object_store_router: Option<axum::Router>,
     image_router: Option<axum::Router>,
+    face_router: Option<axum::Router>,
 }
 
 impl RestService {
@@ -38,6 +39,7 @@ impl RestService {
             token_manager: Arc::new(TokenManager::default()),
             object_store_router: None,
             image_router: None,
+            face_router: None,
         }
     }
 
@@ -50,6 +52,7 @@ impl RestService {
             token_manager: Arc::new(TokenManager::default()),
             object_store_router: None,
             image_router: None,
+            face_router: None,
         }
     }
 
@@ -62,6 +65,7 @@ impl RestService {
             token_manager,
             object_store_router: None,
             image_router: None,
+            face_router: None,
         }
     }
 
@@ -80,6 +84,12 @@ impl RestService {
     /// 设置图片服务 REST Router
     pub fn with_image_router(mut self, router: axum::Router) -> Self {
         self.image_router = Some(router);
+        self
+    }
+
+    /// 设置人脸服务 REST Router
+    pub fn with_face_router(mut self, router: axum::Router) -> Self {
+        self.face_router = Some(router);
         self
     }
 
@@ -148,6 +158,11 @@ impl RestService {
         // 如果设置了图片服务，添加图片服务路由
         if let Some(ref img_router) = self.image_router {
             main_router = main_router.nest("/api/v1/images", img_router.clone());
+        }
+
+        // 如果设置了人脸服务，添加人脸服务路由
+        if let Some(ref face_router) = self.face_router {
+            main_router = main_router.nest("/api/v1/face", face_router.clone());
         }
 
         main_router

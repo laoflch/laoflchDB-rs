@@ -829,6 +829,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "candle-onnx"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c26833f7747d202a47a1678c0fe11ab85c67b765a8aa99335672e4d81407a32"
+dependencies = [
+ "candle-core",
+ "candle-nn",
+ "prost 0.14.3",
+ "prost-build 0.14.3",
+]
+
+[[package]]
 name = "candle-ug"
 version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3397,6 +3409,7 @@ dependencies = [
  "hex",
  "laoflchdb_embedding_service",
  "laoflchdb_engines",
+ "laoflchdb_face_service",
  "laoflchdb_image_service",
  "laoflchdb_index_tantivy_engine",
  "laoflchdb_kv_rocksdb_engine",
@@ -3405,8 +3418,8 @@ dependencies = [
  "laoflchdb_vector_service",
  "log",
  "multi_table_rocksdb",
- "prost",
- "prost-build",
+ "prost 0.12.6",
+ "prost-build 0.12.6",
  "protobuf",
  "regex",
  "reqwest",
@@ -3434,7 +3447,7 @@ dependencies = [
  "laoflchdb_engines",
  "laoflchdb_kv_rocksdb_engine",
  "log",
- "prost",
+ "prost 0.12.6",
  "serde",
  "serde_json",
  "tokio",
@@ -3453,13 +3466,35 @@ dependencies = [
  "async-trait",
  "bytes",
  "datafusion",
- "prost",
- "prost-build",
+ "prost 0.12.6",
+ "prost-build 0.12.6",
  "protobuf",
  "protobuf-codegen",
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "laoflchdb_face_service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum 0.7.9",
+ "bytes",
+ "candle-core",
+ "candle-onnx",
+ "image",
+ "laoflchdb_image_service",
+ "laoflchdb_object_store_service",
+ "log",
+ "prost 0.12.6",
+ "serde",
+ "serde_json",
+ "snowflake_me",
+ "tokio",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]
@@ -3471,7 +3506,7 @@ dependencies = [
  "image",
  "laoflchdb_object_store_service",
  "log",
- "prost",
+ "prost 0.12.6",
  "serde",
  "serde_json",
  "snowflake_me",
@@ -3530,7 +3565,7 @@ dependencies = [
  "laoflchdb_engines",
  "laoflchdb_kv_rocksdb_engine",
  "log",
- "prost",
+ "prost 0.12.6",
  "serde",
  "serde_json",
  "tokio",
@@ -3565,7 +3600,7 @@ dependencies = [
  "image",
  "laoflchdb_engines",
  "log",
- "prost",
+ "prost 0.12.6",
  "serde",
  "serde_json",
  "tokenizers",
@@ -4503,7 +4538,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "deb1435c188b76130da55f17a466d252ff7b1418b2ad3e037d127b94e3411f29"
 dependencies = [
  "bytes",
- "prost-derive",
+ "prost-derive 0.12.6",
+]
+
+[[package]]
+name = "prost"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2ea70524a2f82d518bce41317d0fae74151505651af45faf1ffbd6fd33f0568"
+dependencies = [
+ "bytes",
+ "prost-derive 0.14.3",
 ]
 
 [[package]]
@@ -4520,8 +4565,27 @@ dependencies = [
  "once_cell",
  "petgraph 0.6.5",
  "prettyplease",
- "prost",
- "prost-types",
+ "prost 0.12.6",
+ "prost-types 0.12.6",
+ "regex",
+ "syn",
+ "tempfile",
+]
+
+[[package]]
+name = "prost-build"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
+dependencies = [
+ "heck",
+ "itertools 0.14.0",
+ "log",
+ "multimap",
+ "petgraph 0.8.3",
+ "prettyplease",
+ "prost 0.14.3",
+ "prost-types 0.14.3",
  "regex",
  "syn",
  "tempfile",
@@ -4541,12 +4605,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "prost-derive"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
+dependencies = [
+ "anyhow",
+ "itertools 0.14.0",
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "prost-types"
 version = "0.12.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9091c90b0a32608e984ff2fa4091273cbdd755d54935c51d520887f4a1dbd5b0"
 dependencies = [
- "prost",
+ "prost 0.12.6",
+]
+
+[[package]]
+name = "prost-types"
+version = "0.14.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8991c4cbdb8bc5b11f0b074ffe286c30e523de90fee5ba8132f1399f23cb3dd7"
+dependencies = [
+ "prost 0.14.3",
 ]
 
 [[package]]
@@ -5963,7 +6049,7 @@ dependencies = [
  "hyper-timeout",
  "percent-encoding",
  "pin-project",
- "prost",
+ "prost 0.12.6",
  "tokio",
  "tokio-stream",
  "tower 0.4.13",
@@ -5980,7 +6066,7 @@ checksum = "be4ef6dd70a610078cb4e338a0f79d06bc759ff1b22d2120c2ff02ae264ba9c2"
 dependencies = [
  "prettyplease",
  "proc-macro2",
- "prost-build",
+ "prost-build 0.12.6",
  "quote",
  "syn",
 ]

@@ -128,6 +128,11 @@ impl ImageServiceImpl {
         }
     }
 
+    /// 返回默认 bucket 名称
+    pub fn default_bucket(&self) -> String {
+        self.config.default_bucket.clone()
+    }
+
     /// 确保 bucket 存在
     async fn ensure_bucket(&self, bucket: &str) -> Result<(), Status> {
         let req = Request::new(CreateBucketRequest {

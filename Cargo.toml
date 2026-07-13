@@ -21,6 +21,7 @@ members = [
     "laoflchdb_embedding_service",
     "laoflchdb_object_store_service",
     "laoflchdb_image_service",
+    "laoflchdb_face_service",
 ]
 
 [dependencies]
@@ -33,6 +34,7 @@ laoflchdb_kv_rocksdb_engine = { path = "./laoflchdb_kv_rocksdb_engine" }
 laoflchdb_embedding_service = { path = "./laoflchdb_embedding_service" }
 laoflchdb_object_store_service = { path = "./laoflchdb_object_store_service" }
 laoflchdb_image_service = { path = "./laoflchdb_image_service" }
+laoflchdb_face_service = { path = "./laoflchdb_face_service" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}
 prost = "0.12"
 protobuf = "3.7"
@@ -61,7 +63,7 @@ prost-build = "0.12"
 tonic-build = "0.11"
 
 [features]
-cuda = ["laoflchdb_vector_service/cuda"]
+cuda = ["laoflchdb_vector_service/cuda", "laoflchdb_face_service/cuda"]
 
 [dev-dependencies]
 reqwest = { version = "0.11", features = ["json"] }

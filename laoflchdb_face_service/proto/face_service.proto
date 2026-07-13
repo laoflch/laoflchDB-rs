@@ -1,0 +1,123 @@
+syntax = "proto3";
+
+package laoflchdb.face_service;
+
+// 人脸服务 - 基于 SCRFD 人脸检测 + 5 关键点仿射对齐 + ArcFace 特征提取
+// 支持从图片中检测人脸、对齐裁剪 112x112、提取 512 维 L2 归一化特征
+// 可选通过 image_service 保存对齐后的人脸图片
+service FaceService {
+  // 检测人脸：从图片中检测所有人脸，返回人脸框和 5 个关键点
+  rpc DetectFaces(DetectFacesRequest) returns (DetectFacesResponse);
+
+  // 提取人脸特征：检测人脸 → 对齐裁剪 112x112 → ArcFace 提取 512 维特征 → L2 归一化
+  // 可选保存对齐后的人脸图片到 image_service
+  rpc ExtractFaceFeatures(ExtractFaceFeaturesRequest) returns (ExtractFaceFeaturesResponse);
+
+  // 对已对齐的 112x112 人脸图片直接提取特征（跳过检测和对齐）
+  rpc ExtractFeatureFromAligned(ExtractFeatureFromAlignedRequest) returns (ExtractFeatureFromAlignedResponse);
+
+  // 比较两个人脸特征向量的相似度（余弦相似度）
+  rpc CompareFeatures(CompareFeaturesRequest) returns (CompareFeaturesResponse);
+}
+
+// ── DetectFaces ────────────────────────────
+
+message DetectFacesRequest {
+  // 图片二进制数据（支持 JPEG/PNG 等常见格式）
+  bytes image_data = 1;
+  // 检测阈值（0~1，默认 0.5，越高越严格）
+  float det_threshold = 2;
+  // 最大检测人脸数量（0=不限，默认 0）
+  int32 max_faces = 3;
+}
+
+// 人脸检测结果
+message DetectedFace {
+  // 人脸边界框 [x1, y1, x2, y2]（原图像素坐标）
+  repeated float bbox = 1;
+  // 置信度（0~1）
+  float score = 2;
+  // 5 个关键点 [x, y] 共 10 个值，顺序：左眼、右眼、鼻尖、左嘴角、右嘴角
+  repeated float landmarks = 3;
+}
+
+message DetectFacesResponse {
+  bool success = 1;
+  string message = 2;
+  repeated DetectedFace faces = 3;
+  // 原图宽度
+  int32 image_width = 4;
+  // 原图高度
+  int32 image_height = 5;
+}
+
+// ── ExtractFaceFeatures ────────────────────────────
+
+message ExtractFaceFeaturesRequest {
+  // 图片二进制数据
+  bytes image_data = 1;
+  // 检测阈值（0~1，默认 0.5）
+  float det_threshold = 2;
+  // 最大检测人脸数量（0=不限，默认 0 表示检测所有）
+  int32 max_faces = 3;
+  // 是否保存对齐后的人脸图片到 image_service
+  bool save_aligned_images = 4;
+  // 保存人脸图片使用的 bucket（仅当 save_aligned_images=true 时有效，留空则用 image_service 默认 bucket）
+  string image_bucket = 5;
+  // 是否返回对齐后的人脸图片数据（默认 false 以节省带宽）
+  bool return_aligned_images = 6;
+}
+
+// 人脸特征提取结果
+message FaceFeature {
+  // 对应的人脸检测结果
+  DetectedFace detection = 1;
+  // 512 维 L2 归一化特征向量
+  repeated float embedding = 2;
+  // 对齐后的 112x112 人脸图片（仅当 return_aligned_images=true 时填充）
+  bytes aligned_image = 3;
+  // 对齐图片在 image_service 中的 key（仅当 save_aligned_images=true 时填充）
+  string saved_image_key = 4;
+  // 对齐图片所在 bucket（仅当 save_aligned_images=true 时填充）
+  string saved_image_bucket = 5;
+}
+
+message ExtractFaceFeaturesResponse {
+  bool success = 1;
+  string message = 2;
+  repeated FaceFeature faces = 3;
+  int32 image_width = 4;
+  int32 image_height = 5;
+}
+
+// ── ExtractFeatureFromAligned ────────────────────────────
+
+message ExtractFeatureFromAlignedRequest {
+  // 已对齐的 112x112 人脸图片二进制数据
+  bytes aligned_image_data = 1;
+}
+
+message ExtractFeatureFromAlignedResponse {
+  bool success = 1;
+  string message = 2;
+  // 512 维 L2 归一化特征向量
+  repeated float embedding = 3;
+}
+
+// ── CompareFeatures ────────────────────────────
+
+message CompareFeaturesRequest {
+  // 第一个人脸特征向量（512 维）
+  repeated float feature1 = 1;
+  // 第二个人脸特征向量（512 维）
+  repeated float feature2 = 2;
+}
+
+message CompareFeaturesResponse {
+  bool success = 1;
+  string message = 2;
+  // 余弦相似度（-1~1，1 表示完全相同）
+  float similarity = 3;
+  // 是否同一人（similarity >= 0.5 视为同一人）
+  bool is_same_person = 4;
+}
