@@ -95,6 +95,8 @@ pub struct FaceServiceImpl {
     config: FaceServiceConfig,
     /// 图片服务（可选，用于保存对齐后的人脸图片）
     image_service: Option<Arc<laoflchdb_image_service::ImageServiceImpl>>,
+    /// 向量索引服务（可选，用于把人脸特征向量写入 HNSW 索引）
+    embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
     /// Snowflake ID 生成器（用于保存人脸图片时生成 key）
     snowflake: Mutex<Snowflake>,
 }
@@ -104,9 +106,11 @@ impl FaceServiceImpl {
     ///
     /// - `config`: 服务配置（model_dir 下应包含 SCRFD 和 ArcFace 的 ONNX 模型文件）
     /// - `image_service`: 可选的图片服务实例，用于保存对齐后的人脸图片
+    /// - `embedding_service`: 可选的向量索引服务实例，用于把人脸特征向量写入 HNSW 索引
     pub fn new(
         config: FaceServiceConfig,
         image_service: Option<Arc<laoflchdb_image_service::ImageServiceImpl>>,
+        embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
     ) -> Self {
         let device = Self::detect_device();
 
@@ -137,6 +141,7 @@ impl FaceServiceImpl {
             device,
             config,
             image_service,
+            embedding_service,
             snowflake: Mutex::new(snowflake),
         }
     }
@@ -250,8 +255,8 @@ impl FaceServiceImpl {
     }
 
     /// 生成基于 Snowflake 的唯一 key
-    fn generate_face_key(&self) -> String {
-        let id = match self.snowflake.lock() {
+    fn generate_face_key(&self) -> u64 {
+        match self.snowflake.lock() {
             Ok(guard) => guard.next_id().unwrap_or_else(|_| {
                 warn!("Snowflake next_id 失败，回退到毫秒时间戳");
                 std::time::SystemTime::now()
@@ -266,8 +271,7 @@ impl FaceServiceImpl {
                     .unwrap_or_default()
                     .as_millis() as u64
             }
-        };
-        format!("{}", id)
+        }
     }
 
     /// 解码图片二进制为 DynamicImage
@@ -277,9 +281,10 @@ impl FaceServiceImpl {
         })
     }
 
-    /// 生成人脸图片保存的 key
-    fn make_face_image_key(&self) -> String {
-        format!("face_{}", self.generate_face_key())
+    /// 生成人脸图片保存的 key（基于 Snowflake ID，同时返回 ID 用于向量索引）
+    fn make_face_image_key(&self) -> (String, u64) {
+        let id = self.generate_face_key();
+        (format!("face_{}", id), id)
     }
 }
 
@@ -970,30 +975,52 @@ impl FaceService for FaceServiceImpl {
         let mut face_features = Vec::with_capacity(detected_and_embeddings.len());
         for (face_info, aligned, embedding) in &detected_and_embeddings {
             // 4. 可选：保存对齐后的人脸图片到 image_service
-            let (saved_key, saved_bucket) = if req.save_aligned_images {
+            // 当 index_embedding=true 时，向量 ID 复用图片的 Snowflake ID，所以即使不保存图片也要生成 ID
+            let (saved_key, saved_bucket, face_id) = if req.save_aligned_images {
                 if let Some(ref img_svc) = self.image_service {
-                    let key = self.make_face_image_key();
+                    let (key, id) = self.make_face_image_key();
                     let bucket = if req.image_bucket.is_empty() {
                         img_svc.default_bucket()
                     } else {
                         req.image_bucket.clone()
                     };
                     match save_aligned_to_image_service(img_svc, aligned, &key, &bucket).await {
-                        Ok(_) => (key, bucket),
+                        Ok(_) => (key, bucket, id),
                         Err(e) => {
                             warn!("保存对齐人脸图片失败: {}", e);
-                            (String::new(), String::new())
+                            (String::new(), String::new(), id)
                         }
                     }
                 } else {
                     warn!("请求保存对齐人脸图片但 image_service 未启用");
-                    (String::new(), String::new())
+                    (String::new(), String::new(), 0)
                 }
+            } else if req.index_embedding {
+                // 不保存图片，但需要索引向量：单独生成 ID
+                (String::new(), String::new(), self.generate_face_key())
             } else {
-                (String::new(), String::new())
+                (String::new(), String::new(), 0)
             };
 
-            // 5. 可选：返回对齐图片数据
+            // 5. 可选：把人脸特征向量写入 embedding_service 的 HNSW 索引
+            let indexed_vector_id = if req.index_embedding && face_id > 0 {
+                if let Some(ref emb_svc) = self.embedding_service {
+                    match index_face_embedding(emb_svc, face_id, embedding).await {
+                        Ok(_) => face_id,
+                        Err(e) => {
+                            warn!("向量索引失败 (id={}): {}", face_id, e);
+                            0
+                        }
+                    }
+                } else {
+                    warn!("请求索引向量但 embedding_service 未启用");
+                    0
+                }
+            } else {
+                0
+            };
+
+            // 6. 可选：返回对齐图片数据
             let aligned_bytes = if req.return_aligned_images {
                 let mut buf = std::io::Cursor::new(Vec::new());
                 match aligned.write_to(&mut buf, image::ImageOutputFormat::Jpeg(95)) {
@@ -1017,6 +1044,7 @@ impl FaceService for FaceServiceImpl {
                 aligned_image: aligned_bytes,
                 saved_image_key: saved_key,
                 saved_image_bucket: saved_bucket,
+                indexed_vector_id,
             });
         }
 
@@ -1122,6 +1150,34 @@ async fn save_aligned_to_image_service(
         .map_err(|e| format!("image_service 上传失败: {}", e).into())
 }
 
+/// 把人脸特征向量写入 embedding_service 的 HNSW 索引
+///
+/// - `emb_svc`: 向量索引服务实例
+/// - `id`: 向量唯一 ID（复用图片 Snowflake ID）
+/// - `embedding`: 512 维 L2 归一化特征向量
+/// - `index_name`: 固定为 "face"
+async fn index_face_embedding(
+    emb_svc: &Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>,
+    id: u64,
+    embedding: &[f32],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use laoflchdb_embedding_service::proto::embedding_index_service_server::EmbeddingIndexService;
+    use laoflchdb_embedding_service::proto::InsertEmbeddingRequest;
+
+    let request = tonic::Request::new(InsertEmbeddingRequest {
+        id,
+        index_name: "face".to_string(),
+        embedding: embedding.to_vec(),
+    });
+
+    let resp = emb_svc.insert_embedding(request).await?;
+    let resp = resp.into_inner();
+    if !resp.success {
+        return Err(format!("embedding_service 索引失败: {}", resp.message).into());
+    }
+    Ok(())
+}
+
 // ── REST API ─────────────────────────────────────────────────────
 
 /// 创建 REST API Router
@@ -1206,6 +1262,8 @@ struct ExtractQuery {
     image_bucket: Option<String>,
     #[serde(default)]
     return_aligned_images: Option<bool>,
+    #[serde(default)]
+    index_embedding: Option<bool>,
 }
 
 async fn extract_features_handler(
@@ -1220,6 +1278,7 @@ async fn extract_features_handler(
         save_aligned_images: query.save_aligned_images.unwrap_or(false),
         image_bucket: query.image_bucket.unwrap_or_default(),
         return_aligned_images: query.return_aligned_images.unwrap_or(false),
+        index_embedding: query.index_embedding.unwrap_or(false),
     };
 
     match service
@@ -1242,6 +1301,7 @@ async fn extract_features_handler(
                         "embedding": f.embedding,
                         "saved_image_key": f.saved_image_key,
                         "saved_image_bucket": f.saved_image_bucket,
+                        "indexed_vector_id": f.indexed_vector_id,
                         "has_aligned_image": !f.aligned_image.is_empty(),
                     })
                 }).collect::<Vec<_>>(),

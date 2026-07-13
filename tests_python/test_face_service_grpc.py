@@ -294,6 +294,74 @@ def test_extract_features_with_save():
             return False
 
 
+def test_extract_features_with_index_embedding():
+    """测试提取特征：同时保存图片并索引向量（index_embedding=true）
+
+    验证：
+    - 当检测到人脸时，indexed_vector_id 应为非 0 值（等于图片 Snowflake ID）
+    - 通过 embedding_service 的 GetIndexInfo 能查到 face 索引
+    - 当未检测到人脸时，indexed_vector_id 应为 0
+    """
+    print("[测试] 提取人脸特征 - 同时索引向量 (index_embedding=true)...")
+    img_data = _make_test_image(200, 200)
+    try:
+        req = face_service_pb2.ExtractFaceFeaturesRequest(
+            image_data=img_data,
+            det_threshold=0.5,
+            save_aligned_images=True,
+            image_bucket=TEST_BUCKET,
+            return_aligned_images=False,
+            index_embedding=True,
+        )
+        resp = face_stub.ExtractFaceFeatures(req, metadata=get_metadata())
+        if resp.success and len(resp.faces) > 0:
+            face = resp.faces[0]
+            print(f"    ✓ 提取成功，indexed_vector_id={face.indexed_vector_id}")
+            print(f"      saved_image_key={face.saved_image_key}")
+            # 向量 ID 应为非 0（复用图片 Snowflake ID）
+            assert face.indexed_vector_id > 0, "检测到人脸时 indexed_vector_id 应非 0"
+            # 向量 ID 应与图片 key 中的 Snowflake 一致
+            expected_id = face.saved_image_key.replace("face_", "")
+            assert str(face.indexed_vector_id) == expected_id, \
+                f"向量 ID {face.indexed_vector_id} 应与图片 key {face.saved_image_key} 一致"
+
+            # 通过 embedding_service 验证索引确实存在
+            try:
+                import embedding_pb2
+                import embedding_pb2_grpc
+                emb_channel = grpc.insecure_channel(TEST_ADDR)
+                emb_stub = embedding_pb2_grpc.EmbeddingIndexServiceStub(emb_channel)
+                info_resp = emb_stub.GetIndexInfo(
+                    embedding_pb2.GetIndexInfoRequest(index_name="face"),
+                    metadata=get_metadata(),
+                )
+                if info_resp.success and info_resp.stats:
+                    print(f"    ✓ embedding_service face 索引: "
+                          f"num_elements={info_resp.stats.num_elements}, "
+                          f"dim={info_resp.stats.dim}")
+                    assert info_resp.stats.dim == 512, "维度应为 512"
+                else:
+                    print(f"    ✗ embedding_service 查询失败: {info_resp.message}")
+                    return False
+                emb_channel.close()
+            except ImportError:
+                print("    ⚠ embedding_pb2 未生成，跳过 embedding_service 验证")
+            return True
+        else:
+            # 无人脸时，indexed_vector_id 应为 0
+            print(f"    ✓ 无人脸，跳过索引验证: {resp.message}")
+            if len(resp.faces) == 0:
+                return True
+            return False
+    except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.FAILED_PRECONDITION:
+            print(f"    ✓ 模型未加载，返回 FAILED_PRECONDITION: {e.details()}")
+            return True
+        else:
+            print(f"    ✗ 意外错误: {e.code()} - {e.details()[:100] if e.details() else ''}")
+            return False
+
+
 def test_compare_features_same_vector():
     """测试特征比对：相同向量相似度应为 1.0"""
     print("[测试] 特征比对 - 相同向量...")
@@ -496,6 +564,7 @@ def run_tests():
         ("test_detect_faces_valid_image", test_detect_faces_valid_image),
         ("test_extract_features_valid_image", test_extract_features_valid_image),
         ("test_extract_features_with_save", test_extract_features_with_save),
+        ("test_extract_features_with_index_embedding", test_extract_features_with_index_embedding),
         ("test_compare_features_same_vector", test_compare_features_same_vector),
         ("test_compare_features_different_vectors", test_compare_features_different_vectors),
         ("test_compare_features_orthogonal", test_compare_features_orthogonal),

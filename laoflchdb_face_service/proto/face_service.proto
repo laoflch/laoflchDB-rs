@@ -66,6 +66,9 @@ message ExtractFaceFeaturesRequest {
   string image_bucket = 5;
   // 是否返回对齐后的人脸图片数据（默认 false 以节省带宽）
   bool return_aligned_images = 6;
+  // 是否把人脸特征向量写入 embedding_service 的 HNSW 索引（index_name 固定为 "face"）
+  // 需要配合 save_aligned_images=true 使用，向量 ID 复用图片 Snowflake ID
+  bool index_embedding = 7;
 }
 
 // 人脸特征提取结果
@@ -80,6 +83,8 @@ message FaceFeature {
   string saved_image_key = 4;
   // 对齐图片所在 bucket（仅当 save_aligned_images=true 时填充）
   string saved_image_bucket = 5;
+  // 写入 embedding_service 的向量 ID（仅当 index_embedding=true 且索引成功时填充，0 表示未索引）
+  uint64 indexed_vector_id = 6;
 }
 
 message ExtractFaceFeaturesResponse {

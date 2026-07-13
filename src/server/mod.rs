@@ -157,6 +157,7 @@ impl LaoflchDBServer {
                 let face_svc = laoflchdb_face_service::FaceServiceImpl::new(
                     face_config,
                     Some(img_svc.clone()),
+                    embedding_service.clone(),
                 );
                 info!("人脸服务已启动");
                 Some(Arc::new(face_svc))

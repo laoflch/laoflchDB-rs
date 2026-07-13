@@ -3485,6 +3485,7 @@ dependencies = [
  "candle-core",
  "candle-onnx",
  "image",
+ "laoflchdb_embedding_service",
  "laoflchdb_image_service",
  "laoflchdb_object_store_service",
  "log",
