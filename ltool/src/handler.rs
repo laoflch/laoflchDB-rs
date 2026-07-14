@@ -37,7 +37,7 @@ pub async fn handle_event(app: &mut App, event: KeyEvent) -> bool {
         return true;
     }
 
-    // Tab 切换
+    // Tab 切换（路径补全已改为下拉菜单式，不再占用 Tab 键）
     match event.code {
         KeyCode::Tab => {
             app.next_tab();
@@ -134,7 +134,7 @@ fn execute_command(app: &mut App, cmd: &str) {
         }
         "help" | "?" => {
             app.set_status(
-                "命令: :login <user> <pass> | :quit | :help | 按 1/2/3/4 切换 Tab | Ctrl+Q 退出",
+                "命令: :login <user> <pass> | :quit | :help | 1/2/3/4 切换 Tab | F1-F5 操作 | Ctrl+Q 退出",
             );
         }
         _ => {
@@ -145,27 +145,94 @@ fn execute_command(app: &mut App, cmd: &str) {
 
 /// 处理图片 Tab 的事件
 async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
-    // 快捷键（仅在输入框未激活时也可触发，但我们让字符键同时进入输入框编辑）
+    // 快捷键：仅当焦点在"操作区"（非输入框）时触发。
+    // 但本 Tab 所有焦点都是输入框，所以用 Ctrl 修饰键触发快捷键，避免与字符输入冲突。
+    // 常用操作：Ctrl+U 上传, Ctrl+L 列出, Ctrl+M 元数据, Ctrl+D 删除
+    // 另外支持 F1-F4 作为无修饰快捷键（不会与输入冲突）
     match event.code {
-        KeyCode::Char('u') if event.modifiers.is_empty() => {
-            // 上传：直接触发，不再插入字符
+        KeyCode::Char('u') if event.modifiers.contains(KeyModifiers::CONTROL) => {
             let _ = crate::tab_image::upload_image(app).await;
             return true;
         }
-        KeyCode::Char('l') if event.modifiers.is_empty() => {
+        KeyCode::Char('l') if event.modifiers.contains(KeyModifiers::CONTROL) => {
             let _ = crate::tab_image::list_images(app).await;
             return true;
         }
-        KeyCode::Char('m') if event.modifiers.is_empty() => {
+        KeyCode::Char('m') if event.modifiers.contains(KeyModifiers::CONTROL) => {
             let _ = crate::tab_image::get_metadata(app).await;
             return true;
         }
-        KeyCode::Char('d') if event.modifiers.is_empty() => {
+        KeyCode::Char('d') if event.modifiers.contains(KeyModifiers::CONTROL) => {
             let _ = crate::tab_image::delete_image(app).await;
             return true;
         }
-        KeyCode::Up => {
-            // 切换焦点到上一个输入框
+        KeyCode::F(1) => {
+            let _ = crate::tab_image::upload_image(app).await;
+            return true;
+        }
+        KeyCode::F(2) => {
+            let _ = crate::tab_image::list_images(app).await;
+            return true;
+        }
+        _ => {}
+    }
+
+    // 当焦点在路径输入框且弹窗激活时，Up/Down/Enter/Esc 优先交给弹窗
+    if app.image_tab.focus == ImageFocus::FilePath && app.image_tab.path_popup.is_active() {
+        match event.code {
+            KeyCode::Up => {
+                app.image_tab.path_popup.prev();
+                return true;
+            }
+            KeyCode::Down => {
+                app.image_tab.path_popup.next();
+                return true;
+            }
+            KeyCode::Enter => {
+                if let Some(c) = app.image_tab.path_popup.current() {
+                    let full = c.full_path.clone();
+                    let is_dir = c.is_dir;
+                    app.image_tab.file_path.set_value(&full);
+                    app.image_tab.path_popup.close();
+                    if is_dir {
+                        // 进入目录后自动刷新候选
+                        let cs = crate::path_complete::list_candidates(&full);
+                        app.image_tab.path_popup.open(cs);
+                    } else {
+                        app.set_status(format!("已选择: {}", full));
+                    }
+                } else {
+                    app.image_tab.path_popup.close();
+                }
+                return true;
+            }
+            KeyCode::Esc => {
+                app.image_tab.path_popup.close();
+                app.set_status("已取消路径补全");
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    match event.code {
+        KeyCode::Tab => {
+            // 切换焦点，并关闭弹窗
+            app.image_tab.path_popup.close();
+            app.image_tab.focus = match app.image_tab.focus {
+                ImageFocus::Bucket => ImageFocus::FilePath,
+                ImageFocus::FilePath => ImageFocus::Key,
+                ImageFocus::Key => ImageFocus::Bucket,
+            };
+            // 若新焦点是 FilePath，立即刷新候选
+            if app.image_tab.focus == ImageFocus::FilePath {
+                let cs = crate::path_complete::list_candidates(&app.image_tab.file_path.value);
+                app.image_tab.path_popup.open(cs);
+            }
+            return true;
+        }
+        KeyCode::Up if app.image_tab.focus != ImageFocus::FilePath || !app.image_tab.path_popup.is_active() => {
+            app.image_tab.path_popup.close();
             app.image_tab.focus = match app.image_tab.focus {
                 ImageFocus::Key => ImageFocus::FilePath,
                 ImageFocus::FilePath => ImageFocus::Bucket,
@@ -173,7 +240,8 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
             };
             return true;
         }
-        KeyCode::Down => {
+        KeyCode::Down if app.image_tab.focus != ImageFocus::FilePath || !app.image_tab.path_popup.is_active() => {
+            app.image_tab.path_popup.close();
             app.image_tab.focus = match app.image_tab.focus {
                 ImageFocus::Bucket => ImageFocus::FilePath,
                 ImageFocus::FilePath => ImageFocus::Key,
@@ -200,31 +268,101 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
         ImageFocus::FilePath => &mut app.image_tab.file_path,
         ImageFocus::Key => &mut app.image_tab.key,
     };
-    handle_input_event(input, event)
+    let changed = handle_input_event(input, event);
+    // 若路径输入框内容变化，刷新候选下拉
+    if changed && app.image_tab.focus == ImageFocus::FilePath {
+        let cs = crate::path_complete::list_candidates(&app.image_tab.file_path.value);
+        app.image_tab.path_popup.refresh(cs);
+    }
+    changed
 }
 
 /// 处理人脸 Tab 的事件
 async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
+    // 快捷键用 F1-F5，避免与输入框字符冲突
+    // F1=提取特征, F2=比较特征, F3=清空结果(预留), F4=切换save_aligned, F5=切换index_embedding
     match event.code {
-        KeyCode::Char('e') if event.modifiers.is_empty() => {
+        KeyCode::F(1) => {
             let _ = crate::tab_face::extract_features(app).await;
             return true;
         }
-        KeyCode::Char('c') if event.modifiers.is_empty() => {
+        KeyCode::F(2) => {
             let _ = crate::tab_face::compare_features(app).await;
             return true;
         }
+        KeyCode::F(4) => {
+            app.face_tab.save_aligned_images = !app.face_tab.save_aligned_images;
+            app.set_status(format!(
+                "save_aligned 已{}",
+                if app.face_tab.save_aligned_images { "开启" } else { "关闭" }
+            ));
+            return true;
+        }
+        KeyCode::F(5) => {
+            app.face_tab.index_embedding = !app.face_tab.index_embedding;
+            app.set_status(format!(
+                "index_embedding 已{}",
+                if app.face_tab.index_embedding { "开启" } else { "关闭" }
+            ));
+            return true;
+        }
+        _ => {}
+    }
+
+    // 当焦点在路径输入框且弹窗激活时，Up/Down/Enter/Esc 优先交给弹窗
+    if app.face_tab.focus == FaceFocus::FilePath && app.face_tab.path_popup.is_active() {
+        match event.code {
+            KeyCode::Up => {
+                app.face_tab.path_popup.prev();
+                return true;
+            }
+            KeyCode::Down => {
+                app.face_tab.path_popup.next();
+                return true;
+            }
+            KeyCode::Enter => {
+                if let Some(c) = app.face_tab.path_popup.current() {
+                    let full = c.full_path.clone();
+                    let is_dir = c.is_dir;
+                    app.face_tab.file_path.set_value(&full);
+                    app.face_tab.path_popup.close();
+                    if is_dir {
+                        let cs = crate::path_complete::list_candidates(&full);
+                        app.face_tab.path_popup.open(cs);
+                    } else {
+                        app.set_status(format!("已选择: {}", full));
+                    }
+                } else {
+                    app.face_tab.path_popup.close();
+                }
+                return true;
+            }
+            KeyCode::Esc => {
+                app.face_tab.path_popup.close();
+                app.set_status("已取消路径补全");
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    match event.code {
         KeyCode::Tab => {
-            // 在输入框间切换
+            app.face_tab.path_popup.close();
             app.face_tab.focus = match app.face_tab.focus {
                 FaceFocus::FilePath => FaceFocus::DetThreshold,
                 FaceFocus::DetThreshold => FaceFocus::MaxFaces,
                 FaceFocus::MaxFaces => FaceFocus::Bucket,
                 FaceFocus::Bucket => FaceFocus::FilePath,
             };
+            if app.face_tab.focus == FaceFocus::FilePath {
+                let cs = crate::path_complete::list_candidates(&app.face_tab.file_path.value);
+                app.face_tab.path_popup.open(cs);
+            }
             return true;
         }
-        KeyCode::Up => {
+        KeyCode::Up if app.face_tab.focus != FaceFocus::FilePath || !app.face_tab.path_popup.is_active() => {
+            app.face_tab.path_popup.close();
             app.face_tab.focus = match app.face_tab.focus {
                 FaceFocus::FilePath => FaceFocus::Bucket,
                 FaceFocus::DetThreshold => FaceFocus::FilePath,
@@ -233,7 +371,8 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
             };
             return true;
         }
-        KeyCode::Down => {
+        KeyCode::Down if app.face_tab.focus != FaceFocus::FilePath || !app.face_tab.path_popup.is_active() => {
+            app.face_tab.path_popup.close();
             app.face_tab.focus = match app.face_tab.focus {
                 FaceFocus::FilePath => FaceFocus::DetThreshold,
                 FaceFocus::DetThreshold => FaceFocus::MaxFaces,
@@ -262,21 +401,28 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         FaceFocus::MaxFaces => &mut app.face_tab.max_faces,
         FaceFocus::Bucket => &mut app.face_tab.bucket,
     };
-    handle_input_event(input, event)
+    let changed = handle_input_event(input, event);
+    if changed && app.face_tab.focus == FaceFocus::FilePath {
+        let cs = crate::path_complete::list_candidates(&app.face_tab.file_path.value);
+        app.face_tab.path_popup.refresh(cs);
+    }
+    changed
 }
 
 /// 处理向量 Tab 的事件
 async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
+    // 快捷键用 F1/F2/F3，避免与输入框字符冲突
+    // F1=索引信息, F2=搜索, F3=删除
     match event.code {
-        KeyCode::Char('i') if event.modifiers.is_empty() => {
+        KeyCode::F(1) => {
             let _ = crate::tab_vector::get_index_info(app).await;
             return true;
         }
-        KeyCode::Char('s') if event.modifiers.is_empty() => {
+        KeyCode::F(2) => {
             let _ = crate::tab_vector::search(app).await;
             return true;
         }
-        KeyCode::Char('d') if event.modifiers.is_empty() => {
+        KeyCode::F(3) => {
             let _ = crate::tab_vector::delete_embedding(app).await;
             return true;
         }

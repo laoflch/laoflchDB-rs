@@ -5,10 +5,10 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table};
 use ratatui::Frame;
 
-use crate::app::{App, ImageFocus, Tab};
+use crate::app::{App, ImageFocus, PathPopup, Tab};
 
 /// 主渲染入口
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -98,6 +98,14 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
         format!("[{}] ", app.current_tab.title()),
         Style::default().fg(Color::Yellow),
     );
+    // 当前 Tab 的快捷键提示
+    let help_text = match app.current_tab {
+        Tab::Image => "F1上传 F2列出 ↑↓选路径 Enter确认 Esc取消 | ",
+        Tab::Face => "F1提取 F2比较 F4保存 F5索引 ↑↓选路径 Enter确认 Esc取消 | ",
+        Tab::Vector => "F1索引信息 F2搜索 F3删除 | ",
+        Tab::Sql => "F5执行 Ctrl+L清空 | ",
+    };
+    let help_span = Span::styled(help_text, Style::default().fg(Color::DarkGray));
     let msg_color = if app.status_is_error {
         Color::Red
     } else {
@@ -105,7 +113,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let msg_span = Span::styled(&app.status_message, Style::default().fg(msg_color));
 
-    let line = Line::from(vec![login_span, conn_span, tab_span, msg_span]);
+    let line = Line::from(vec![login_span, conn_span, tab_span, help_span, msg_span]);
     let block = Block::default().borders(Borders::ALL);
     let p = Paragraph::new(line).block(block);
     f.render_widget(p, area);
@@ -136,9 +144,10 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) {
         &app.image_tab.bucket,
         app.image_tab.focus == ImageFocus::Bucket,
     );
+    let path_area = input_chunks[1];
     draw_input_box(
         f,
-        input_chunks[1],
+        path_area,
         "本地文件路径",
         &app.image_tab.file_path,
         app.image_tab.focus == ImageFocus::FilePath,
@@ -150,6 +159,11 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) {
         &app.image_tab.key,
         app.image_tab.focus == ImageFocus::Key,
     );
+
+    // 路径补全下拉菜单
+    if app.image_tab.path_popup.is_active() {
+        draw_path_popup(f, &app.image_tab.path_popup, path_area);
+    }
 
     // 下半部：结果区
     let result_area = chunks[1];
@@ -208,9 +222,15 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Length(40), Constraint::Length(15), Constraint::Length(15)])
         .split(chunks[0]);
 
-    draw_input_box(f, row1[0], "本地图片路径", &app.face_tab.file_path, app.face_tab.focus == FaceFocus::FilePath);
+    let path_area = row1[0];
+    draw_input_box(f, path_area, "本地图片路径", &app.face_tab.file_path, app.face_tab.focus == FaceFocus::FilePath);
     draw_input_box(f, row1[1], "det_threshold", &app.face_tab.det_threshold, app.face_tab.focus == FaceFocus::DetThreshold);
     draw_input_box(f, row1[2], "max_faces", &app.face_tab.max_faces, app.face_tab.focus == FaceFocus::MaxFaces);
+
+    // 路径补全下拉菜单
+    if app.face_tab.path_popup.is_active() {
+        draw_path_popup(f, &app.face_tab.path_popup, path_area);
+    }
 
     // 第二行：bucket + 复选框提示
     let row2 = Layout::default()
@@ -224,12 +244,12 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) {
     draw_input_box(f, row2[0], "bucket", &app.face_tab.bucket, app.face_tab.focus == FaceFocus::Bucket);
 
     let save_str = if app.face_tab.save_aligned_images { "[x]" } else { "[ ]" };
-    let p1 = Paragraph::new(format!("{} save_aligned (按 s 切换)", save_str))
+    let p1 = Paragraph::new(format!("{} save_aligned (F4 切换)", save_str))
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(p1, row2[1]);
 
     let idx_str = if app.face_tab.index_embedding { "[x]" } else { "[ ]" };
-    let p2 = Paragraph::new(format!("{} index_embedding (按 v 切换)", idx_str))
+    let p2 = Paragraph::new(format!("{} index_embedding (F5 切换)", idx_str))
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(p2, row2[2]);
 
@@ -444,4 +464,68 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
         t.push_str("...");
         t
     }
+}
+
+/// 绘制路径补全下拉菜单
+///
+/// 锚定在路径输入框的正下方，最多显示 8 项，超出则滚动。
+fn draw_path_popup(f: &mut Frame, popup: &PathPopup, anchor: Rect) {
+    const MAX_VISIBLE: usize = 8;
+    let total = popup.candidates.len();
+    let visible = total.min(MAX_VISIBLE);
+    if visible == 0 {
+        return;
+    }
+
+    // 弹窗尺寸：宽度与输入框相同（但不小于 30），高度为可见项 + 边框
+    let width = anchor.width.max(30);
+    let height = (visible as u16) + 2; // +2 for borders
+    let x = anchor.x;
+    // 优先放在输入框下方；若空间不足则放上方
+    let y_below = anchor.y + anchor.height;
+    let y = if y_below + height <= f.size().bottom() {
+        y_below
+    } else if anchor.y >= height {
+        anchor.y - height
+    } else {
+        y_below // 实在没空间就放下方，让渲染裁切
+    };
+    let area = Rect { x, y, width, height };
+
+    // 清除背景（让弹窗覆盖下方内容）
+    f.render_widget(Clear, area);
+
+    // 构造列表行
+    let items: Vec<ListItem> = popup
+        .candidates
+        .iter()
+        .skip(popup.scroll)
+        .take(MAX_VISIBLE)
+        .enumerate()
+        .map(|(i, c)| {
+            let idx_in_all = popup.scroll + i;
+            let style = if idx_in_all == popup.selected {
+                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else if c.is_dir {
+                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            // 加序号前缀方便识别
+            let prefix = format!("{:>2}. ", idx_in_all + 1);
+            let content = format!("{}{}", prefix, c.display);
+            ListItem::new(Line::from(vec![Span::styled(content, style)]))
+        })
+        .collect();
+
+    let title = format!("路径补全 ({}/{})", popup.selected + 1, total);
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(title)
+                .style(Style::default().fg(Color::Yellow)),
+        )
+        .highlight_style(Style::default().bg(Color::DarkGray));
+    f.render_widget(list, area);
 }

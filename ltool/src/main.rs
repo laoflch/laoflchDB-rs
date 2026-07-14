@@ -6,6 +6,7 @@
 mod app;
 mod grpc_client;
 mod handler;
+mod path_complete;
 mod tab_face;
 mod tab_image;
 mod tab_sql;

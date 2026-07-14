@@ -164,6 +164,8 @@ pub struct ImageTabState {
     pub upload_result: Option<String>,
     pub meta_detail: Option<String>,
     pub list_scroll: usize,
+    /// 本地路径输入框的补全下拉菜单
+    pub path_popup: PathPopup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -184,6 +186,7 @@ impl Default for ImageTabState {
             upload_result: None,
             meta_detail: None,
             list_scroll: 0,
+            path_popup: PathPopup::default(),
         }
     }
 }
@@ -205,6 +208,8 @@ pub struct FaceTabState {
     /// 当前选中人脸的 embedding（前 10 个值预览用）
     pub embedding_preview: Vec<f32>,
     pub list_scroll: usize,
+    /// 本地路径输入框的补全下拉菜单
+    pub path_popup: PathPopup,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -229,6 +234,7 @@ impl Default for FaceTabState {
             selected_face: 0,
             embedding_preview: Vec::new(),
             list_scroll: 0,
+            path_popup: PathPopup::default(),
         }
     }
 }
@@ -280,6 +286,96 @@ pub struct SqlTabState {
     pub rows: Vec<Vec<String>>,
     pub list_scroll: usize,
     pub focus_sql: bool,
+}
+
+/// 路径补全下拉菜单状态
+///
+/// 当路径输入框获得焦点且有候选时显示。Up/Down 导航，Enter 选中，Esc 关闭。
+#[derive(Debug, Clone, Default)]
+pub struct PathPopup {
+    /// 是否显示
+    pub active: bool,
+    /// 候选列表
+    pub candidates: Vec<crate::path_complete::Candidate>,
+    /// 当前选中的索引
+    pub selected: usize,
+    /// 顶部滚动偏移（用于候选过多时）
+    pub scroll: usize,
+}
+
+impl PathPopup {
+    pub fn is_active(&self) -> bool {
+        self.active && !self.candidates.is_empty()
+    }
+
+    /// 选中前一个候选
+    pub fn prev(&mut self) {
+        if self.candidates.is_empty() {
+            return;
+        }
+        if self.selected == 0 {
+            self.selected = self.candidates.len() - 1;
+        } else {
+            self.selected -= 1;
+        }
+        self.adjust_scroll();
+    }
+
+    /// 选中下一个候选
+    pub fn next(&mut self) {
+        if self.candidates.is_empty() {
+            return;
+        }
+        self.selected = (self.selected + 1) % self.candidates.len();
+        self.adjust_scroll();
+    }
+
+    /// 根据选中位置调整滚动（每页最多 8 项）
+    fn adjust_scroll(&mut self) {
+        const PAGE: usize = 8;
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + PAGE {
+            self.scroll = self.selected - PAGE + 1;
+        }
+    }
+
+    /// 当前选中的候选
+    pub fn current(&self) -> Option<&crate::path_complete::Candidate> {
+        self.candidates.get(self.selected)
+    }
+
+    /// 关闭弹窗
+    pub fn close(&mut self) {
+        self.active = false;
+        self.candidates.clear();
+        self.selected = 0;
+        self.scroll = 0;
+    }
+
+    /// 用新候选刷新弹窗。若 active 则保留 selected（夹取到合法范围）。
+    pub fn refresh(&mut self, candidates: Vec<crate::path_complete::Candidate>) {
+        self.candidates = candidates;
+        if self.candidates.is_empty() {
+            self.active = false;
+            self.selected = 0;
+            self.scroll = 0;
+        } else {
+            if self.selected >= self.candidates.len() {
+                self.selected = 0;
+                self.scroll = 0;
+            }
+            self.adjust_scroll();
+        }
+    }
+
+    /// 打开弹窗并设置候选
+    pub fn open(&mut self, candidates: Vec<crate::path_complete::Candidate>) {
+        self.candidates = candidates;
+        self.selected = 0;
+        self.scroll = 0;
+        self.active = !self.candidates.is_empty();
+    }
 }
 
 impl Default for SqlTabState {
