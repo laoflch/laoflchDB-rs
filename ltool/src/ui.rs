@@ -5,7 +5,7 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 use ratatui::Frame;
 
 use crate::app::{App, ImageFocus, PathPopup, Tab};
@@ -23,14 +23,33 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_tabs(f, app, chunks[0]);
 
-    match app.current_tab {
+    // 各 Tab 渲染返回路径输入框的 area（用于补全弹窗锚定）
+    let path_anchor: Option<Rect> = match app.current_tab {
         Tab::Image => draw_image_tab(f, app, chunks[1]),
         Tab::Face => draw_face_tab(f, app, chunks[1]),
-        Tab::Vector => draw_vector_tab(f, app, chunks[1]),
-        Tab::Sql => draw_sql_tab(f, app, chunks[1]),
-    }
+        Tab::Vector => {
+            draw_vector_tab(f, app, chunks[1]);
+            None
+        }
+        Tab::Sql => {
+            draw_sql_tab(f, app, chunks[1]);
+            None
+        }
+    };
 
     draw_status_or_command(f, app, chunks[2]);
+
+    // 路径补全弹窗最后渲染，浮在所有内容之上
+    if let Some(anchor) = path_anchor {
+        let popup = match app.current_tab {
+            Tab::Image => &app.image_tab.path_popup,
+            Tab::Face => &app.face_tab.path_popup,
+            _ => unreachable!(),
+        };
+        if popup.is_active() {
+            draw_path_popup(f, popup, anchor);
+        }
+    }
 }
 
 /// 绘制顶部 Tab 栏
@@ -136,7 +155,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
 
 // ── 图片 Tab ──────────────────────────────────────
 
-fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) {
+fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(3), Constraint::Min(5)])
@@ -151,11 +170,6 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) {
         &app.image_tab.file_path,
         app.image_tab.focus == ImageFocus::FilePath,
     );
-
-    // 路径补全下拉菜单
-    if app.image_tab.path_popup.is_active() {
-        draw_path_popup(f, &app.image_tab.path_popup, path_area);
-    }
 
     // 下半部：结果区
     let result_area = chunks[1];
@@ -197,11 +211,13 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(title));
 
     f.render_widget(table, result_area);
+
+    Some(path_area)
 }
 
 // ── 人脸 Tab ──────────────────────────────────────
 
-fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) {
+fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     use crate::app::FaceFocus;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -218,11 +234,6 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) {
     draw_input_box(f, path_area, "本地图片路径", &app.face_tab.file_path, app.face_tab.focus == FaceFocus::FilePath);
     draw_input_box(f, row1[1], "det_threshold", &app.face_tab.det_threshold, app.face_tab.focus == FaceFocus::DetThreshold);
     draw_input_box(f, row1[2], "max_faces", &app.face_tab.max_faces, app.face_tab.focus == FaceFocus::MaxFaces);
-
-    // 路径补全下拉菜单
-    if app.face_tab.path_popup.is_active() {
-        draw_path_popup(f, &app.face_tab.path_popup, path_area);
-    }
 
     // 第二行：bucket + 复选框提示
     let row2 = Layout::default()
@@ -293,6 +304,8 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(title));
 
     f.render_widget(table, chunks[1]);
+
+    Some(path_area)
 }
 
 // ── 向量 Tab ──────────────────────────────────────
@@ -458,66 +471,168 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
     }
 }
 
-/// 绘制路径补全下拉菜单
+/// 绘制路径补全下拉菜单（浮在顶层，深灰底，图片项显示缩略图）
 ///
-/// 锚定在路径输入框的正下方，最多显示 8 项，超出则滚动。
+/// 锚定在路径输入框的正下方，每项占 THUMB_H 行（为缩略图腾空间），最多显示 6 项。
+/// 必须在所有其他渲染之后调用，确保浮在最顶层。
 fn draw_path_popup(f: &mut Frame, popup: &PathPopup, anchor: Rect) {
-    const MAX_VISIBLE: usize = 8;
+    use crate::app::{THUMB_H, THUMB_W};
+    use ratatui_image::Image;
+
+    const MAX_VISIBLE: usize = 6;
     let total = popup.candidates.len();
     let visible = total.min(MAX_VISIBLE);
     if visible == 0 {
         return;
     }
 
-    // 弹窗尺寸：宽度与输入框相同（但不小于 30），高度为可见项 + 边框
-    let width = anchor.width.max(30);
-    let height = (visible as u16) + 2; // +2 for borders
+    // 每项占 THUMB_H 行；弹窗高度 = visible * THUMB_H + 2（边框）
+    let row_h = THUMB_H;
+    let width = anchor.width.max(40).min(80);
+    let height = (visible as u16) * row_h + 2;
     let x = anchor.x;
-    // 优先放在输入框下方；若空间不足则放上方
     let y_below = anchor.y + anchor.height;
     let y = if y_below + height <= f.size().bottom() {
         y_below
     } else if anchor.y >= height {
         anchor.y - height
     } else {
-        y_below // 实在没空间就放下方，让渲染裁切
+        y_below
     };
     let area = Rect { x, y, width, height };
 
-    // 清除背景（让弹窗覆盖下方内容）
+    // 清除背景
     f.render_widget(Clear, area);
 
-    // 构造列表行
-    let items: Vec<ListItem> = popup
+    // 外框
+    let title = format!(
+        " 路径补全 {}/{}  📁目录 🖼图片 ",
+        popup.selected + 1,
+        total
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(Color::Black).fg(Color::Yellow));
+    f.render_widget(block, area);
+
+    // 内部内容区（去掉边框）
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    // 为每个可见项分配一个行 Rect
+    let row_areas: Vec<Rect> = (0..visible)
+        .map(|i| Rect {
+            x: inner.x,
+            y: inner.y + (i as u16) * row_h,
+            width: inner.width,
+            height: row_h,
+        })
+        .collect();
+
+    for (i, c) in popup
         .candidates
         .iter()
         .skip(popup.scroll)
         .take(MAX_VISIBLE)
         .enumerate()
-        .map(|(i, c)| {
-            let idx_in_all = popup.scroll + i;
-            let style = if idx_in_all == popup.selected {
-                Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
-            } else if c.is_dir {
-                Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            // 加序号前缀方便识别
-            let prefix = format!("{:>2}. ", idx_in_all + 1);
-            let content = format!("{}{}", prefix, c.display);
-            ListItem::new(Line::from(vec![Span::styled(content, style)]))
-        })
-        .collect();
+    {
+        let idx_in_all = popup.scroll + i;
+        let is_selected = idx_in_all == popup.selected;
+        let row_area = row_areas[i];
 
-    let title = format!("路径补全 ({}/{})", popup.selected + 1, total);
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(title)
-                .style(Style::default().fg(Color::Yellow)),
-        )
-        .highlight_style(Style::default().bg(Color::DarkGray));
-    f.render_widget(list, area);
+        // 选中行背景高亮
+        if is_selected {
+            f.render_widget(
+                ratatui::widgets::Clear,
+                row_area,
+            );
+            // 用 Block 不带边框填充背景色
+            let bg = Block::default().style(Style::default().bg(Color::Cyan));
+            f.render_widget(bg, row_area);
+        }
+
+        // 左侧缩略图区域（THUMB_W 列宽）
+        let thumb_area = Rect {
+            x: row_area.x,
+            y: row_area.y,
+            width: THUMB_W,
+            height: row_h,
+        };
+
+        // 右侧文本区域
+        let text_area = Rect {
+            x: row_area.x + THUMB_W,
+            y: row_area.y,
+            width: row_area.width.saturating_sub(THUMB_W),
+            height: row_h,
+        };
+
+        // 渲染缩略图或类型图标
+        if c.is_image {
+            if let Some(hb) = popup.get_thumbnail(&c.full_path) {
+                let img_widget = Image::new(hb);
+                f.render_widget(img_widget, thumb_area);
+            } else {
+                // 加载失败或未就绪：显示占位
+                let placeholder = Paragraph::new("🖼")
+                    .style(Style::default().fg(Color::DarkGray))
+                    .alignment(Alignment::Center);
+                f.render_widget(placeholder, thumb_area);
+            }
+        } else if c.is_dir {
+            // 目录图标居中
+            let icon = Paragraph::new("📁\n  ")
+                .style(
+                    Style::default()
+                        .fg(if is_selected { Color::Black } else { Color::Blue })
+                        .add_modifier(Modifier::BOLD),
+                )
+                .alignment(Alignment::Center);
+            f.render_widget(icon, thumb_area);
+        }
+
+        // 渲染文本区域：序号 + 文件名（垂直居中）
+        let (name_fg, name_bold) = if c.is_dir {
+            (if is_selected { Color::Black } else { Color::Blue }, true)
+        } else if c.is_image {
+            (if is_selected { Color::Black } else { Color::White }, is_selected)
+        } else {
+            (if is_selected { Color::Black } else { Color::White }, false)
+        };
+
+        // 截断文件名以适应文本区宽度
+        let avail = text_area.width as usize;
+        let name_display = truncate_str(&c.display, avail);
+        // 序号（小号暗色）
+        let num_str = format!("{}", idx_in_all + 1);
+        let num_span = Span::styled(
+            num_str,
+            Style::default()
+                .fg(if is_selected { Color::Black } else { Color::DarkGray }),
+        );
+        let name_span = Span::styled(
+            name_display,
+            Style::default()
+                .fg(name_fg)
+                .add_modifier(if name_bold { Modifier::BOLD } else { Modifier::empty() }),
+        );
+
+        // 垂直居中：在 text_area 中间行显示
+        let mid_y = text_area.y + text_area.height / 2;
+        let line = Line::from(vec![num_span, Span::raw(" "), name_span]);
+        // 在 text_area 中间行渲染：手动设置 buffer
+        // 用 Paragraph 限制高度为 1，放在中间行
+        let single_line_area = Rect {
+            x: text_area.x,
+            y: mid_y,
+            width: text_area.width,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(line), single_line_area);
+    }
 }

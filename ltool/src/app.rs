@@ -154,7 +154,6 @@ impl InputState {
 }
 
 /// 图片 Tab 状态
-#[derive(Debug, Clone)]
 pub struct ImageTabState {
     /// 焦点：仅 FilePath（bucket/key 在状态栏中直接编辑，不再单独占框）
     pub focus: ImageFocus,
@@ -191,7 +190,6 @@ impl Default for ImageTabState {
 }
 
 /// 人脸 Tab 状态
-#[derive(Debug, Clone)]
 pub struct FaceTabState {
     pub focus: FaceFocus,
     pub file_path: InputState,
@@ -290,7 +288,8 @@ pub struct SqlTabState {
 /// 路径补全下拉菜单状态
 ///
 /// 当路径输入框获得焦点且有候选时显示。Up/Down 导航，Enter 选中，Esc 关闭。
-#[derive(Debug, Clone, Default)]
+/// 对图片候选项预编码为 halfblock Protocol 并缓存（按 full_path 键）。
+#[derive(Default)]
 pub struct PathPopup {
     /// 是否显示
     pub active: bool,
@@ -300,7 +299,16 @@ pub struct PathPopup {
     pub selected: usize,
     /// 顶部滚动偏移（用于候选过多时）
     pub scroll: usize,
+    /// 图片缩略图缓存：full_path → 已编码的 Halfblocks Protocol
+    ///
+    /// 仅对 is_image=true 的候选项加载并按固定缩略图尺寸（THUMB_W x THUMB_H）编码。
+    /// `Halfblocks` 实现 Clone，但为避免每帧重新 encode，这里缓存编码结果。
+    thumbnails: std::collections::HashMap<String, ratatui_image::protocol::halfblocks::Halfblocks>,
 }
+
+/// 缩略图在弹窗中占用的字符尺寸（宽 x 高）
+pub const THUMB_W: u16 = 8;
+pub const THUMB_H: u16 = 3;
 
 impl PathPopup {
     pub fn is_active(&self) -> bool {
@@ -329,9 +337,9 @@ impl PathPopup {
         self.adjust_scroll();
     }
 
-    /// 根据选中位置调整滚动（每页最多 8 项）
+    /// 根据选中位置调整滚动（每页最多 12 项）
     fn adjust_scroll(&mut self) {
-        const PAGE: usize = 8;
+        const PAGE: usize = 12;
         if self.selected < self.scroll {
             self.scroll = self.selected;
         } else if self.selected >= self.scroll + PAGE {
@@ -350,15 +358,18 @@ impl PathPopup {
         self.candidates.clear();
         self.selected = 0;
         self.scroll = 0;
+        self.thumbnails.clear();
     }
 
     /// 用新候选刷新弹窗。候选非空时自动激活；selected 夹取到合法范围。
+    /// 同时为新出现的图片候选项预加载缩略图。
     pub fn refresh(&mut self, candidates: Vec<crate::path_complete::Candidate>) {
         self.candidates = candidates;
         if self.candidates.is_empty() {
             self.active = false;
             self.selected = 0;
             self.scroll = 0;
+            self.thumbnails.clear();
         } else {
             self.active = true;
             if self.selected >= self.candidates.len() {
@@ -366,6 +377,7 @@ impl PathPopup {
                 self.scroll = 0;
             }
             self.adjust_scroll();
+            self.preload_thumbnails();
         }
     }
 
@@ -375,7 +387,60 @@ impl PathPopup {
         self.selected = 0;
         self.scroll = 0;
         self.active = !self.candidates.is_empty();
+        if self.active {
+            self.preload_thumbnails();
+        }
     }
+
+    /// 为当前候选列表中的图片项预加载缩略图（已缓存的跳过）
+    fn preload_thumbnails(&mut self) {
+        // 收集需要加载的路径（避免在循环中同时持有 &mut self 和 &self.candidates）
+        let to_load: Vec<String> = self
+            .candidates
+            .iter()
+            .filter(|c| c.is_image && !self.thumbnails.contains_key(&c.full_path))
+            .map(|c| c.full_path.clone())
+            .collect();
+
+        for path in to_load {
+            // 通过 candidates 查找并加载（再次持有 &self.candidates）
+            if let Some(c) = self.candidates.iter().find(|c| c.full_path == path) {
+                if let Some(thumb) = c.load_thumbnail() {
+                    // 编码为 halfblock Protocol
+                    if let Some(hb) = encode_halfblocks(&thumb, THUMB_W, THUMB_H) {
+                        self.thumbnails.insert(path, hb);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 获取指定路径的缓存缩略图（已编码的 Halfblocks）
+    pub fn get_thumbnail(&self, full_path: &str) -> Option<&ratatui_image::protocol::halfblocks::Halfblocks> {
+        self.thumbnails.get(full_path)
+    }
+}
+
+/// 把 DynamicImage 编码为 Halfblocks Protocol（固定尺寸）
+///
+/// 使用固定 font_size (8, 16)，将图片缩放到 THUMB_W x THUMB_H 字符区域。
+fn encode_halfblocks(
+    img: &image::DynamicImage,
+    width: u16,
+    height: u16,
+) -> Option<ratatui_image::protocol::halfblocks::Halfblocks> {
+    use ratatui::layout::Rect;
+    use ratatui_image::picker::Picker;
+    use ratatui_image::protocol::halfblocks::Halfblocks;
+    use ratatui_image::Resize;
+
+    // 固定 font_size，VSCode 终端等无法查询时也能用
+    let mut picker = Picker::new((8, 16));
+    picker.protocol_type = ratatui_image::picker::ProtocolType::Halfblocks;
+
+    let area = Rect::new(0, 0, width, height);
+    let source = ratatui_image::protocol::ImageSource::new(img.clone(), picker.font_size);
+    Halfblocks::from_source(&source, Resize::Fit(None), picker.background_color, area).ok()
 }
 
 impl Default for SqlTabState {
