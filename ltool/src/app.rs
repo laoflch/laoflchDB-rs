@@ -353,7 +353,7 @@ impl PathPopup {
         self.scroll = 0;
     }
 
-    /// 用新候选刷新弹窗。若 active 则保留 selected（夹取到合法范围）。
+    /// 用新候选刷新弹窗。候选非空时自动激活；selected 夹取到合法范围。
     pub fn refresh(&mut self, candidates: Vec<crate::path_complete::Candidate>) {
         self.candidates = candidates;
         if self.candidates.is_empty() {
@@ -361,6 +361,7 @@ impl PathPopup {
             self.selected = 0;
             self.scroll = 0;
         } else {
+            self.active = true;
             if self.selected >= self.candidates.len() {
                 self.selected = 0;
                 self.scroll = 0;
