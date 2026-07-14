@@ -156,6 +156,7 @@ impl InputState {
 /// 图片 Tab 状态
 #[derive(Debug, Clone)]
 pub struct ImageTabState {
+    /// 焦点：仅 FilePath（bucket/key 在状态栏中直接编辑，不再单独占框）
     pub focus: ImageFocus,
     pub bucket: InputState,
     pub file_path: InputState,
@@ -170,9 +171,7 @@ pub struct ImageTabState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageFocus {
-    Bucket,
     FilePath,
-    Key,
 }
 
 impl Default for ImageTabState {

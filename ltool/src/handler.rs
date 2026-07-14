@@ -113,7 +113,7 @@ fn handle_command_mode(app: &mut App, event: KeyEvent) -> bool {
     true
 }
 
-/// 执行命令模式命令（:login / :quit / :help）
+/// 执行命令模式命令（:login / :quit / :help / :bucket / :key）
 fn execute_command(app: &mut App, cmd: &str) {
     let parts: Vec<&str> = cmd.split_whitespace().collect();
     if parts.is_empty() {
@@ -132,9 +132,41 @@ fn execute_command(app: &mut App, cmd: &str) {
         "quit" | "q" | "exit" => {
             app.should_quit = true;
         }
+        "bucket" => {
+            // :bucket <name> 设置图片/人脸 Tab 的 bucket
+            if parts.len() == 2 {
+                match app.current_tab {
+                    Tab::Image => {
+                        app.image_tab.bucket.set_value(parts[1]);
+                        app.set_status(format!("图片 Tab bucket 已设为: {}", parts[1]));
+                    }
+                    Tab::Face => {
+                        app.face_tab.bucket.set_value(parts[1]);
+                        app.set_status(format!("人脸 Tab bucket 已设为: {}", parts[1]));
+                    }
+                    _ => {
+                        app.set_error("当前 Tab 不支持 bucket 设置");
+                    }
+                }
+            } else {
+                app.set_error("用法: :bucket <名称>");
+            }
+        }
+        "key" => {
+            // :key <value> 设置图片 Tab 的 key（留空则自动生成）
+            if parts.len() == 2 {
+                app.image_tab.key.set_value(parts[1]);
+                app.set_status(format!("图片 key 已设为: {}", parts[1]));
+            } else if parts.len() == 1 {
+                app.image_tab.key.set_value("");
+                app.set_status("图片 key 已清空（将自动生成）");
+            } else {
+                app.set_error("用法: :key [值]（无值则清空，自动生成）");
+            }
+        }
         "help" | "?" => {
             app.set_status(
-                "命令: :login <user> <pass> | :quit | :help | 1/2/3/4 切换 Tab | F1-F5 操作 | Ctrl+Q 退出",
+                "命令: :login <user> <pass> | :bucket <名称> | :key [值] | :quit | :help | 1/2/3/4 切换 Tab",
             );
         }
         _ => {
@@ -145,19 +177,9 @@ fn execute_command(app: &mut App, cmd: &str) {
 
 /// 处理图片 Tab 的事件
 async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
-    // 快捷键：仅当焦点在"操作区"（非输入框）时触发。
-    // 但本 Tab 所有焦点都是输入框，所以用 Ctrl 修饰键触发快捷键，避免与字符输入冲突。
-    // 常用操作：Ctrl+U 上传, Ctrl+L 列出, Ctrl+M 元数据, Ctrl+D 删除
-    // 另外支持 F1-F4 作为无修饰快捷键（不会与输入冲突）
+    // 快捷键：F1=上传, F2=列出；Ctrl+M 元数据, Ctrl+D 删除
+    // bucket/key 通过命令模式 :bucket / :key 设置，状态栏只读显示
     match event.code {
-        KeyCode::Char('u') if event.modifiers.contains(KeyModifiers::CONTROL) => {
-            let _ = crate::tab_image::upload_image(app).await;
-            return true;
-        }
-        KeyCode::Char('l') if event.modifiers.contains(KeyModifiers::CONTROL) => {
-            let _ = crate::tab_image::list_images(app).await;
-            return true;
-        }
         KeyCode::Char('m') if event.modifiers.contains(KeyModifiers::CONTROL) => {
             let _ = crate::tab_image::get_metadata(app).await;
             return true;
@@ -177,8 +199,8 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
         _ => {}
     }
 
-    // 当焦点在路径输入框且弹窗激活时，Up/Down/Enter/Esc 优先交给弹窗
-    if app.image_tab.focus == ImageFocus::FilePath && app.image_tab.path_popup.is_active() {
+    // 弹窗激活时，Up/Down/Enter/Esc 优先交给弹窗
+    if app.image_tab.path_popup.is_active() {
         match event.code {
             KeyCode::Up => {
                 app.image_tab.path_popup.prev();
@@ -216,39 +238,6 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
     }
 
     match event.code {
-        KeyCode::Tab => {
-            // 切换焦点，并关闭弹窗
-            app.image_tab.path_popup.close();
-            app.image_tab.focus = match app.image_tab.focus {
-                ImageFocus::Bucket => ImageFocus::FilePath,
-                ImageFocus::FilePath => ImageFocus::Key,
-                ImageFocus::Key => ImageFocus::Bucket,
-            };
-            // 若新焦点是 FilePath，立即刷新候选
-            if app.image_tab.focus == ImageFocus::FilePath {
-                let cs = crate::path_complete::list_candidates(&app.image_tab.file_path.value);
-                app.image_tab.path_popup.open(cs);
-            }
-            return true;
-        }
-        KeyCode::Up if app.image_tab.focus != ImageFocus::FilePath || !app.image_tab.path_popup.is_active() => {
-            app.image_tab.path_popup.close();
-            app.image_tab.focus = match app.image_tab.focus {
-                ImageFocus::Key => ImageFocus::FilePath,
-                ImageFocus::FilePath => ImageFocus::Bucket,
-                ImageFocus::Bucket => ImageFocus::Key,
-            };
-            return true;
-        }
-        KeyCode::Down if app.image_tab.focus != ImageFocus::FilePath || !app.image_tab.path_popup.is_active() => {
-            app.image_tab.path_popup.close();
-            app.image_tab.focus = match app.image_tab.focus {
-                ImageFocus::Bucket => ImageFocus::FilePath,
-                ImageFocus::FilePath => ImageFocus::Key,
-                ImageFocus::Key => ImageFocus::Bucket,
-            };
-            return true;
-        }
         KeyCode::PageUp => {
             if app.image_tab.list_scroll > 0 {
                 app.image_tab.list_scroll = app.image_tab.list_scroll.saturating_sub(10);
@@ -263,14 +252,9 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
         _ => {}
     }
 
-    let input = match app.image_tab.focus {
-        ImageFocus::Bucket => &mut app.image_tab.bucket,
-        ImageFocus::FilePath => &mut app.image_tab.file_path,
-        ImageFocus::Key => &mut app.image_tab.key,
-    };
-    let changed = handle_input_event(input, event);
-    // 若路径输入框内容变化，刷新候选下拉
-    if changed && app.image_tab.focus == ImageFocus::FilePath {
+    // 焦点恒为 FilePath，直接处理输入
+    let changed = handle_input_event(&mut app.image_tab.file_path, event);
+    if changed {
         let cs = crate::path_complete::list_candidates(&app.image_tab.file_path.value);
         app.image_tab.path_popup.refresh(cs);
     }

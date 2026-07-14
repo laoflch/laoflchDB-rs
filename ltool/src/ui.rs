@@ -100,12 +100,27 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     );
     // 当前 Tab 的快捷键提示
     let help_text = match app.current_tab {
-        Tab::Image => "F1上传 F2列出 ↑↓选路径 Enter确认 Esc取消 | ",
+        Tab::Image => "F1上传 F2列出 :bucket/:key设置 ↑↓选路径 Enter确认 Esc取消 | ",
         Tab::Face => "F1提取 F2比较 F4保存 F5索引 ↑↓选路径 Enter确认 Esc取消 | ",
         Tab::Vector => "F1索引信息 F2搜索 F3删除 | ",
         Tab::Sql => "F5执行 Ctrl+L清空 | ",
     };
     let help_span = Span::styled(help_text, Style::default().fg(Color::DarkGray));
+
+    // 图片 Tab 在状态栏显示 bucket/key（留空表示自动生成）
+    let ctx_span = if app.current_tab == Tab::Image {
+        Span::styled(
+            format!(
+                "bucket={} key={} | ",
+                app.image_tab.bucket.value,
+                if app.image_tab.key.value.is_empty() { "(自动)" } else { &app.image_tab.key.value }
+            ),
+            Style::default().fg(Color::Magenta),
+        )
+    } else {
+        Span::raw("")
+    };
+
     let msg_color = if app.status_is_error {
         Color::Red
     } else {
@@ -113,7 +128,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let msg_span = Span::styled(&app.status_message, Style::default().fg(msg_color));
 
-    let line = Line::from(vec![login_span, conn_span, tab_span, help_span, msg_span]);
+    let line = Line::from(vec![login_span, conn_span, tab_span, help_span, ctx_span, msg_span]);
     let block = Block::default().borders(Borders::ALL);
     let p = Paragraph::new(line).block(block);
     f.render_widget(p, area);
@@ -124,40 +139,17 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(5)])
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
         .split(area);
 
-    // 上半部：输入区
-    let input_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(20), // bucket
-            Constraint::Length(40), // file path
-            Constraint::Min(10),    // key
-        ])
-        .split(chunks[0]);
-
-    draw_input_box(
-        f,
-        input_chunks[0],
-        "bucket",
-        &app.image_tab.bucket,
-        app.image_tab.focus == ImageFocus::Bucket,
-    );
-    let path_area = input_chunks[1];
+    // 文件路径输入框独占一整行
+    let path_area = chunks[0];
     draw_input_box(
         f,
         path_area,
         "本地文件路径",
         &app.image_tab.file_path,
         app.image_tab.focus == ImageFocus::FilePath,
-    );
-    draw_input_box(
-        f,
-        input_chunks[2],
-        "key（留空自动生成）",
-        &app.image_tab.key,
-        app.image_tab.focus == ImageFocus::Key,
     );
 
     // 路径补全下拉菜单
