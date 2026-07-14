@@ -1,0 +1,564 @@
+syntax = "proto3";
+
+package laoflchdb.rpc;
+
+service LaoflchDb {
+  // 用户认证
+  rpc Login(LoginRequest) returns (LoginResponse);
+  rpc Logout(LogoutRequest) returns (LogoutResponse);
+  
+  // KV 操作
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Put(PutRequest) returns (PutResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  
+  // 表管理
+  rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
+  rpc DropTable(DropTableRequest) returns (DropTableResponse);
+  rpc ListTables(ListTablesRequest) returns (ListTablesResponse);
+  rpc ListTableCols(ListTableColsRequest) returns (ListTableColsResponse);
+  
+  // 更新表和字段注释
+  rpc UpdateTableComment(UpdateTableCommentRequest) returns (UpdateTableCommentResponse);
+  rpc UpdateColumnComment(UpdateColumnCommentRequest) returns (UpdateColumnCommentResponse);
+  
+  // 行操作
+  rpc AddRow(AddRowRequest) returns (AddRowResponse);
+  rpc GetRow(GetRowRequest) returns (GetRowResponse);
+  rpc DeleteRow(DeleteRowRequest) returns (DeleteRowResponse);
+  rpc UpdateRow(UpdateRowRequest) returns (UpdateRowResponse);
+  
+  // 元数据查询
+  rpc GetAllMeta(GetAllMetaRequest) returns (GetAllMetaResponse);
+  rpc GetSchemaInfo(GetSchemaInfoRequest) returns (GetSchemaInfoResponse);
+  rpc ListSchemas(ListSchemasRequest) returns (ListSchemasResponse);
+  
+  // 旧方法（保留兼容）
+  rpc GetTableMeta(GetTableMetaRequest) returns (GetTableMetaResponse);
+  
+  // 查询操作
+  rpc Query(QueryRequest) returns (QueryResponse);
+  
+  // SQL 查询操作
+  rpc SqlQuery(SqlQueryRequest) returns (SqlQueryResponse);
+  
+  // 刷新 SQL 引擎中的表注册
+  rpc RefreshTables(RefreshTablesRequest) returns (RefreshTablesResponse);
+  
+  // 获取版本信息
+  rpc GetVersion(GetVersionRequest) returns (GetVersionResponse);
+  
+  // 全文索引操作
+  rpc CreateIndex(CreateIndexRequest) returns (CreateIndexResponse);
+  rpc DropIndex(DropIndexRequest) returns (DropIndexResponse);
+  rpc ListIndices(ListIndicesRequest) returns (ListIndicesResponse);
+  rpc GetIndexFields(GetIndexFieldsRequest) returns (GetIndexFieldsResponse);
+  rpc GetIndexMeta(GetIndexMetaRequest) returns (GetIndexMetaResponse);
+  rpc SearchIndex(SearchIndexRequest) returns (SearchIndexResponse);
+  rpc GetIndexStats(GetIndexStatsRequest) returns (GetIndexStatsResponse);
+  rpc AddDocument(AddDocumentRequest) returns (AddDocumentResponse);
+  rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
+  rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+}
+
+message RefreshTablesRequest {
+  string schema = 1;  // 可选，不填则刷新所有可用的表
+}
+
+message RefreshTablesResponse {
+  bool success = 1;
+  repeated string tables = 2;  // 刷新的表列表
+  string message = 3;
+}
+
+message GetRequest {
+  string schema = 1;
+  string table = 2;
+  bytes key = 3;
+}
+
+message GetResponse {
+  bool success = 1;
+  bytes value = 2;
+  string message = 3;
+}
+
+message PutRequest {
+  string schema = 1;
+  string table = 2;
+  bytes key = 3;
+  bytes value = 4;
+}
+
+message PutResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DeleteRequest {
+  string schema = 1;
+  string table = 2;
+  bytes key = 3;
+}
+
+message DeleteResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message CreateTableRequest {
+  string schema = 1;
+  string table_name = 2;
+  string comment = 3;
+  repeated ColumnDef columns = 4;
+}
+
+message ColumnDef {
+  string name = 1;
+  int32 column_type = 2;
+  string comment = 3;
+}
+
+message CreateTableResponse {
+  bool success = 1;
+  uint64 table_id = 2;
+  string message = 3;
+}
+
+message ListTablesRequest {
+  string schema = 1;
+}
+
+message ListTablesResponse {
+  bool success = 1;
+  repeated string tables = 2;
+  string message = 3;
+}
+
+message GetTableMetaRequest {
+  string schema = 1;
+  string table_name = 2;
+}
+
+message GetTableMetaResponse {
+  bool success = 1;
+  uint64 table_id = 2;
+  string table_name = 3;
+  uint32 column_count = 4;
+  string message = 5;
+}
+
+// 新添加的消息
+message DropTableRequest {
+  string schema = 1;
+  string table_name = 2;
+}
+
+message DropTableResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListTableColsRequest {
+  string schema = 1;
+  string table_name = 2;
+}
+
+message ListTableColsResponse {
+  bool success = 1;
+  repeated ColumnMeta columns = 2;
+  string message = 3;
+}
+
+message AddRowRequest {
+  string schema = 1;
+  string table_name = 2;
+  Row row = 3;
+}
+
+message AddRowResponse {
+  bool success = 1;
+  uint64 row_id = 2;
+  string message = 3;
+}
+
+message GetRowRequest {
+  string schema = 1;
+  string table_name = 2;
+  uint64 row_id = 3;
+}
+
+message GetRowResponse {
+  bool success = 1;
+  Row row = 2;
+  string message = 3;
+}
+
+message DeleteRowRequest {
+  string schema = 1;
+  string table_name = 2;
+  uint64 row_id = 3;
+}
+
+message DeleteRowResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message UpdateRowRequest {
+  string schema = 1;
+  string table_name = 2;
+  uint64 row_id = 3;
+  Row row = 4;
+}
+
+message UpdateRowResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetAllMetaRequest {
+  string schema = 1;
+}
+
+message GetAllMetaResponse {
+  bool success = 1;
+  string meta_json = 2;
+  string message = 3;
+}
+
+message GetSchemaInfoRequest {
+  string schema = 1;
+}
+
+message GetSchemaInfoResponse {
+  bool success = 1;
+  string info_json = 2;
+  string message = 3;
+}
+
+message ListSchemasRequest {
+}
+
+message ListSchemasResponse {
+  bool success = 1;
+  repeated string schemas = 2;
+  string message = 3;
+}
+
+message GetVersionRequest {
+}
+
+message GetVersionResponse {
+  bool success = 1;
+  string version = 2;
+  string build_info = 3;
+  string message = 4;
+}
+
+// 引用的类型定义
+enum RowType {
+    ROW_TYPE_NORMAL = 0;
+    ROW_TYPE_RAW = 1;
+}
+
+message Row {
+    RowType row_type = 1;
+    uint32 version = 2;
+    repeated bytes data = 3;
+}
+
+message ColumnMeta {
+  uint64 table_id = 1;
+  uint64 column_id = 2;
+  string column_name = 3;
+  int32 column_type = 4;
+  string comment = 5;
+}
+
+// Query 相关类型
+message QueryRequest {
+  string schema = 1;
+  repeated TableFilter table_filters = 2;
+  optional uint32 limit = 3;
+  optional uint32 offset = 4;
+  repeated string projected_columns = 5;
+}
+
+message QueryResponse {
+  bool success = 1;
+  repeated QueryRow rows = 2;
+  string message = 3;
+}
+
+message TableFilter {
+  string table_name = 1;
+  repeated ColumnFilter column_filters = 2;
+}
+
+message ColumnFilter {
+  string column_name = 1;
+  repeated ColumnFilterCondition conditions = 2;
+}
+
+message ColumnFilterCondition {
+  FilterOperator op = 1;
+  Field value = 2;
+  repeated Field values = 3;
+}
+
+enum FilterOperator {
+  FILTER_OPERATOR_UNSPECIFIED = 0;
+  FILTER_OPERATOR_EQ = 1;
+  FILTER_OPERATOR_NEQ = 2;
+  FILTER_OPERATOR_GT = 3;
+  FILTER_OPERATOR_GTE = 4;
+  FILTER_OPERATOR_LT = 5;
+  FILTER_OPERATOR_LTE = 6;
+  FILTER_OPERATOR_IN = 7;
+  FILTER_OPERATOR_NOT_IN = 8;
+  FILTER_OPERATOR_LIKE = 9;
+  FILTER_OPERATOR_IS_NULL = 10;
+  FILTER_OPERATOR_IS_NOT_NULL = 11;
+}
+
+message QueryRow {
+  string table_name = 1;
+  uint64 row_id = 2;
+  Row row = 3;
+}
+
+message Field {
+  oneof value {
+    StringValue string_value = 1;
+    IntegerValue integer_value = 2;
+    BytesValue bytes_value = 3;
+    FloatValue float_value = 4;
+    ListValue list_value = 5;
+    ImageValue image_value = 6;
+  }
+}
+
+message StringValue {
+  string value = 1;
+}
+
+message IntegerValue {
+  int64 value = 1;
+}
+
+message BytesValue {
+  bytes value = 1;
+}
+
+message FloatValue {
+  double value = 1;
+}
+
+message ListValue {
+  repeated bytes items = 1;
+}
+
+message ImageValue {
+  bytes data = 1;
+  string format = 2;
+}
+
+// SQL 查询相关类型
+message SqlQueryRequest {
+  string schema = 1;
+  string sql = 2;
+}
+
+message SqlQueryResponse {
+  bool success = 1;
+  repeated SqlQueryResultRow rows = 2;
+  repeated string columns = 3;
+  string message = 4;
+}
+
+message SqlQueryResultRow {
+  repeated SqlField values = 1;
+}
+
+message SqlField {
+  oneof value {
+    string string_value = 1;
+    int64 int64_value = 2;
+    double float_value = 3;
+    bytes bytes_value = 4;
+    bool bool_value = 5;
+  }
+}
+
+// 用户认证相关类型
+message LoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message LoginResponse {
+  bool success = 1;
+  string message = 2;
+  string token = 3;       // 登录成功返回的 token
+  int64 user_id = 4;     // 用户 ID
+  string username = 5;    // 用户名
+}
+
+message LogoutRequest {
+  string token = 1;      // 要注销的 token
+}
+
+message LogoutResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// 更新表注释请求
+message UpdateTableCommentRequest {
+  string schema = 1;           // Schema 名称
+  string table_name = 2;       // 表名称
+  string comment = 3;          // 新的表注释
+}
+
+// 更新表注释响应
+message UpdateTableCommentResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// 更新字段注释请求
+message UpdateColumnCommentRequest {
+  string schema = 1;           // Schema 名称
+  string table_name = 2;       // 表名称
+  string column_name = 3;      // 字段名称
+  string comment = 4;          // 新的字段注释
+}
+
+// 更新字段注释响应
+message UpdateColumnCommentResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// 全文索引相关类型
+message CreateIndexRequest {
+  string index_name = 1;
+  repeated IndexFieldDef fields = 2;
+}
+
+message IndexFieldDef {
+  string name = 1;
+  int32 field_type = 2;
+  string comment = 3;
+}
+
+message CreateIndexResponse {
+  bool success = 1;
+  uint64 index_id = 2;
+  string message = 3;
+}
+
+message DropIndexRequest {
+  string index_name = 1;
+}
+
+message DropIndexResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListIndicesRequest {
+}
+
+message ListIndicesResponse {
+  bool success = 1;
+  repeated string index_names = 2;
+  string message = 3;
+}
+
+message GetIndexFieldsRequest {
+  string index_name = 1;
+}
+
+message GetIndexFieldsResponse {
+  bool success = 1;
+  repeated ColumnMeta fields = 2;
+  string message = 3;
+}
+
+message GetIndexMetaRequest {
+  string index_name = 1;
+}
+
+message GetIndexMetaResponse {
+  bool success = 1;
+  uint64 index_id = 2;
+  string index_name = 3;
+  uint32 column_count = 4;
+  string comment = 5;
+  string message = 6;
+}
+
+message SearchIndexRequest {
+  string index_name = 1;
+  string query = 2;
+  optional uint32 limit = 3;
+  map<string, string> field_queries = 4;  // 多字段搜索
+}
+
+message SearchIndexResponse {
+  bool success = 1;
+  repeated SearchResultItem results = 2;
+  string message = 3;
+}
+
+message SearchResultItem {
+  string doc_id = 1;
+  float score = 2;
+  map<string, string> fields = 3;
+}
+
+message GetIndexStatsRequest {
+}
+
+message GetIndexStatsResponse {
+  bool success = 1;
+  uint32 total_indices = 2;
+  repeated string index_names = 3;
+  string message = 4;
+}
+
+message AddDocumentRequest {
+  string index_name = 1;
+  string doc_id = 2;
+  map<string, string> fields = 3;
+}
+
+message AddDocumentResponse {
+  bool success = 1;
+  string doc_id = 2;
+  string message = 3;
+}
+
+message GetDocumentRequest {
+  string index_name = 1;
+  string doc_id = 2;
+}
+
+message GetDocumentResponse {
+  bool success = 1;
+  string doc_id = 2;
+  map<string, string> fields = 3;
+  string message = 4;
+}
+
+message DeleteDocumentRequest {
+  string index_name = 1;
+  string doc_id = 2;
+}
+
+message DeleteDocumentResponse {
+  bool success = 1;
+  string message = 2;
+}

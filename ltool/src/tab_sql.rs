@@ -4,8 +4,8 @@
 
 use anyhow::{anyhow, Result};
 
-use laoflchDB_rust::pb::rpc::sql_field::Value as SqlFieldValue;
-use laoflchDB_rust::pb::rpc::SqlQueryRequest;
+use laoflchdb_client::pb::rpc::sql_field::Value as SqlFieldValue;
+use laoflchdb_client::pb::rpc::SqlQueryRequest;
 
 use crate::app::App;
 

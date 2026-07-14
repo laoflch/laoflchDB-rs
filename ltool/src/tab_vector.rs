@@ -4,7 +4,7 @@
 
 use anyhow::{anyhow, Result};
 
-use laoflchdb_embedding_service::proto::{
+use laoflchdb_embedding_service_proto::proto::{
     DeleteEmbeddingRequest, GetIndexInfoRequest, SearchEmbeddingRequest,
 };
 

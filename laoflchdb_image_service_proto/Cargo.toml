@@ -1,0 +1,12 @@
+[package]
+name = "laoflchdb_image_service_proto"
+version = "0.1.0"
+edition = "2021"
+description = "轻量级 ImageService proto 客户端，不依赖对象存储等后端服务"
+
+[dependencies]
+tonic = "0.11"
+prost = "0.12"
+
+[build-dependencies]
+tonic-build = "0.11"

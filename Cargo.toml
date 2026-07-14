@@ -24,6 +24,9 @@ members = [
     "laoflchdb_image_service",
     "laoflchdb_face_service",
     "laoflchdb_face_service_proto",
+    "laoflchdb_client",
+    "laoflchdb_image_service_proto",
+    "laoflchdb_embedding_service_proto",
 ]
 
 [dependencies]

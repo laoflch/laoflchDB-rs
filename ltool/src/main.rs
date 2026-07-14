@@ -161,7 +161,7 @@ async fn run_check(cli: &Cli) -> Result<()> {
 
     // 3. 主服务 - ListSchemas
     print!("[3/5] LaoflchDb.ListSchemas ... ");
-    use laoflchDB_rust::pb::rpc::ListSchemasRequest;
+    use laoflchdb_client::pb::rpc::ListSchemasRequest;
     let resp = clients
         .laoflchdb
         .list_schemas(ListSchemasRequest {})
@@ -172,7 +172,7 @@ async fn run_check(cli: &Cli) -> Result<()> {
     // 4. 图片服务 - ListImages
     if clients.is_logged_in() {
         print!("[4/5] ImageService.ListImages (bucket=images) ... ");
-        use laoflchdb_image_service::proto::ListImagesRequest;
+        use laoflchdb_image_service_proto::proto::ListImagesRequest;
         let req = clients.auth_request(ListImagesRequest {
             bucket: "images".to_string(),
             prefix: String::new(),
@@ -188,7 +188,7 @@ async fn run_check(cli: &Cli) -> Result<()> {
     // 5. 向量服务 - GetIndexInfo
     if clients.is_logged_in() {
         print!("[5/5] EmbeddingIndexService.GetIndexInfo (index=face) ... ");
-        use laoflchdb_embedding_service::proto::GetIndexInfoRequest;
+        use laoflchdb_embedding_service_proto::proto::GetIndexInfoRequest;
         let req = clients.auth_request(GetIndexInfoRequest {
             index_name: "face".to_string(),
         });

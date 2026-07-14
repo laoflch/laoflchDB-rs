@@ -7,12 +7,12 @@ use anyhow::{anyhow, Result};
 use tonic::transport::Channel;
 use tonic::Request;
 
-use laoflchDB_rust::pb::rpc::laoflch_db_client::LaoflchDbClient;
-use laoflchDB_rust::pb::rpc::LoginRequest;
+use laoflchdb_client::pb::rpc::laoflch_db_client::LaoflchDbClient;
+use laoflchdb_client::pb::rpc::LoginRequest;
 
-use laoflchdb_image_service::proto::image_service_client::ImageServiceClient;
+use laoflchdb_image_service_proto::proto::image_service_client::ImageServiceClient;
 use laoflchdb_face_service_proto::proto::face_service_client::FaceServiceClient;
-use laoflchdb_embedding_service::proto::embedding_index_service_client::EmbeddingIndexServiceClient;
+use laoflchdb_embedding_service_proto::proto::embedding_index_service_client::EmbeddingIndexServiceClient;
 
 /// 所有 gRPC 客户端的集合
 ///

@@ -2,8 +2,8 @@ use clap::Parser;
 use tonic::transport::Channel;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use laoflchDB_rust::pb::rpc::laoflch_db_client::LaoflchDbClient;
-use laoflchDB_rust::pb::rpc::{
+use laoflchdb_client::pb::rpc::laoflch_db_client::LaoflchDbClient;
+use laoflchdb_client::pb::rpc::{
     ListTablesRequest, ListSchemasRequest, SqlQueryRequest,
     GetVersionRequest, ListTableColsRequest, LoginRequest, LogoutRequest,
     ListIndicesRequest, GetIndexMetaRequest, GetIndexFieldsRequest,
@@ -622,8 +622,8 @@ async fn execute_sql(
     Ok(())
 }
 
-fn print_query_result(response: &laoflchDB_rust::pb::rpc::SqlQueryResponse) {
-    use laoflchDB_rust::pb::rpc::sql_field;
+fn print_query_result(response: &laoflchdb_client::pb::rpc::SqlQueryResponse) {
+    use laoflchdb_client::pb::rpc::sql_field;
     
     if response.rows.is_empty() {
         println!("查询成功，没有返回结果");

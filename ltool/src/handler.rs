@@ -5,7 +5,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{
-    App, FaceFocus, ImageFocus, InputState, Tab, VectorFocus,
+    App, FaceFocus, InputState, Tab, VectorFocus,
 };
 
 /// 处理一个键盘事件
@@ -47,19 +47,19 @@ pub async fn handle_event(app: &mut App, event: KeyEvent) -> bool {
             app.prev_tab();
             return true;
         }
-        KeyCode::Char('1') if event.modifiers.is_empty() => {
+        KeyCode::Char('1') if event.modifiers.contains(KeyModifiers::ALT) => {
             app.current_tab = Tab::Image;
             return true;
         }
-        KeyCode::Char('2') if event.modifiers.is_empty() => {
+        KeyCode::Char('2') if event.modifiers.contains(KeyModifiers::ALT) => {
             app.current_tab = Tab::Face;
             return true;
         }
-        KeyCode::Char('3') if event.modifiers.is_empty() => {
+        KeyCode::Char('3') if event.modifiers.contains(KeyModifiers::ALT) => {
             app.current_tab = Tab::Vector;
             return true;
         }
-        KeyCode::Char('4') if event.modifiers.is_empty() => {
+        KeyCode::Char('4') if event.modifiers.contains(KeyModifiers::ALT) => {
             app.current_tab = Tab::Sql;
             return true;
         }
@@ -166,7 +166,7 @@ fn execute_command(app: &mut App, cmd: &str) {
         }
         "help" | "?" => {
             app.set_status(
-                "命令: :login <user> <pass> | :bucket <名称> | :key [值] | :quit | :help | 1/2/3/4 切换 Tab",
+                "命令: :login <user> <pass> | :bucket <名称> | :key [值] | :quit | :help | Alt+1~4 切换 Tab",
             );
         }
         _ => {
@@ -177,6 +177,23 @@ fn execute_command(app: &mut App, cmd: &str) {
 
 /// 处理图片 Tab 的事件
 async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
+    // 确认上传弹窗优先
+    if app.image_tab.confirm_upload.is_some() {
+        match event.code {
+            KeyCode::Enter => {
+                let _ = crate::tab_image::upload_image(app).await;
+                app.image_tab.confirm_upload = None;
+                return true;
+            }
+            KeyCode::Esc => {
+                app.image_tab.confirm_upload = None;
+                app.set_status("已取消上传");
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     // 快捷键：F1=上传, F2=列出；Ctrl+M 元数据, Ctrl+D 删除
     // bucket/key 通过命令模式 :bucket / :key 设置，状态栏只读显示
     match event.code {
@@ -221,7 +238,8 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                         let cs = crate::path_complete::list_candidates(&full);
                         app.image_tab.path_popup.open(cs);
                     } else {
-                        app.set_status(format!("已选择: {}", full));
+                        // 选中文件后弹出确认上传对话框
+                        app.image_tab.confirm_upload = Some(full);
                     }
                 } else {
                     app.image_tab.path_popup.close();
@@ -523,7 +541,7 @@ fn handle_input_event(input: &mut InputState, event: KeyEvent) -> bool {
         KeyCode::Right => input.right(),
         KeyCode::Home => input.home(),
         KeyCode::End => input.end(),
-        KeyCode::Char(c) if event.modifiers.is_empty() => input.insert_char(c),
+        KeyCode::Char(c) if event.modifiers.is_empty() || event.modifiers == KeyModifiers::SHIFT => input.insert_char(c),
         _ => return false,
     }
     true

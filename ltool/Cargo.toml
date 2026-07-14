@@ -9,11 +9,11 @@ name = "ltool"
 path = "src/main.rs"
 
 [dependencies]
-# 主 crate（复用 LaoflchDbClient：认证、SQL、版本）
-laoflchDB-rust = { path = ".." }
-# 各服务的 proto client（image/embedding 本身轻量，face 用抽出的 proto crate 避免拉入 candle）
-laoflchdb_image_service = { path = "../laoflchdb_image_service" }
-laoflchdb_embedding_service = { path = "../laoflchdb_embedding_service" }
+# 轻量级 gRPC client proto（替代 laoflchDB-rust 主 crate，避免拉入 rocksdb）
+laoflchdb_client = { path = "../laoflchdb_client" }
+# 各服务的 proto client（轻量级，不拉入后端服务依赖）
+laoflchdb_image_service_proto = { path = "../laoflchdb_image_service_proto" }
+laoflchdb_embedding_service_proto = { path = "../laoflchdb_embedding_service_proto" }
 laoflchdb_face_service_proto = { path = "../laoflchdb_face_service_proto" }
 # gRPC
 tonic = "0.11"
@@ -22,9 +22,6 @@ tokio = { version = "1.0", features = ["full"] }
 # TUI
 ratatui = "0.26"
 crossterm = "0.27"
-# 图片渲染（halfblock 后端，任何终端通用）
-ratatui-image = { version = "1.0", default-features = false, features = ["crossterm", "image-defaults"] }
-image = { version = "0.24", default-features = false, features = ["jpeg", "png", "gif", "bmp", "webp", "jpeg_rayon"] }
 # 命令行参数
 clap = { version = "4.5", features = ["derive"] }
 # 工具

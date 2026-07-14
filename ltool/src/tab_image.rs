@@ -5,7 +5,7 @@
 use anyhow::{anyhow, Result};
 use std::path::Path;
 
-use laoflchdb_image_service::proto::{
+use laoflchdb_image_service_proto::proto::{
     DeleteImageRequest, GetImageMetadataRequest, ListImagesRequest, UploadImageRequest,
 };
 

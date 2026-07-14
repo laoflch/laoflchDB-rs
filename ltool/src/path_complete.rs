@@ -3,12 +3,8 @@
 //! 在文件路径输入框中输入字符时自动列出候选下拉菜单，
 //! Up/Down 选择，Enter 确认，Esc 取消。
 //! 支持 ~ 展开（home 目录）。
-//! 仅显示目录和图片文件，图片候选项可加载缩略图。
 
 use std::path::{Path, PathBuf};
-
-/// 支持的图片扩展名（小写）
-const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif", "ico", "tga", "farbfeld"];
 
 /// 单个候选项
 #[derive(Debug, Clone)]
@@ -19,50 +15,9 @@ pub struct Candidate {
     pub full_path: String,
     /// 是否目录
     pub is_dir: bool,
-    /// 是否符号链接
-    pub is_symlink: bool,
-    /// 是否隐藏文件（以 . 开头）
-    pub is_hidden: bool,
-    /// 是否图片文件
-    pub is_image: bool,
 }
 
-impl Candidate {
-    /// 加载图片缩略图（仅对 is_image=true 有效）
-    ///
-    /// 返回 `image::DynamicImage`，失败返回 None。
-    /// 内部会按短边缩放到 64 像素，降低内存与渲染开销。
-    pub fn load_thumbnail(&self) -> Option<image::DynamicImage> {
-        if !self.is_image {
-            return None;
-        }
-        let img = image::open(&self.full_path).ok()?;
-        // 缩放：短边到 64px，保持比例
-        let (w, h) = (img.width(), img.height());
-        let thumb_size = 64u32;
-        let (tw, th) = if w < h {
-            let ratio = thumb_size as f32 / w as f32;
-            (thumb_size, (h as f32 * ratio).round() as u32)
-        } else {
-            let ratio = thumb_size as f32 / h as f32;
-            ((w as f32 * ratio).round() as u32, thumb_size)
-        };
-        // 防止零尺寸
-        let (tw, th) = (tw.max(1), th.max(1));
-        Some(img.resize(tw, th, image::imageops::FilterType::Nearest))
-    }
-}
-
-/// 判断文件名是否为支持的图片类型（按扩展名）
-fn is_image_file(name: &str) -> bool {
-    Path::new(name)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|e| IMAGE_EXTS.contains(&e.to_lowercase().as_str()))
-        .unwrap_or(false)
-}
-
-/// 列出输入路径对应的候选（仅目录和图片文件）
+/// 列出输入路径对应的候选
 pub fn list_candidates(input: &str) -> Vec<Candidate> {
     let (dir, prefix, had_tilde) = match resolve_input(input) {
         Some(r) => r,
@@ -82,8 +37,7 @@ pub fn list_candidates(input: &str) -> Vec<Candidate> {
         Err(_) => return Vec::new(),
     };
 
-    // 收集 (name, is_dir, is_symlink, is_hidden, is_image)
-    let mut matches: Vec<(String, bool, bool, bool, bool)> = Vec::new();
+    let mut matches: Vec<(String, bool)> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if !name.starts_with(&prefix) {
@@ -95,13 +49,7 @@ pub fn list_candidates(input: &str) -> Vec<Candidate> {
         }
         let file_type = entry.file_type().ok();
         let is_dir = file_type.map(|t| t.is_dir()).unwrap_or(false);
-        let is_symlink = file_type.map(|t| t.is_symlink()).unwrap_or(false);
-        // 仅保留目录和图片文件
-        let is_image = !is_dir && is_image_file(&name);
-        if !is_dir && !is_image {
-            continue;
-        }
-        matches.push((name, is_dir, is_symlink, is_hidden, is_image));
+        matches.push((name, is_dir));
     }
     // 排序：目录优先，然后按名称
     matches.sort_by(|a, b| match (a.1, b.1) {
@@ -112,20 +60,18 @@ pub fn list_candidates(input: &str) -> Vec<Candidate> {
 
     matches
         .into_iter()
-        .map(|(name, is_dir, is_symlink, is_hidden, is_image)| {
+        .map(|(name, is_dir)| {
             let display = if is_dir {
                 format!("{}/", name)
             } else {
                 name.clone()
             };
             let full_expanded = join_path(&dir, &name);
-            // 目录补全后加末尾 /，方便继续输入
             let full_expanded = if is_dir {
                 format!("{}/", full_expanded)
             } else {
                 full_expanded
             };
-            // 若原输入有 ~，把 home 前缀替换回 ~
             let full_path = if had_tilde {
                 reapply_tilde(&full_expanded, input)
             } else {
@@ -135,9 +81,6 @@ pub fn list_candidates(input: &str) -> Vec<Candidate> {
                 display,
                 full_path,
                 is_dir,
-                is_symlink,
-                is_hidden,
-                is_image,
             }
         })
         .collect()
@@ -170,7 +113,6 @@ fn expand_tilde(input: &str) -> (String, bool) {
 /// 把补全后的路径重新用 ~ 表示
 fn reapply_tilde(completed: &str, original: &str) -> String {
     if original == "~" {
-        // 列 home 目录的情况
         if let Some(name) = Path::new(completed).file_name() {
             return format!("~/{}", name.to_string_lossy());
         }
@@ -186,15 +128,10 @@ fn reapply_tilde(completed: &str, original: &str) -> String {
 }
 
 /// 分离目录和前缀
-/// "/tmp/tes" → ("/tmp", "tes")
-/// "tes"      → ("", "tes")
-/// "/tmp/"    → ("/tmp", "")
-/// "/tm"      → ("/", "tm")
 fn split_dir_prefix(path: &str) -> (String, String) {
     if let Some(idx) = path.rfind('/') {
         let dir = &path[..idx];
         let prefix = &path[idx + 1..];
-        // 若路径以 / 开头且 dir 为空（如 "/tm"），dir 应为 "/"
         let dir = if dir.is_empty() && path.starts_with('/') {
             "/".to_string()
         } else {
@@ -206,7 +143,7 @@ fn split_dir_prefix(path: &str) -> (String, String) {
     }
 }
 
-/// 拼接目录和文件名（处理 dir 为空的情况）
+/// 拼接目录和文件名
 fn join_path(dir: &str, name: &str) -> String {
     if dir.is_empty() {
         name.to_string()
@@ -232,7 +169,6 @@ mod tests {
 
     #[test]
     fn test_list_candidates_tmp_dir() {
-        // /tm 应只匹配到 /tmp/
         let cs = list_candidates("/tm");
         assert_eq!(cs.len(), 1, "/tm 应只匹配 /tmp");
         assert!(cs[0].is_dir, "/tmp 应是目录");
@@ -262,17 +198,5 @@ mod tests {
         let cs = list_candidates("~");
         assert!(!cs.is_empty(), "~ 应展开为 home 目录");
         assert!(cs.iter().all(|c| c.full_path.starts_with('~')), "候选应以 ~/ 开头");
-    }
-
-    #[test]
-    fn test_is_image_file() {
-        assert!(is_image_file("photo.jpg"));
-        assert!(is_image_file("photo.JPEG"));
-        assert!(is_image_file("pic.png"));
-        assert!(is_image_file("anim.gif"));
-        assert!(is_image_file("img.webp"));
-        assert!(!is_image_file("readme.md"));
-        assert!(!is_image_file("archive.zip"));
-        assert!(!is_image_file("noext"));
     }
 }

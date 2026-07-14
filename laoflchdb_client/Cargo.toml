@@ -1,0 +1,13 @@
+[package]
+name = "laoflchdb_client"
+version = "0.1.0"
+edition = "2021"
+description = "轻量级 laoflchdb gRPC 客户端 proto 代码，避免拉入 rocksdb 等重型依赖"
+
+[dependencies]
+tonic = "0.11"
+prost = "0.12"
+
+[build-dependencies]
+tonic-build = "0.11"
+prost-build = "0.12"
