@@ -798,6 +798,9 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
                 Span::raw("  "),
                 Span::styled("TopK: ", Style::default().fg(Color::Cyan)),
                 Span::raw(&action.top_k.value),
+                Span::raw("  "),
+                Span::styled("距离≤: ", Style::default().fg(Color::Cyan)),
+                Span::raw(&action.max_distance.value),
             ]));
             f.render_widget(info_line, Rect {
                 x: content_area.x,
@@ -831,24 +834,35 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
 /// 绘制向量搜索结果弹窗
 ///
 /// 显示搜索到的相似图片 ID 和相似度分数，按分数降序排列。
+/// 支持 ↑/↓/PageUp/PageDown 滚动浏览。
 fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
     let area = f.size();
     let results = &app.image_tab.search_results;
-    if results.is_empty() {
+    let total = results.len();
+    if total == 0 {
         return;
     }
 
+    // 弹窗最大高度：不超过终端高度 - 4，最小显示 4 行内容
+    let max_content_rows = (area.height.saturating_sub(8)) as usize;
+    let content_rows = max_content_rows.min(total).max(1);
     let width = 50.min(area.width.saturating_sub(4));
-    let height = (results.len() as u16 + 4).min(area.height.saturating_sub(4));
+    let height = content_rows as u16 + 4; // 边框 + 表头 + 分隔线 + 内容 + 底部提示
     let x = (area.width - width) / 2;
     let y = (area.height - height) / 2;
     let dialog_area = Rect { x, y, width, height };
 
+    // 限制滚动范围
+    if app.image_tab.search_results_scroll > total.saturating_sub(content_rows) {
+        app.image_tab.search_results_scroll = total.saturating_sub(content_rows);
+    }
+
     f.render_widget(Clear, dialog_area);
 
+    let title = format!("相似图片搜索结果  ({}/{}  scroll={})", total, total, app.image_tab.search_results_scroll);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("相似图片搜索结果")
+        .title(truncate_str(&title, dialog_area.width as usize - 2))
         .style(Style::default().bg(Color::Black).fg(Color::White));
     f.render_widget(block, dialog_area);
 
@@ -859,35 +873,52 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
         height: dialog_area.height.saturating_sub(2),
     };
 
+    // 将可视区域分为左右：内容区 + 滚动条区
+    let content_width = inner.width.saturating_sub(1);
+    let content_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: content_width,
+        height: inner.height,
+    };
+    let scrollbar_area = Rect {
+        x: inner.x + content_width,
+        y: inner.y,
+        width: 1,
+        height: inner.height,
+    };
+
     // 表头
     let header = Paragraph::new(Line::from(vec![
         Span::styled(" ID", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
-        Span::styled("相似度", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled("距离", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
     ]));
     f.render_widget(header, Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
+        x: content_area.x,
+        y: content_area.y,
+        width: content_area.width,
         height: 1,
     });
 
     // 分隔线
-    let sep = Paragraph::new(Line::from(Span::raw("─".repeat(inner.width as usize))))
+    let sep = Paragraph::new(Line::from(Span::raw("─".repeat(content_area.width as usize))))
         .style(Style::default().fg(Color::DarkGray));
     f.render_widget(sep, Rect {
-        x: inner.x,
-        y: inner.y + 1,
-        width: inner.width,
+        x: content_area.x,
+        y: content_area.y + 1,
+        width: content_area.width,
         height: 1,
     });
 
-    // 结果行
-    for (i, result) in results.iter().enumerate() {
-        let row_y = inner.y + 2 + i as u16;
-        if row_y > inner.y + inner.height - 2 {
-            break;
-        }
+    // 结果行（支持滚动）
+    let visible_rows = content_area.height.saturating_sub(3); // 表头 + 分隔线 + 底部提示
+    let start = app.image_tab.search_results_scroll;
+    let end = (start + visible_rows as usize).min(total);
+
+    for (i, idx) in (start..end).enumerate() {
+        let result = &results[idx];
+        let row_y = content_area.y + 2 + i as u16;
         let row = Paragraph::new(Line::from(vec![
             Span::raw(format!(" {}", result.id)),
             Span::raw("  "),
@@ -897,23 +928,40 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
             ),
         ]));
         f.render_widget(row, Rect {
-            x: inner.x,
+            x: content_area.x,
             y: row_y,
-            width: inner.width,
+            width: content_area.width,
             height: 1,
         });
     }
 
+    // 滚动条
+    if total > visible_rows as usize {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .thumb_symbol("█")
+            .track_symbol(Some("░"))
+            .style(Style::default().fg(Color::DarkGray));
+        let mut state = ScrollbarState::new(total).position(app.image_tab.search_results_scroll);
+        f.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
+    }
+
     // 底部提示
-    let hint = Paragraph::new(
-        Span::styled("Esc 关闭", Style::default().fg(Color::DarkGray)),
-    )
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw("关闭  "),
+        Span::styled("↑/↓ ", Style::default().fg(Color::Cyan)),
+        Span::raw("滚动  "),
+        Span::styled("PgUp/PgDn ", Style::default().fg(Color::Cyan)),
+        Span::raw("翻页"),
+    ]))
     .alignment(Alignment::Center);
-    let hint_y = inner.y + inner.height - 1;
+    let hint_y = content_area.y + content_area.height - 1;
     f.render_widget(hint, Rect {
-        x: inner.x,
+        x: content_area.x,
         y: hint_y,
-        width: inner.width,
+        width: content_area.width,
         height: 1,
     });
 }

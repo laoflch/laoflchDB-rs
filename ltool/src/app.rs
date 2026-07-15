@@ -197,6 +197,8 @@ pub struct ImageTabState {
     pub search_results: Vec<SearchResultItem>,
     /// 是否显示搜索弹窗
     pub show_search_results: bool,
+    /// 搜索结果的滚动偏移
+    pub search_results_scroll: usize,
 }
 
 /// 向量搜索结果项
@@ -224,6 +226,8 @@ pub struct LocalFileAction {
     pub model_index: usize,
     /// 搜索返回 top_k
     pub top_k: InputState,
+    /// 距离最大值（过滤掉距离大于此值的结果，默认 0.1）
+    pub max_distance: InputState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,6 +257,7 @@ impl Default for ImageTabState {
             download_path_scroll: 0,
             search_results: Vec::new(),
             show_search_results: false,
+            search_results_scroll: 0,
         }
     }
 }
@@ -557,6 +562,7 @@ impl App {
         self.image_tab.download_path_scroll = 0;
         self.image_tab.search_results.clear();
         self.image_tab.show_search_results = false;
+        self.image_tab.search_results_scroll = 0;
         self.image_tab.path_popup.close();
     }
 

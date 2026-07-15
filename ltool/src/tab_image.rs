@@ -131,10 +131,13 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
         }
     };
 
-    let id = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    // 使用 image key（Snowflake ID）作为向量索引 ID，可直接关联回图片
+    let id = resp.key.parse::<u64>().unwrap_or_else(|_| {
+        SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    });
 
     use laoflchdb_embedding_service_proto::proto::InsertEmbeddingRequest;
     let ins_req = InsertEmbeddingRequest {
@@ -338,7 +341,7 @@ pub async fn download_image(app: &mut App) -> Result<()> {
 /// 2. 调用 VectorService.CreateEmbedding 生成向量
 /// 3. 调用 EmbeddingIndexService.SearchEmbedding 搜索相似向量
 /// 4. 结果存入 app.image_tab.search_results，弹窗显示
-pub async fn search_similar_image(app: &mut App, model_name: &str, dim: i32, top_k: i32) -> Result<()> {
+pub async fn search_similar_image(app: &mut App, model_name: &str, dim: i32, top_k: i32, max_distance: f32) -> Result<()> {
     if !app.require_login() {
         return Ok(());
     }
@@ -409,22 +412,30 @@ pub async fn search_similar_image(app: &mut App, model_name: &str, dim: i32, top
         return Ok(());
     }
 
-    // 3. 保存结果
+    // 3. 按最大距离过滤并保存结果
+    app.image_tab.search_results_scroll = 0;
     use crate::app::SearchResultItem;
-    app.image_tab.search_results = search_resp
+    let total = search_resp.results.len();
+    let filtered: Vec<SearchResultItem> = search_resp
         .results
         .into_iter()
+        .filter(|r| r.distance <= max_distance)
         .map(|r| SearchResultItem {
             id: r.id,
             score: r.distance,
         })
         .collect();
+    app.image_tab.search_results = filtered;
 
     let count = app.image_tab.search_results.len();
     if count == 0 {
-        app.set_status("未找到相似图片");
+        if total > 0 {
+            app.set_status(format!("搜索完成，原始 {} 个结果均被距离阈值 {:.2} 过滤掉", total, max_distance));
+        } else {
+            app.set_status("未找到相似图片");
+        }
     } else {
-        app.set_status(format!("搜索完成，找到 {} 个相似结果", count));
+        app.set_status(format!("搜索完成，{} 个结果（过滤前 {} 个，距离阈值 ≤ {:.2}）", count, total, max_distance));
         app.image_tab.show_search_results = true;
     }
 

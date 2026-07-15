@@ -186,10 +186,32 @@ const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "下载图片", "删�
 async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
     // 向量搜索结果显示弹窗优先
     if app.image_tab.show_search_results {
-        if event.code == KeyCode::Esc {
-            app.image_tab.show_search_results = false;
-            app.image_tab.search_results.clear();
-            return true;
+        match event.code {
+            KeyCode::Esc => {
+                app.image_tab.show_search_results = false;
+                app.image_tab.search_results.clear();
+                app.image_tab.search_results_scroll = 0;
+                return true;
+            }
+            KeyCode::Up => {
+                if app.image_tab.search_results_scroll > 0 {
+                    app.image_tab.search_results_scroll -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                app.image_tab.search_results_scroll += 1;
+                return true;
+            }
+            KeyCode::PageUp => {
+                app.image_tab.search_results_scroll = app.image_tab.search_results_scroll.saturating_sub(10);
+                return true;
+            }
+            KeyCode::PageDown => {
+                app.image_tab.search_results_scroll += 10;
+                return true;
+            }
+            _ => {}
         }
     }
 
@@ -251,8 +273,11 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                         let top_k: i32 = app.image_tab.local_file_action.as_ref()
                             .and_then(|a| a.top_k.value.parse().ok())
                             .unwrap_or(10);
+                        let max_distance: f32 = app.image_tab.local_file_action.as_ref()
+                            .and_then(|a| a.max_distance.value.parse().ok())
+                            .unwrap_or(0.1);
                         app.image_tab.local_file_action = None;
-                        let _ = crate::tab_image::search_similar_image(app, &model_name, dim, top_k).await;
+                        let _ = crate::tab_image::search_similar_image(app, &model_name, dim, top_k, max_distance).await;
                     }
                     _ => {}
                 }
@@ -440,6 +465,7 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                             index_name: crate::app::InputState::with_value("image"),
                             dim: crate::app::InputState::with_value("512"),
                             top_k: crate::app::InputState::with_value("10"),
+                            max_distance: crate::app::InputState::with_value("0.1"),
                             models,
                             model_index: 0,
                         });
@@ -456,6 +482,32 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
             }
             _ => {}
         }
+    }
+
+    // 文件路径非空时按 Enter 重新打开操作对话框
+    if event.code == KeyCode::Enter
+        && !app.image_tab.file_path.value.is_empty()
+        && app.image_tab.local_file_action.is_none()
+        && !app.image_tab.path_popup.active
+    {
+        let models = vec![
+            "jina-clip-v2".to_string(),
+            "siglip2".to_string(),
+            "bge-small-zh-v1.5".to_string(),
+        ];
+        let full = app.image_tab.file_path.value.clone();
+        app.image_tab.local_file_action = Some(crate::app::LocalFileAction {
+            file_path: full,
+            tab: 0,
+            model_name: crate::app::InputState::with_value("jina-clip-v2"),
+            index_name: crate::app::InputState::with_value("image"),
+            dim: crate::app::InputState::with_value("512"),
+            top_k: crate::app::InputState::with_value("10"),
+                            max_distance: crate::app::InputState::with_value("0.1"),
+                            models,
+            model_index: 0,
+        });
+        return true;
     }
 
     match event.code {
