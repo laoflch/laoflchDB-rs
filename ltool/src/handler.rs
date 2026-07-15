@@ -191,16 +191,25 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                 app.image_tab.show_search_results = false;
                 app.image_tab.search_results.clear();
                 app.image_tab.search_results_scroll = 0;
+                app.image_tab.search_selected = None;
                 return true;
             }
             KeyCode::Up => {
-                if app.image_tab.search_results_scroll > 0 {
-                    app.image_tab.search_results_scroll -= 1;
+                let n = app.image_tab.search_results.len();
+                if n > 0 {
+                    let cur = app.image_tab.search_selected.unwrap_or(0);
+                    app.image_tab.search_selected = Some(if cur == 0 { n - 1 } else { cur - 1 });
+                    auto_scroll_search_results(&mut app.image_tab);
                 }
                 return true;
             }
             KeyCode::Down => {
-                app.image_tab.search_results_scroll += 1;
+                let n = app.image_tab.search_results.len();
+                if n > 0 {
+                    let cur = app.image_tab.search_selected.unwrap_or(0);
+                    app.image_tab.search_selected = Some(if cur >= n - 1 { 0 } else { cur + 1 });
+                    auto_scroll_search_results(&mut app.image_tab);
+                }
                 return true;
             }
             KeyCode::PageUp => {
@@ -211,84 +220,142 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                 app.image_tab.search_results_scroll += 10;
                 return true;
             }
+            KeyCode::Enter => {
+                // 查看选中图片的元数据
+                if let Some(idx) = app.image_tab.search_selected {
+                    if idx < app.image_tab.search_results.len() {
+                        let key = app.image_tab.search_results[idx].id.to_string();
+                        app.image_tab.key.set_value(&key);
+                        let _ = crate::tab_image::get_metadata(app).await;
+                    }
+                }
+                return true;
+            }
             _ => {}
         }
     }
 
     // 本地文件操作弹窗优先
     if app.image_tab.local_file_action.is_some() {
-        match event.code {
-            KeyCode::Tab | KeyCode::Right => {
-                let tab = &mut app.image_tab.local_file_action.as_mut().unwrap().tab;
-                if *tab < 1 {
-                    *tab += 1;
+        let tab = app.image_tab.local_file_action.as_ref().map(|a| a.tab).unwrap_or(0);
+        if tab == 1 {
+            // ── 向量搜索 Tab：支持字段编辑 ────────────────
+            match event.code {
+                KeyCode::Tab => {
+                    // 在 Dim → TopK → MaxDistance → Tab0 → Tab1 间循环
+                    use crate::app::VectorSearchFocus;
+                    let action = app.image_tab.local_file_action.as_mut().unwrap();
+                    match action.search_focus {
+                        VectorSearchFocus::Dim => action.search_focus = VectorSearchFocus::TopK,
+                        VectorSearchFocus::TopK => action.search_focus = VectorSearchFocus::MaxDistance,
+                        VectorSearchFocus::MaxDistance => {
+                            // 切换到上传 Tab
+                            action.tab = 0;
+                            action.search_focus = VectorSearchFocus::Dim;
+                        }
+                    }
+                    return true;
                 }
-                return true;
-            }
-            KeyCode::Left => {
-                let tab = &mut app.image_tab.local_file_action.as_mut().unwrap().tab;
-                if *tab > 0 {
-                    *tab -= 1;
+                KeyCode::BackTab => {
+                    use crate::app::VectorSearchFocus;
+                    let action = app.image_tab.local_file_action.as_mut().unwrap();
+                    match action.search_focus {
+                        VectorSearchFocus::MaxDistance => action.search_focus = VectorSearchFocus::TopK,
+                        VectorSearchFocus::TopK => action.search_focus = VectorSearchFocus::Dim,
+                        VectorSearchFocus::Dim => {
+                            action.tab = 0;
+                            action.search_focus = VectorSearchFocus::Dim;
+                        }
+                    }
+                    return true;
                 }
-                return true;
-            }
-            KeyCode::Up => {
-                // 仅在向量索引 Tab 中切换模型
-                let action = app.image_tab.local_file_action.as_mut().unwrap();
-                if action.tab == 1 && !action.models.is_empty() {
-                    action.model_index = if action.model_index == 0 {
-                        action.models.len() - 1
-                    } else {
-                        action.model_index - 1
+                KeyCode::Up => {
+                    // 切换模型
+                    let action = app.image_tab.local_file_action.as_mut().unwrap();
+                    if !action.models.is_empty() {
+                        action.model_index = if action.model_index == 0 {
+                            action.models.len() - 1
+                        } else {
+                            action.model_index - 1
+                        };
+                        action.model_name.set_value(&action.models[action.model_index]);
+                    }
+                    return true;
+                }
+                KeyCode::Down => {
+                    // 切换模型
+                    let action = app.image_tab.local_file_action.as_mut().unwrap();
+                    if !action.models.is_empty() {
+                        action.model_index = (action.model_index + 1) % action.models.len();
+                        action.model_name.set_value(&action.models[action.model_index]);
+                    }
+                    return true;
+                }
+                KeyCode::Enter => {
+                    let file_path = app.image_tab.local_file_action.as_ref().map(|a| a.file_path.clone()).unwrap_or_default();
+                    app.image_tab.file_path.set_value(&file_path);
+                    let model_name = app.image_tab.local_file_action.as_ref().map(|a| a.model_name.value.clone()).unwrap_or_default();
+                    let dim: i32 = app.image_tab.local_file_action.as_ref()
+                        .and_then(|a| a.dim.value.parse().ok())
+                        .unwrap_or(0);
+                    let top_k: i32 = app.image_tab.local_file_action.as_ref()
+                        .and_then(|a| a.top_k.value.parse().ok())
+                        .unwrap_or(10);
+                    let max_distance: f32 = app.image_tab.local_file_action.as_ref()
+                        .and_then(|a| a.max_distance.value.parse().ok())
+                        .unwrap_or(0.1);
+                    app.image_tab.local_file_action = None;
+                    let _ = crate::tab_image::search_similar_image(app, &model_name, dim, top_k, max_distance).await;
+                    return true;
+                }
+                KeyCode::Esc => {
+                    app.image_tab.local_file_action = None;
+                    app.set_status("已取消操作");
+                    return true;
+                }
+                _ => {
+                    // 编辑当前聚焦的字段
+                    let action = app.image_tab.local_file_action.as_mut().unwrap();
+                    let input = match action.search_focus {
+                        crate::app::VectorSearchFocus::Dim => &mut action.dim,
+                        crate::app::VectorSearchFocus::TopK => &mut action.top_k,
+                        crate::app::VectorSearchFocus::MaxDistance => &mut action.max_distance,
                     };
-                    action.model_name.set_value(&action.models[action.model_index]);
+                    let changed = handle_input_event(input, event);
+                    // 编辑时自动更新模型维度（dim 未设置时使用默认值）
+                    return changed;
                 }
-                return true;
             }
-            KeyCode::Down => {
-                // 仅在向量索引 Tab 中切换模型
-                let action = app.image_tab.local_file_action.as_mut().unwrap();
-                if action.tab == 1 && !action.models.is_empty() {
-                    action.model_index = (action.model_index + 1) % action.models.len();
-                    action.model_name.set_value(&action.models[action.model_index]);
+        } else {
+            // ── 上传 Tab ────────────────────────────────
+            match event.code {
+                KeyCode::Tab | KeyCode::Right => {
+                    let action = app.image_tab.local_file_action.as_mut().unwrap();
+                    action.tab = 1;
+                    action.search_focus = crate::app::VectorSearchFocus::Dim;
+                    return true;
                 }
-                return true;
-            }
-            KeyCode::Enter => {
-                let tab = app.image_tab.local_file_action.as_ref().map(|a| a.tab).unwrap_or(0);
-                let file_path = app.image_tab.local_file_action.as_ref().map(|a| a.file_path.clone()).unwrap_or_default();
-                app.image_tab.file_path.set_value(&file_path);
-                match tab {
-                    0 => {
-                        // 上传图片（自动包含向量索引）
-                        app.image_tab.local_file_action = None;
-                        let _ = crate::tab_image::upload_image(app).await;
-                    }
-                    1 => {
-                        // 搜索相似图片（向量查询）
-                        let model_name = app.image_tab.local_file_action.as_ref().map(|a| a.model_name.value.clone()).unwrap_or_default();
-                        let dim: i32 = app.image_tab.local_file_action.as_ref()
-                            .and_then(|a| a.dim.value.parse().ok())
-                            .unwrap_or(0);
-                        let top_k: i32 = app.image_tab.local_file_action.as_ref()
-                            .and_then(|a| a.top_k.value.parse().ok())
-                            .unwrap_or(10);
-                        let max_distance: f32 = app.image_tab.local_file_action.as_ref()
-                            .and_then(|a| a.max_distance.value.parse().ok())
-                            .unwrap_or(0.1);
-                        app.image_tab.local_file_action = None;
-                        let _ = crate::tab_image::search_similar_image(app, &model_name, dim, top_k, max_distance).await;
-                    }
-                    _ => {}
+                KeyCode::Left => {
+                    // 已经是 Tab 0，不切换
+                    return true;
                 }
-                return true;
+                KeyCode::Up | KeyCode::Down => {
+                    return true;
+                }
+                KeyCode::Enter => {
+                    let file_path = app.image_tab.local_file_action.as_ref().map(|a| a.file_path.clone()).unwrap_or_default();
+                    app.image_tab.file_path.set_value(&file_path);
+                    app.image_tab.local_file_action = None;
+                    let _ = crate::tab_image::upload_image(app).await;
+                    return true;
+                }
+                KeyCode::Esc => {
+                    app.image_tab.local_file_action = None;
+                    app.set_status("已取消操作");
+                    return true;
+                }
+                _ => {}
             }
-            KeyCode::Esc => {
-                app.image_tab.local_file_action = None;
-                app.set_status("已取消操作");
-                return true;
-            }
-            _ => {}
         }
     }
 
@@ -468,6 +535,7 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                             max_distance: crate::app::InputState::with_value("0.1"),
                             models,
                             model_index: 0,
+                            search_focus: crate::app::VectorSearchFocus::Dim,
                         });
                     }
                 } else {
@@ -503,9 +571,10 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
             index_name: crate::app::InputState::with_value("image"),
             dim: crate::app::InputState::with_value("512"),
             top_k: crate::app::InputState::with_value("10"),
-                            max_distance: crate::app::InputState::with_value("0.1"),
-                            models,
+            max_distance: crate::app::InputState::with_value("0.1"),
+            models,
             model_index: 0,
+            search_focus: crate::app::VectorSearchFocus::Dim,
         });
         return true;
     }
@@ -579,6 +648,17 @@ fn auto_scroll_image(tab: &mut crate::app::ImageTabState) {
         tab.list_scroll = idx;
     } else if idx >= tab.list_scroll + visible {
         tab.list_scroll = idx - visible + 1;
+    }
+}
+
+/// 确保搜索结果选中行在可见范围内
+fn auto_scroll_search_results(tab: &mut crate::app::ImageTabState) {
+    const VISIBLE: usize = 10;
+    let Some(idx) = tab.search_selected else { return };
+    if idx < tab.search_results_scroll {
+        tab.search_results_scroll = idx;
+    } else if idx >= tab.search_results_scroll + VISIBLE {
+        tab.search_results_scroll = idx - VISIBLE + 1;
     }
 }
 

@@ -676,7 +676,7 @@ fn draw_path_popup(f: &mut Frame, popup: &PathPopup, anchor: Rect, content_botto
 /// 绘制本地文件操作弹窗
 ///
 /// 包含两个 Tab：上传（Tab 0）和向量索引（Tab 1）。
-/// 居中显示，Tab/←/→ 切换，Enter 确认，Esc 取消。
+/// 向量搜索 Tab 中 Dim/TopK/距离≤ 字段可编辑，Tab 切换焦点，↑/↓ 切换模型。
 fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
     let action = match &app.image_tab.local_file_action {
         Some(a) => a,
@@ -685,7 +685,8 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
 
     let area = f.size();
     let width = 60.min(area.width.saturating_sub(4));
-    let height = 10;
+    // 向量搜索 Tab 需要更多空间显示输入框
+    let height = if action.tab == 1 { 13 } else { 8 };
     let x = (area.width - width) / 2;
     let y = (area.height - height) / 2;
     let dialog_area = Rect { x, y, width, height };
@@ -764,8 +765,8 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
                 Span::raw("确认上传  "),
                 Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
                 Span::raw("取消  "),
-                Span::styled("←/→ ", Style::default().fg(Color::Cyan)),
-                Span::raw("切换 Tab"),
+                Span::styled("Tab ", Style::default().fg(Color::Cyan)),
+                Span::raw("切换到向量索引"),
             ]))
             .alignment(Alignment::Center);
             f.render_widget(hint, Rect {
@@ -776,7 +777,7 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
             });
         }
         1 => {
-            // 向量搜索 Tab
+            // 向量搜索 Tab：显示可编辑的输入框
             let path_display = truncate_str(&action.file_path, content_area.width as usize);
             let path_line = Paragraph::new(Line::from(vec![
                 Span::styled("文件: ", Style::default().fg(Color::Cyan)),
@@ -789,40 +790,76 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
                 height: 1,
             });
 
-            let info_line = Paragraph::new(Line::from(vec![
+            // 模型名称（只读，由 ↑/↓ 切换）
+            let model_line = Paragraph::new(Line::from(vec![
                 Span::styled("模型: ", Style::default().fg(Color::Cyan)),
                 Span::styled(&action.model_name.value, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-                Span::raw("  "),
-                Span::styled("维数: ", Style::default().fg(Color::Cyan)),
-                Span::raw(&action.dim.value),
-                Span::raw("  "),
-                Span::styled("TopK: ", Style::default().fg(Color::Cyan)),
-                Span::raw(&action.top_k.value),
-                Span::raw("  "),
-                Span::styled("距离≤: ", Style::default().fg(Color::Cyan)),
-                Span::raw(&action.max_distance.value),
+                Span::raw("  (↑/↓ 切换)"),
             ]));
-            f.render_widget(info_line, Rect {
+            f.render_widget(model_line, Rect {
                 x: content_area.x,
                 y: content_area.y + 1,
                 width: content_area.width,
                 height: 1,
             });
 
+            // 输入框：Dim, TopK, 距离≤
+            use crate::app::VectorSearchFocus;
+            let input_rows = [
+                ("维数(dim)", &action.dim, VectorSearchFocus::Dim),
+                ("TopK", &action.top_k, VectorSearchFocus::TopK),
+                ("距离≤", &action.max_distance, VectorSearchFocus::MaxDistance),
+            ];
+
+            for (i, (label, input, focus)) in input_rows.iter().enumerate() {
+                let row_y = content_area.y + 2 + i as u16;
+                let focused = action.search_focus == *focus;
+                let style = if focused {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                let block = Block::default()
+                    .borders(Borders::ALL)
+                    .title(*label)
+                    .style(style);
+                let p = Paragraph::new(input.value.clone())
+                    .block(block)
+                    .alignment(Alignment::Left);
+                // 每个输入框占 1/3 宽度
+                let col_width = content_area.width / 3;
+                let input_area = Rect {
+                    x: content_area.x + i as u16 * col_width,
+                    y: row_y,
+                    width: col_width,
+                    height: 3,
+                };
+                f.render_widget(p, input_area);
+                if focused {
+                    let cursor_x = input_area.x + 1 + input.value.chars().take(input.cursor).map(|c| c.len_utf8()).count() as u16;
+                    let cursor_y = input_area.y + 1;
+                    if cursor_x < input_area.x + input_area.width {
+                        f.set_cursor(cursor_x, cursor_y);
+                    }
+                }
+            }
+
+            // 提示
             let hint = Paragraph::new(Line::from(vec![
                 Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::raw("搜索相似图片  "),
-                Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-                Span::raw("取消  "),
+                Span::raw("搜索  "),
+                Span::styled("Tab ", Style::default().fg(Color::Cyan)),
+                Span::raw("切换字段  "),
                 Span::styled("↑/↓ ", Style::default().fg(Color::Cyan)),
                 Span::raw("切换模型  "),
-                Span::styled("←/→ ", Style::default().fg(Color::Cyan)),
-                Span::raw("切换 Tab"),
+                Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Span::raw("取消"),
             ]))
             .alignment(Alignment::Center);
+            let hint_y = content_area.y + 5;
             f.render_widget(hint, Rect {
                 x: content_area.x,
-                y: content_area.y + 3,
+                y: hint_y,
                 width: content_area.width,
                 height: 1,
             });
@@ -851,11 +888,6 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
     let x = (area.width - width) / 2;
     let y = (area.height - height) / 2;
     let dialog_area = Rect { x, y, width, height };
-
-    // 限制滚动范围
-    if app.image_tab.search_results_scroll > total.saturating_sub(content_rows) {
-        app.image_tab.search_results_scroll = total.saturating_sub(content_rows);
-    }
 
     f.render_widget(Clear, dialog_area);
 
@@ -913,20 +945,39 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
 
     // 结果行（支持滚动）
     let visible_rows = content_area.height.saturating_sub(3); // 表头 + 分隔线 + 底部提示
+
+    // 限制滚动范围（使用 visible_rows 而非 content_rows）
+    if visible_rows as usize >= total {
+        app.image_tab.search_results_scroll = 0;
+    } else if app.image_tab.search_results_scroll + visible_rows as usize > total {
+        app.image_tab.search_results_scroll = total.saturating_sub(visible_rows as usize);
+    }
+
     let start = app.image_tab.search_results_scroll;
     let end = (start + visible_rows as usize).min(total);
 
     for (i, idx) in (start..end).enumerate() {
         let result = &results[idx];
         let row_y = content_area.y + 2 + i as u16;
+        let is_selected = app.image_tab.search_selected == Some(idx);
+        let row_style = if is_selected {
+            Style::default().bg(Color::Green).fg(Color::Black)
+        } else {
+            Style::default()
+        };
         let row = Paragraph::new(Line::from(vec![
             Span::raw(format!(" {}", result.id)),
             Span::raw("  "),
             Span::styled(
                 format!("{:.4}", result.score),
-                Style::default().fg(Color::Yellow),
+                if is_selected {
+                    Style::default().fg(Color::Black)
+                } else {
+                    Style::default().fg(Color::Yellow)
+                },
             ),
-        ]));
+        ]))
+        .style(row_style);
         f.render_widget(row, Rect {
             x: content_area.x,
             y: row_y,
@@ -949,12 +1000,14 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
 
     // 底部提示
     let hint = Paragraph::new(Line::from(vec![
-        Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        Span::raw("关闭  "),
         Span::styled("↑/↓ ", Style::default().fg(Color::Cyan)),
-        Span::raw("滚动  "),
+        Span::raw("选择  "),
         Span::styled("PgUp/PgDn ", Style::default().fg(Color::Cyan)),
-        Span::raw("翻页"),
+        Span::raw("翻页  "),
+        Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw("查看元数据  "),
+        Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw("关闭"),
     ]))
     .alignment(Alignment::Center);
     let hint_y = content_area.y + content_area.height - 1;

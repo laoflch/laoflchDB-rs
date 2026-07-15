@@ -199,6 +199,8 @@ pub struct ImageTabState {
     pub show_search_results: bool,
     /// 搜索结果的滚动偏移
     pub search_results_scroll: usize,
+    /// 搜索结果中当前选中的索引
+    pub search_selected: Option<usize>,
 }
 
 /// 向量搜索结果项
@@ -206,6 +208,14 @@ pub struct ImageTabState {
 pub struct SearchResultItem {
     pub id: u64,
     pub score: f32,
+}
+
+/// 向量搜索 Tab 中的输入焦点
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VectorSearchFocus {
+    Dim,
+    TopK,
+    MaxDistance,
 }
 
 /// 本地文件操作弹窗：选择文件后弹出，提供上传和向量搜索两个 Tab
@@ -228,6 +238,8 @@ pub struct LocalFileAction {
     pub top_k: InputState,
     /// 距离最大值（过滤掉距离大于此值的结果，默认 0.1）
     pub max_distance: InputState,
+    /// 向量搜索 Tab 中当前聚焦的输入字段
+    pub search_focus: VectorSearchFocus,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +270,7 @@ impl Default for ImageTabState {
             search_results: Vec::new(),
             show_search_results: false,
             search_results_scroll: 0,
+            search_selected: None,
         }
     }
 }
@@ -563,6 +576,7 @@ impl App {
         self.image_tab.search_results.clear();
         self.image_tab.show_search_results = false;
         self.image_tab.search_results_scroll = 0;
+        self.image_tab.search_selected = None;
         self.image_tab.path_popup.close();
     }
 
