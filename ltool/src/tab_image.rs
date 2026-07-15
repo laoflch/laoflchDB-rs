@@ -52,6 +52,7 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
         data,
         content_type,
         metadata: Default::default(),
+        name: file_path.clone(),
     };
 
     app.set_status("正在上传图片...");
@@ -116,6 +117,7 @@ pub async fn list_images(app: &mut App) -> Result<()> {
 
     let count = resp.images.len();
     app.image_tab.images = resp.images;
+    app.image_tab.selected_index = None;
     app.image_tab.list_scroll = 0;
     app.set_status(format!("列出 {} 张图片", count));
     Ok(())

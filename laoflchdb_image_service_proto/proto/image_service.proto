@@ -30,6 +30,8 @@ message UploadImageRequest {
   string content_type = 4;
   // 用户自定义元数据
   map<string, string> metadata = 5;
+  // 图片名称（不指定则使用本地文件路径）
+  string name = 6;
 }
 
 // 图片元数据
@@ -47,6 +49,8 @@ message ImageMetadata {
   map<string, string> user_metadata = 9;
   // 图片格式（如 JPEG/PNG/GIF/WebP）
   string format = 10;
+  // 图片名称（上传时指定的名称，默认为本地文件路径）
+  string name = 11;
 }
 
 message UploadImageResponse {

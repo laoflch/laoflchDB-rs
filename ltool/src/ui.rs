@@ -70,6 +70,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if let Some(ref path) = app.image_tab.confirm_upload {
         draw_confirm_upload_dialog(f, path);
     }
+
+    // 图片操作弹窗（浮在最顶层）
+    if app.image_tab.action_popup_open {
+        draw_image_action_popup(f, app);
+    }
 }
 
 /// 绘制顶部 Tab 栏
@@ -193,20 +198,37 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
 
     // 下半部：结果区
     let result_area = chunks[1];
+
+    // 分割为表格区域和滚动条区域
+    let result_chunks = Layout::horizontal([
+        Constraint::Min(1),
+        Constraint::Length(1),
+    ]).split(result_area);
+    let table_area = result_chunks[0];
+    let scrollbar_area = result_chunks[1];
+
     let rows: Vec<Row> = app
         .image_tab
         .images
         .iter()
+        .enumerate()
         .skip(app.image_tab.list_scroll)
         .take(50)
-        .map(|m| {
-            Row::new(vec![
-                Cell::from(m.key.clone()),
+        .map(|(i, m)| {
+            let cells = vec![
+                Cell::from(truncate_str(&m.key, 18)),
                 Cell::from(m.content_type.clone()),
                 Cell::from(m.content_length.to_string()),
                 Cell::from(format!("{}x{}", m.width, m.height)),
-                Cell::from(m.last_modified.clone()),
-            ])
+                Cell::from(format_timestamp(&m.last_modified)),
+                Cell::from(if m.name.is_empty() { m.key.clone() } else { m.name.clone() }),
+            ];
+            // 选中行高亮
+            if Some(i) == app.image_tab.selected_index {
+                Row::new(cells).style(Style::default().bg(Color::Green).fg(Color::Black))
+            } else {
+                Row::new(cells)
+            }
         })
         .collect();
 
@@ -216,6 +238,7 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
         Cell::from("size"),
         Cell::from("WxH"),
         Cell::from("last_modified"),
+        Cell::from("name"),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
 
@@ -226,11 +249,35 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
         "图片列表".to_string()
     };
 
-    let table = Table::new(rows, [Constraint::Length(20), Constraint::Length(20), Constraint::Length(10), Constraint::Length(12), Constraint::Min(10)])
-        .header(header)
-        .block(Block::default().borders(Borders::ALL).title(title));
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(18),
+            Constraint::Length(20),
+            Constraint::Length(10),
+            Constraint::Length(12),
+            Constraint::Length(21),
+            Constraint::Min(20),
+        ],
+    )
+    .header(header)
+    .block(Block::default().borders(Borders::ALL).title(title));
 
-    f.render_widget(table, result_area);
+    f.render_widget(table, table_area);
+
+    // 滚动条
+    let total = app.image_tab.images.len();
+    let visible = 50; // 与 take(50) 一致
+    if total > visible {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .thumb_symbol("█")
+            .track_symbol(Some("░"))
+            .style(Style::default().fg(Color::DarkGray));
+        let mut state = ScrollbarState::new(total).position(app.image_tab.list_scroll);
+        f.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
+    }
 
     Some(path_area)
 }
@@ -667,4 +714,66 @@ fn draw_confirm_upload_dialog(f: &mut Frame, file_path: &str) {
         width: inner.width,
         height: 1,
     });
+}
+
+/// 将 Unix 时间戳字符串（秒）格式化为 Asia/Shanghai 时区的时间字符串
+fn format_timestamp(ts: &str) -> String {
+    let secs: u64 = match ts.parse() {
+        Ok(s) => s,
+        Err(_) => return ts.to_string(),
+    };
+    let naive = chrono::DateTime::from_timestamp(secs as i64, 0)
+        .unwrap_or_default();
+    // Asia/Shanghai = UTC+8, 不使用 DST
+    let shanghai = naive
+        .checked_add_signed(chrono::TimeDelta::hours(8))
+        .unwrap_or(naive);
+    shanghai.format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// 绘制图片操作弹窗
+const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "删除图片"];
+
+fn draw_image_action_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 30;
+    let height = IMAGE_ACTION_OPTIONS.len() as u16 + 3; // 标题 + 选项 + 边框
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("图片操作")
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    for (i, opt) in IMAGE_ACTION_OPTIONS.iter().enumerate() {
+        let selected = i == app.image_tab.action_popup_selected;
+        let style = if selected {
+            Style::default().bg(Color::Green).fg(Color::Black)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let prefix = if selected { "▶ " } else { "  " };
+        let line = Paragraph::new(Line::from(Span::styled(
+            format!("{}{}", prefix, opt),
+            style,
+        )));
+        f.render_widget(line, Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        });
+    }
 }

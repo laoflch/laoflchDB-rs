@@ -252,6 +252,7 @@ impl ImageServiceImpl {
             thumbnails,
             user_metadata,
             format: meta.get("format").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            name: meta.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         }
     }
 }
@@ -386,6 +387,7 @@ impl ImageService for ImageServiceImpl {
             thumbnails: thumbnails.clone(),
             user_metadata: req.metadata.clone(),
             format: format_str,
+            name: req.name.clone(),
         };
 
         let meta_json = serde_json::json!({
@@ -399,6 +401,7 @@ impl ImageService for ImageServiceImpl {
             "thumbnails": metadata.thumbnails,
             "user_metadata": metadata.user_metadata,
             "format": metadata.format,
+            "name": metadata.name,
         });
 
         let meta_key = Self::metadata_key(&image_key);
@@ -724,6 +727,7 @@ async fn list_images_handler(
                         "last_modified": m.last_modified,
                         "thumbnails": thumbnails,
                         "format": m.format,
+                        "name": m.name,
                     })
                 })
                 .collect();
@@ -760,6 +764,7 @@ async fn upload_image_handler(
         data: body.to_vec(),
         content_type,
         metadata: HashMap::new(),
+        name: String::new(),
     });
 
     match service.upload_image(req).await {
@@ -782,6 +787,7 @@ async fn upload_image_handler(
                         "last_modified": m.last_modified,
                         "thumbnails": thumbnails,
                         "format": m.format,
+                        "name": m.name,
                     })
                 } else {
                     serde_json::Value::Null

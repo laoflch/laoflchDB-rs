@@ -1112,6 +1112,7 @@ async fn save_aligned_to_image_service(
         data,
         content_type: "image/jpeg".to_string(),
         metadata: HashMap::new(),
+        name: String::new(),
     });
 
     img_svc

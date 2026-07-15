@@ -163,11 +163,17 @@ pub struct ImageTabState {
     pub images: Vec<laoflchdb_image_service_proto::proto::ImageMetadata>,
     pub upload_result: Option<String>,
     pub meta_detail: Option<String>,
+    /// 当前选中行的索引，None 表示无选中
+    pub selected_index: Option<usize>,
     pub list_scroll: usize,
     /// 本地路径输入框的补全下拉菜单
     pub path_popup: PathPopup,
     /// 确认上传弹窗：选中文件后显示，Enter 确认上传，Esc 取消
     pub confirm_upload: Option<String>,
+    /// 图片操作弹窗（选中列表中图片后按 Enter 弹出）
+    pub action_popup_open: bool,
+    /// 操作弹窗中当前选中的选项索引
+    pub action_popup_selected: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,9 +191,12 @@ impl Default for ImageTabState {
             images: Vec::new(),
             upload_result: None,
             meta_detail: None,
+            selected_index: None,
             list_scroll: 0,
             path_popup: PathPopup::default(),
             confirm_upload: None,
+            action_popup_open: false,
+            action_popup_selected: 0,
         }
     }
 }

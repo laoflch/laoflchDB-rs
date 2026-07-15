@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, MouseEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -66,7 +66,8 @@ async fn main() -> Result<()> {
     // 初始化终端
     enable_raw_mode().map_err(|e| anyhow!("启用 raw mode 失败: {}", e))?;
     let mut stdout = stdout();
-    execute!(stdout, EnterAlternateScreen).map_err(|e| anyhow!("进入备用屏幕失败: {}", e))?;
+    execute!(stdout, EnterAlternateScreen, crossterm::event::EnableMouseCapture)
+        .map_err(|e| anyhow!("进入备用屏幕失败: {}", e))?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(|e| anyhow!("创建终端失败: {}", e))?;
 
@@ -105,7 +106,7 @@ async fn main() -> Result<()> {
 
     // 恢复终端
     disable_raw_mode().ok();
-    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, crossterm::event::DisableMouseCapture).ok();
     terminal.show_cursor().ok();
 
     result
@@ -132,6 +133,9 @@ async fn run_loop(
         match event::read()? {
             Event::Key(key) => {
                 handler::handle_event(app, key).await;
+            }
+            Event::Mouse(mouse) => {
+                handler::handle_mouse_event(app, mouse).await;
             }
             _ => {}
         }

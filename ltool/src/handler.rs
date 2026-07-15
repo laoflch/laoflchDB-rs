@@ -2,7 +2,7 @@
 //!
 //! 处理 crossterm 键盘事件：命令模式、Tab 切换、各 Tab 的快捷键和输入框编辑。
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 use crate::app::{
     App, FaceFocus, InputState, Tab, VectorFocus,
@@ -175,6 +175,9 @@ fn execute_command(app: &mut App, cmd: &str) {
     }
 }
 
+/// 图片操作弹窗的选项
+const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "删除图片"];
+
 /// 处理图片 Tab 的事件
 async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
     // 确认上传弹窗优先
@@ -188,6 +191,59 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
             KeyCode::Esc => {
                 app.image_tab.confirm_upload = None;
                 app.set_status("已取消上传");
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 图片操作弹窗
+    if app.image_tab.action_popup_open {
+        match event.code {
+            KeyCode::Up => {
+                if app.image_tab.action_popup_selected > 0 {
+                    app.image_tab.action_popup_selected -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = IMAGE_ACTION_OPTIONS.len().saturating_sub(1);
+                if app.image_tab.action_popup_selected < max {
+                    app.image_tab.action_popup_selected += 1;
+                }
+                return true;
+            }
+            KeyCode::Enter => {
+                let idx = app.image_tab.action_popup_selected;
+                let selected = app.image_tab.selected_index;
+                app.image_tab.action_popup_open = false;
+                match idx {
+                    0 => {
+                        // 查看元数据
+                        if let Some(si) = selected {
+                            if si < app.image_tab.images.len() {
+                                let key = &app.image_tab.images[si].key;
+                                app.image_tab.key.set_value(key);
+                                let _ = crate::tab_image::get_metadata(app).await;
+                            }
+                        }
+                    }
+                    1 => {
+                        // 删除图片
+                        if let Some(si) = selected {
+                            if si < app.image_tab.images.len() {
+                                let key = &app.image_tab.images[si].key;
+                                app.image_tab.key.set_value(key);
+                                let _ = crate::tab_image::delete_image(app).await;
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                return true;
+            }
+            KeyCode::Esc => {
+                app.image_tab.action_popup_open = false;
                 return true;
             }
             _ => {}
@@ -256,15 +312,49 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
     }
 
     match event.code {
-        KeyCode::PageUp => {
-            if app.image_tab.list_scroll > 0 {
-                app.image_tab.list_scroll = app.image_tab.list_scroll.saturating_sub(10);
+        KeyCode::Up => {
+            let cur = app.image_tab.selected_index.unwrap_or(0);
+            if cur > 0 {
+                app.image_tab.selected_index = Some(cur - 1);
+                auto_scroll_image(&mut app.image_tab);
             }
             return true;
         }
+        KeyCode::Down => {
+            let max = app.image_tab.images.len().saturating_sub(1);
+            let cur = app.image_tab.selected_index.unwrap_or(0);
+            if cur < max {
+                app.image_tab.selected_index = Some(cur + 1);
+                auto_scroll_image(&mut app.image_tab);
+            }
+            return true;
+        }
+        KeyCode::PageUp => {
+            let cur = app.image_tab.selected_index.unwrap_or(0);
+            let new = cur.saturating_sub(10);
+            app.image_tab.selected_index = Some(new);
+            auto_scroll_image(&mut app.image_tab);
+            return true;
+        }
         KeyCode::PageDown => {
-            let max = app.image_tab.images.len().saturating_sub(10);
-            app.image_tab.list_scroll = (app.image_tab.list_scroll + 10).min(max);
+            let max = app.image_tab.images.len().saturating_sub(1);
+            let cur = app.image_tab.selected_index.unwrap_or(0);
+            app.image_tab.selected_index = Some((cur + 10).min(max));
+            auto_scroll_image(&mut app.image_tab);
+            return true;
+        }
+        // 选中行按 Enter 弹出操作窗口
+        KeyCode::Enter => {
+            if app.image_tab.selected_index.is_some() && !app.image_tab.images.is_empty() {
+                app.image_tab.action_popup_open = true;
+                app.image_tab.action_popup_selected = 0;
+            }
+            return true;
+        }
+        // Esc 取消选中
+        KeyCode::Esc => {
+            app.image_tab.selected_index = None;
+            app.image_tab.action_popup_open = false;
             return true;
         }
         _ => {}
@@ -273,10 +363,24 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
     // 焦点恒为 FilePath，直接处理输入
     let changed = handle_input_event(&mut app.image_tab.file_path, event);
     if changed {
+        // 用户开始输入路径时，清除列表选中状态
+        app.image_tab.selected_index = None;
+        app.image_tab.action_popup_open = false;
         let cs = crate::path_complete::list_candidates(&app.image_tab.file_path.value);
         app.image_tab.path_popup.refresh(cs);
     }
     changed
+}
+
+/// 确保 selected_index 在可见范围内
+fn auto_scroll_image(tab: &mut crate::app::ImageTabState) {
+    let Some(idx) = tab.selected_index else { return };
+    let visible: usize = 50;
+    if idx < tab.list_scroll {
+        tab.list_scroll = idx;
+    } else if idx >= tab.list_scroll + visible {
+        tab.list_scroll = idx - visible + 1;
+    }
 }
 
 /// 处理人脸 Tab 的事件
@@ -545,4 +649,36 @@ fn handle_input_event(input: &mut InputState, event: KeyEvent) -> bool {
         _ => return false,
     }
     true
+}
+
+/// 处理鼠标事件
+pub async fn handle_mouse_event(app: &mut App, event: MouseEvent) {
+    match event.kind {
+        MouseEventKind::Down(_) => {
+            if app.current_tab == Tab::Image {
+                // 路径输入框占 3 行，表格边框 1 行，表头 1 行 → 数据行起始 y
+                let data_start_y = 3 + 2; // path_area(3) + border(1) + header(1)
+                if event.row >= data_start_y {
+                    // 点击在表格区域 → 选中该行
+                    let row = (event.row - data_start_y) as usize + app.image_tab.list_scroll;
+                    if row < app.image_tab.images.len() {
+                        app.image_tab.selected_index = Some(row);
+                        let visible: usize = 50;
+                        if let Some(idx) = app.image_tab.selected_index {
+                            if idx < app.image_tab.list_scroll {
+                                app.image_tab.list_scroll = idx;
+                            } else if idx >= app.image_tab.list_scroll + visible {
+                                app.image_tab.list_scroll = idx - visible + 1;
+                            }
+                        }
+                    }
+                } else {
+                    // 点击在表格区域上方（路径输入框区域）→ 清除选中
+                    app.image_tab.selected_index = None;
+                    app.image_tab.action_popup_open = false;
+                }
+            }
+        }
+        _ => {}
+    }
 }
