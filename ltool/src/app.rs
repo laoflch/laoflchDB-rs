@@ -179,7 +179,7 @@ pub struct ImageTabState {
     pub list_scroll: usize,
     /// 本地路径输入框的补全下拉菜单
     pub path_popup: PathPopup,
-    /// 本地文件操作弹窗：选择文件后弹出，提供上传和向量索引两个 Tab
+    /// 本地文件操作弹窗：选择文件后弹出，提供上传和向量搜索两个 Tab
     pub local_file_action: Option<LocalFileAction>,
     /// 图片操作弹窗（选中列表中图片后按 Enter 弹出）
     pub action_popup_open: bool,
@@ -193,18 +193,37 @@ pub struct ImageTabState {
     pub download_path: InputState,
     /// 下载路径的滚动偏移（行数）
     pub download_path_scroll: usize,
+    /// 向量搜索结果显示
+    pub search_results: Vec<SearchResultItem>,
+    /// 是否显示搜索弹窗
+    pub show_search_results: bool,
 }
 
-/// 本地文件操作弹窗：选择文件后弹出，提供上传和向量索引两个 Tab
+/// 向量搜索结果项
+#[derive(Debug, Clone)]
+pub struct SearchResultItem {
+    pub id: u64,
+    pub score: f32,
+}
+
+/// 本地文件操作弹窗：选择文件后弹出，提供上传和向量搜索两个 Tab
 pub struct LocalFileAction {
     /// 文件路径
     pub file_path: String,
-    /// 当前选中的 Tab：0=上传，1=向量索引
+    /// 当前选中的 Tab：0=上传，1=向量搜索
     pub tab: usize,
     /// 向量索引模型名称
     pub model_name: InputState,
     /// 向量索引名称
     pub index_name: InputState,
+    /// 向量维度（0 表示使用模型默认维度）
+    pub dim: InputState,
+    /// 可选模型列表（用于在向量搜索 Tab 中 ↑/↓ 切换）
+    pub models: Vec<String>,
+    /// 当前模型在 models 中的索引
+    pub model_index: usize,
+    /// 搜索返回 top_k
+    pub top_k: InputState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +251,8 @@ impl Default for ImageTabState {
             download_confirm: None,
             download_path: InputState::new(),
             download_path_scroll: 0,
+            search_results: Vec::new(),
+            show_search_results: false,
         }
     }
 }
@@ -534,6 +555,8 @@ impl App {
         self.image_tab.download_confirm = None;
         self.image_tab.download_path.clear();
         self.image_tab.download_path_scroll = 0;
+        self.image_tab.search_results.clear();
+        self.image_tab.show_search_results = false;
         self.image_tab.path_popup.close();
     }
 

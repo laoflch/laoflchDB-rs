@@ -1,9 +1,10 @@
 //! 图片 Tab 业务逻辑
 //!
-//! 提供上传图片、列出图片、查看元数据、删除图片四个操作的异步封装。
+//! 提供上传图片（自动向量索引）、列出图片、查看元数据、删除图片、向量搜索等操作。
 
 use anyhow::{anyhow, Result};
 use std::path::Path;
+use std::time::SystemTime;
 
 use laoflchdb_image_service_proto::proto::{
     DeleteImageRequest, GetImageMetadataRequest, GetImageRequest, ListImagesRequest,
@@ -12,10 +13,11 @@ use laoflchdb_image_service_proto::proto::{
 
 use crate::app::App;
 
-/// 上传图片
+/// 上传图片并自动向量索引
 ///
-/// 从 `image_tab.file_path` 读取本地文件，根据扩展名推断 content_type，
-/// 调用 ImageService.UploadImage 上传，结果写入 `upload_result`。
+/// 从 `image_tab.file_path` 读取本地文件，上传到图片服务后，
+/// 自动调用 VectorService 生成向量并插入到 EmbeddingIndexService。
+/// 向量索引失败不影响上传结果。
 pub async fn upload_image(app: &mut App) -> Result<()> {
     if !app.require_login() {
         return Ok(());
@@ -48,8 +50,8 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
         .to_string();
 
     let req = UploadImageRequest {
-        bucket,
-        key,
+        bucket: bucket.clone(),
+        key: key.clone(),
         data,
         content_type,
         metadata: Default::default(),
@@ -60,12 +62,13 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
     let resp = {
         let clients = app.clients.as_mut().unwrap();
         let auth_req = clients.auth_request(req);
-        clients
-            .image
-            .upload_image(auth_req)
-            .await
-            .map_err(|e| anyhow!("上传失败: {}", e))?
-            .into_inner()
+        match clients.image.upload_image(auth_req).await {
+            Ok(r) => r.into_inner(),
+            Err(e) => {
+                app.set_error(format!("上传请求失败: {}", e));
+                return Ok(());
+            }
+        }
     };
     if !resp.success {
         app.set_error(format!("上传失败: {}", resp.message));
@@ -83,6 +86,80 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
     app.image_tab.upload_result = Some(info);
     app.image_tab.key.set_value("");
     app.set_status(format!("上传成功: {}", resp.key));
+
+    // ── 自动向量索引 ──────────────────────────────────
+    app.set_status(format!("上传成功: {}, 正在生成向量索引...", resp.key));
+
+    // 重新读取文件（data 已被 UploadImageRequest 消费）
+    let image_data = match std::fs::read(&file_path) {
+        Ok(d) => d,
+        Err(_) => {
+            app.set_status(format!("上传成功: {}（向量索引跳过: 读取文件失败）", resp.key));
+            return Ok(());
+        }
+    };
+
+    use laoflchdb_vector_service_proto::proto::EmbeddingRequest;
+    let emb_req = EmbeddingRequest {
+        model_name: "jina-clip-v2".to_string(),
+        texts: vec![],
+        dim: 512,
+        images: vec![image_data],
+    };
+
+    let emb_resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(emb_req);
+        match clients.vector.create_embedding(auth_req).await {
+            Ok(r) => r.into_inner(),
+            Err(e) => {
+                app.set_status(format!("上传成功: {}（向量索引跳过: {}", resp.key, e));
+                return Ok(());
+            }
+        }
+    };
+    if !emb_resp.success {
+        app.set_status(format!("上传成功: {}（向量化失败: {}）", resp.key, emb_resp.message));
+        return Ok(());
+    }
+
+    let embedding = match emb_resp.results.first() {
+        Some(r) => r.embedding.clone(),
+        None => {
+            app.set_status(format!("上传成功: {}（向量索引跳过: 向量化结果为空）", resp.key));
+            return Ok(());
+        }
+    };
+
+    let id = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    use laoflchdb_embedding_service_proto::proto::InsertEmbeddingRequest;
+    let ins_req = InsertEmbeddingRequest {
+        id,
+        index_name: "image".to_string(),
+        embedding,
+    };
+
+    let ins_resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(ins_req);
+        match clients.embedding.insert_embedding(auth_req).await {
+            Ok(r) => r.into_inner(),
+            Err(e) => {
+                app.set_status(format!("上传成功: {}（索引请求失败: {}）", resp.key, e));
+                return Ok(());
+            }
+        }
+    };
+    if ins_resp.success {
+        app.set_status(format!("上传成功: {}, 向量索引成功 (id={})", resp.key, id));
+    } else {
+        app.set_status(format!("上传成功: {}（索引失败: {}）", resp.key, ins_resp.message));
+    }
+
     Ok(())
 }
 
@@ -255,12 +332,13 @@ pub async fn download_image(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-/// 对图片进行向量化并索引
+/// 搜索相似图片
 ///
-/// 1. 读取本地文件
+/// 1. 读取本地图片文件
 /// 2. 调用 VectorService.CreateEmbedding 生成向量
-/// 3. 调用 EmbeddingIndexService.InsertEmbedding 索引向量
-pub async fn vector_index_image(app: &mut App, model_name: &str, index_name: &str) -> Result<()> {
+/// 3. 调用 EmbeddingIndexService.SearchEmbedding 搜索相似向量
+/// 4. 结果存入 app.image_tab.search_results，弹窗显示
+pub async fn search_similar_image(app: &mut App, model_name: &str, dim: i32, top_k: i32) -> Result<()> {
     if !app.require_login() {
         return Ok(());
     }
@@ -272,35 +350,33 @@ pub async fn vector_index_image(app: &mut App, model_name: &str, index_name: &st
 
     let data = std::fs::read(&file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
 
-    let model_name = model_name.to_string();
-    let index_name = index_name.to_string();
-
     // 1. 调用 VectorService.CreateEmbedding 生成向量
     use laoflchdb_vector_service_proto::proto::EmbeddingRequest;
     let req = EmbeddingRequest {
-        model_name: model_name.clone(),
+        model_name: model_name.to_string(),
         texts: vec![],
-        dim: 0,
+        dim,
         images: vec![data],
     };
 
-    app.set_status("正在生成向量...");
-    let resp = {
+    app.set_status("正在生成查询向量...");
+    let emb_resp = {
         let clients = app.clients.as_mut().unwrap();
         let auth_req = clients.auth_request(req);
-        clients
-            .vector
-            .create_embedding(auth_req)
-            .await
-            .map_err(|e| anyhow!("向量化失败: {}", e))?
-            .into_inner()
+        match clients.vector.create_embedding(auth_req).await {
+            Ok(r) => r.into_inner(),
+            Err(e) => {
+                app.set_error(format!("向量化请求失败: {}", e));
+                return Ok(());
+            }
+        }
     };
-    if !resp.success {
-        app.set_error(format!("向量化失败: {}", resp.message));
+    if !emb_resp.success {
+        app.set_error(format!("向量化失败: {}", emb_resp.message));
         return Ok(());
     }
 
-    let embedding = match resp.results.first() {
+    let query_embedding = match emb_resp.results.first() {
         Some(r) => r.embedding.clone(),
         None => {
             app.set_error("向量化结果为空");
@@ -308,36 +384,49 @@ pub async fn vector_index_image(app: &mut App, model_name: &str, index_name: &st
         }
     };
 
-    // 生成一个基于文件路径的确定性 ID
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    file_path.hash(&mut hasher);
-    let id = hasher.finish();
-
-    // 2. 调用 EmbeddingIndexService.InsertEmbedding 索引向量
-    use laoflchdb_embedding_service_proto::proto::InsertEmbeddingRequest;
-    let req = InsertEmbeddingRequest {
-        id,
-        index_name,
-        embedding,
+    // 2. 调用 EmbeddingIndexService.SearchEmbedding 搜索相似向量
+    use laoflchdb_embedding_service_proto::proto::SearchEmbeddingRequest;
+    let search_req = SearchEmbeddingRequest {
+        query_embedding,
+        top_k,
+        index_name: "image".to_string(),
     };
 
-    app.set_status("正在索引向量...");
-    let resp = {
+    app.set_status("正在搜索相似图片...");
+    let search_resp = {
         let clients = app.clients.as_mut().unwrap();
-        let auth_req = clients.auth_request(req);
-        clients
-            .embedding
-            .insert_embedding(auth_req)
-            .await
-            .map_err(|e| anyhow!("索引失败: {}", e))?
-            .into_inner()
+        let auth_req = clients.auth_request(search_req);
+        match clients.embedding.search_embedding(auth_req).await {
+            Ok(r) => r.into_inner(),
+            Err(e) => {
+                app.set_error(format!("搜索请求失败: {}", e));
+                return Ok(());
+            }
+        }
     };
-    if !resp.success {
-        app.set_error(format!("索引失败: {}", resp.message));
+    if !search_resp.success {
+        app.set_error(format!("搜索失败: {}", search_resp.message));
         return Ok(());
     }
 
-    app.set_status(format!("向量索引成功: {} (id={}, model={})", file_path, id, model_name));
+    // 3. 保存结果
+    use crate::app::SearchResultItem;
+    app.image_tab.search_results = search_resp
+        .results
+        .into_iter()
+        .map(|r| SearchResultItem {
+            id: r.id,
+            score: r.distance,
+        })
+        .collect();
+
+    let count = app.image_tab.search_results.len();
+    if count == 0 {
+        app.set_status("未找到相似图片");
+    } else {
+        app.set_status(format!("搜索完成，找到 {} 个相似结果", count));
+        app.image_tab.show_search_results = true;
+    }
+
     Ok(())
 }

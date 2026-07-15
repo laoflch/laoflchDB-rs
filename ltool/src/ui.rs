@@ -71,6 +71,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_local_file_action_dialog(f, app);
     }
 
+    // 向量搜索结果弹窗（浮在最顶层）
+    if app.image_tab.show_search_results {
+        draw_search_results_popup(f, app);
+    }
+
     // 图片操作弹窗（浮在最顶层）
     if app.image_tab.action_popup_open {
         draw_image_action_popup(f, app);
@@ -771,7 +776,7 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
             });
         }
         1 => {
-            // 向量索引 Tab
+            // 向量搜索 Tab
             let path_display = truncate_str(&action.file_path, content_area.width as usize);
             let path_line = Paragraph::new(Line::from(vec![
                 Span::styled("文件: ", Style::default().fg(Color::Cyan)),
@@ -786,10 +791,13 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
 
             let info_line = Paragraph::new(Line::from(vec![
                 Span::styled("模型: ", Style::default().fg(Color::Cyan)),
-                Span::raw(&action.model_name.value),
+                Span::styled(&action.model_name.value, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 Span::raw("  "),
-                Span::styled("索引: ", Style::default().fg(Color::Cyan)),
-                Span::raw(&action.index_name.value),
+                Span::styled("维数: ", Style::default().fg(Color::Cyan)),
+                Span::raw(&action.dim.value),
+                Span::raw("  "),
+                Span::styled("TopK: ", Style::default().fg(Color::Cyan)),
+                Span::raw(&action.top_k.value),
             ]));
             f.render_widget(info_line, Rect {
                 x: content_area.x,
@@ -800,9 +808,11 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
 
             let hint = Paragraph::new(Line::from(vec![
                 Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-                Span::raw("确认向量索引  "),
+                Span::raw("搜索相似图片  "),
                 Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
                 Span::raw("取消  "),
+                Span::styled("↑/↓ ", Style::default().fg(Color::Cyan)),
+                Span::raw("切换模型  "),
                 Span::styled("←/→ ", Style::default().fg(Color::Cyan)),
                 Span::raw("切换 Tab"),
             ]))
@@ -816,6 +826,96 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
         }
         _ => {}
     }
+}
+
+/// 绘制向量搜索结果弹窗
+///
+/// 显示搜索到的相似图片 ID 和相似度分数，按分数降序排列。
+fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let results = &app.image_tab.search_results;
+    if results.is_empty() {
+        return;
+    }
+
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = (results.len() as u16 + 4).min(area.height.saturating_sub(4));
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("相似图片搜索结果")
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    // 表头
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled(" ID", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled("相似度", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    ]));
+    f.render_widget(header, Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    });
+
+    // 分隔线
+    let sep = Paragraph::new(Line::from(Span::raw("─".repeat(inner.width as usize))))
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(sep, Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: 1,
+    });
+
+    // 结果行
+    for (i, result) in results.iter().enumerate() {
+        let row_y = inner.y + 2 + i as u16;
+        if row_y > inner.y + inner.height - 2 {
+            break;
+        }
+        let row = Paragraph::new(Line::from(vec![
+            Span::raw(format!(" {}", result.id)),
+            Span::raw("  "),
+            Span::styled(
+                format!("{:.4}", result.score),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+        f.render_widget(row, Rect {
+            x: inner.x,
+            y: row_y,
+            width: inner.width,
+            height: 1,
+        });
+    }
+
+    // 底部提示
+    let hint = Paragraph::new(
+        Span::styled("Esc 关闭", Style::default().fg(Color::DarkGray)),
+    )
+    .alignment(Alignment::Center);
+    let hint_y = inner.y + inner.height - 1;
+    f.render_widget(hint, Rect {
+        x: inner.x,
+        y: hint_y,
+        width: inner.width,
+        height: 1,
+    });
 }
 
 /// 将 Unix 时间戳字符串（秒）格式化为 Asia/Shanghai 时区的时间字符串

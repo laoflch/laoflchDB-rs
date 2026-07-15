@@ -281,13 +281,18 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
         }
 
         let mut results = Vec::new();
+        let target_dim = if req.dim > 0 { req.dim as usize } else { 0 };
 
         // 如果有视觉模型，处理图片输入
         if let Some(ref vision_model) = model.vision_model {
             if !req.images.is_empty() {
                 for image_bytes in &req.images {
                     match vision_model.embed_image(image_bytes) {
-                        Ok(embedding) => {
+                        Ok(mut embedding) => {
+                            // 如果请求指定了维度且小于模型输出，截断
+                            if target_dim > 0 && target_dim < embedding.len() {
+                                embedding.truncate(target_dim);
+                            }
                             results.push(EmbeddingResult {
                                 text: format!("image_{}", results.len()),
                                 embedding,
@@ -320,7 +325,10 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
         if let Some(ref bert_model) = model.bert_model {
             for text in &req.texts {
                 match bert_model.embed(text) {
-                    Ok(embedding) => {
+                    Ok(mut embedding) => {
+                        if target_dim > 0 && target_dim < embedding.len() {
+                            embedding.truncate(target_dim);
+                        }
                         results.push(EmbeddingResult {
                             text: text.clone(),
                             embedding,

@@ -184,6 +184,15 @@ const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "下载图片", "删�
 
 /// 处理图片 Tab 的事件
 async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
+    // 向量搜索结果显示弹窗优先
+    if app.image_tab.show_search_results {
+        if event.code == KeyCode::Esc {
+            app.image_tab.show_search_results = false;
+            app.image_tab.search_results.clear();
+            return true;
+        }
+    }
+
     // 本地文件操作弹窗优先
     if app.image_tab.local_file_action.is_some() {
         match event.code {
@@ -201,22 +210,49 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                 }
                 return true;
             }
+            KeyCode::Up => {
+                // 仅在向量索引 Tab 中切换模型
+                let action = app.image_tab.local_file_action.as_mut().unwrap();
+                if action.tab == 1 && !action.models.is_empty() {
+                    action.model_index = if action.model_index == 0 {
+                        action.models.len() - 1
+                    } else {
+                        action.model_index - 1
+                    };
+                    action.model_name.set_value(&action.models[action.model_index]);
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                // 仅在向量索引 Tab 中切换模型
+                let action = app.image_tab.local_file_action.as_mut().unwrap();
+                if action.tab == 1 && !action.models.is_empty() {
+                    action.model_index = (action.model_index + 1) % action.models.len();
+                    action.model_name.set_value(&action.models[action.model_index]);
+                }
+                return true;
+            }
             KeyCode::Enter => {
                 let tab = app.image_tab.local_file_action.as_ref().map(|a| a.tab).unwrap_or(0);
                 let file_path = app.image_tab.local_file_action.as_ref().map(|a| a.file_path.clone()).unwrap_or_default();
                 app.image_tab.file_path.set_value(&file_path);
                 match tab {
                     0 => {
-                        // 上传图片
+                        // 上传图片（自动包含向量索引）
                         app.image_tab.local_file_action = None;
                         let _ = crate::tab_image::upload_image(app).await;
                     }
                     1 => {
-                        // 向量索引
+                        // 搜索相似图片（向量查询）
                         let model_name = app.image_tab.local_file_action.as_ref().map(|a| a.model_name.value.clone()).unwrap_or_default();
-                        let index_name = app.image_tab.local_file_action.as_ref().map(|a| a.index_name.value.clone()).unwrap_or_default();
+                        let dim: i32 = app.image_tab.local_file_action.as_ref()
+                            .and_then(|a| a.dim.value.parse().ok())
+                            .unwrap_or(0);
+                        let top_k: i32 = app.image_tab.local_file_action.as_ref()
+                            .and_then(|a| a.top_k.value.parse().ok())
+                            .unwrap_or(10);
                         app.image_tab.local_file_action = None;
-                        let _ = crate::tab_image::vector_index_image(app, &model_name, &index_name).await;
+                        let _ = crate::tab_image::search_similar_image(app, &model_name, dim, top_k).await;
                     }
                     _ => {}
                 }
@@ -392,11 +428,20 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                         app.image_tab.path_popup.open(cs);
                     } else {
                         // 选中文件后弹出本地文件操作对话框（上传/向量索引）
+                        let models = vec![
+                            "jina-clip-v2".to_string(),
+                            "siglip2".to_string(),
+                            "bge-small-zh-v1.5".to_string(),
+                        ];
                         app.image_tab.local_file_action = Some(crate::app::LocalFileAction {
                             file_path: full,
                             tab: 0,
-                            model_name: crate::app::InputState::with_value("bge-small-zh-v1.5"),
+                            model_name: crate::app::InputState::with_value("jina-clip-v2"),
                             index_name: crate::app::InputState::with_value("image"),
+                            dim: crate::app::InputState::with_value("512"),
+                            top_k: crate::app::InputState::with_value("10"),
+                            models,
+                            model_index: 0,
                         });
                     }
                 } else {
