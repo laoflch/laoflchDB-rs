@@ -37,16 +37,20 @@ pub async fn handle_event(app: &mut App, event: KeyEvent) -> bool {
         return true;
     }
 
-    // Tab 切换（路径补全已改为下拉菜单式，不再占用 Tab 键）
+    // 各 Tab 特定处理（弹窗激活时由各 Tab 内部处理 Tab/Enter/Esc 等，不触发全局 Tab 切换）
+    let handled = match app.current_tab {
+        Tab::Image => handle_image_tab(app, event).await,
+        Tab::Face => handle_face_tab(app, event).await,
+        Tab::Vector => handle_vector_tab(app, event).await,
+        Tab::Sql => handle_sql_tab(app, event).await,
+    };
+    if handled {
+        return true;
+    }
+
+    // 无弹窗激活时的全局快捷键：Alt+1~4 切换主 Tab
+    // Tab 键留给各 Tab 内部做字段/焦点切换，不在这里做全局切换
     match event.code {
-        KeyCode::Tab => {
-            app.next_tab();
-            return true;
-        }
-        KeyCode::BackTab => {
-            app.prev_tab();
-            return true;
-        }
         KeyCode::Char('1') if event.modifiers.contains(KeyModifiers::ALT) => {
             app.clear_image_tab_popups();
             app.current_tab = Tab::Image;
@@ -70,13 +74,7 @@ pub async fn handle_event(app: &mut App, event: KeyEvent) -> bool {
         _ => {}
     }
 
-    // 各 Tab 特定处理
-    match app.current_tab {
-        Tab::Image => handle_image_tab(app, event).await,
-        Tab::Face => handle_face_tab(app, event).await,
-        Tab::Vector => handle_vector_tab(app, event).await,
-        Tab::Sql => handle_sql_tab(app, event).await,
-    }
+    false
 }
 
 /// 处理命令模式输入
@@ -629,6 +627,27 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
     }
 
     // 焦点恒为 FilePath，直接处理输入
+    // 无弹窗时 Tab/BackTab 用于切换主 Tab（返回 false 让外层未匹配，外层也不处理，所以这里显式切换）
+    if app.image_tab.local_file_action.is_none()
+        && !app.image_tab.action_popup_open
+        && !app.image_tab.delete_confirm.is_some()
+        && !app.image_tab.download_confirm.is_some()
+        && !app.image_tab.show_search_results
+        && !app.image_tab.path_popup.is_active()
+    {
+        match event.code {
+            KeyCode::Tab => {
+                app.next_tab();
+                return true;
+            }
+            KeyCode::BackTab => {
+                app.prev_tab();
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     let changed = handle_input_event(&mut app.image_tab.file_path, event);
     if changed {
         // 用户开始输入路径时，清除列表选中状态

@@ -685,8 +685,9 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
 
     let area = f.size();
     let width = 60.min(area.width.saturating_sub(4));
-    // 向量搜索 Tab 需要更多空间显示输入框
-    let height = if action.tab == 1 { 13 } else { 8 };
+    // 向量搜索 Tab：上边框 + Tab栏 + 文件行 + 模型行 + 输入框(3行) + 提示行 + 下边框 = 10
+    // 上传 Tab：上边框 + Tab栏 + 文件行 + 空行 + 提示行 + 下边框 = 7
+    let height = if action.tab == 1 { 10 } else { 7 };
     let x = (area.width - width) / 2;
     let y = (area.height - height) / 2;
     let dialog_area = Rect { x, y, width, height };
@@ -803,7 +804,7 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
                 height: 1,
             });
 
-            // 输入框：Dim, TopK, 距离≤
+            // 输入框：Dim, TopK, 距离≤（同一行水平排列，每个宽 1/3）
             use crate::app::VectorSearchFocus;
             let input_rows = [
                 ("维数(dim)", &action.dim, VectorSearchFocus::Dim),
@@ -811,8 +812,11 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
                 ("距离≤", &action.max_distance, VectorSearchFocus::MaxDistance),
             ];
 
+            let inputs_y = content_area.y + 2;
+            let col_width = content_area.width / 3;
+            let input_h: u16 = 3;
+
             for (i, (label, input, focus)) in input_rows.iter().enumerate() {
-                let row_y = content_area.y + 2 + i as u16;
                 let focused = action.search_focus == *focus;
                 let style = if focused {
                     Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
@@ -826,13 +830,11 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
                 let p = Paragraph::new(input.value.clone())
                     .block(block)
                     .alignment(Alignment::Left);
-                // 每个输入框占 1/3 宽度
-                let col_width = content_area.width / 3;
                 let input_area = Rect {
                     x: content_area.x + i as u16 * col_width,
-                    y: row_y,
+                    y: inputs_y,
                     width: col_width,
-                    height: 3,
+                    height: input_h,
                 };
                 f.render_widget(p, input_area);
                 if focused {
@@ -856,7 +858,7 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
                 Span::raw("取消"),
             ]))
             .alignment(Alignment::Center);
-            let hint_y = content_area.y + 5;
+            let hint_y = inputs_y + input_h + 1;
             f.render_widget(hint, Rect {
                 x: content_area.x,
                 y: hint_y,
