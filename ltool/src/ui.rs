@@ -66,9 +66,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
 
-    // 确认上传弹窗（浮在最顶层）
-    if let Some(ref path) = app.image_tab.confirm_upload {
-        draw_confirm_upload_dialog(f, path);
+    // 本地文件操作弹窗（浮在最顶层）
+    if app.image_tab.local_file_action.is_some() {
+        draw_local_file_action_dialog(f, app);
     }
 
     // 图片操作弹窗（浮在最顶层）
@@ -668,13 +668,19 @@ fn draw_path_popup(f: &mut Frame, popup: &PathPopup, anchor: Rect, content_botto
     }
 }
 
-/// 绘制确认上传弹窗
+/// 绘制本地文件操作弹窗
 ///
-/// 居中显示，确认后执行上传，取消则关闭。
-fn draw_confirm_upload_dialog(f: &mut Frame, file_path: &str) {
+/// 包含两个 Tab：上传（Tab 0）和向量索引（Tab 1）。
+/// 居中显示，Tab/←/→ 切换，Enter 确认，Esc 取消。
+fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
+    let action = match &app.image_tab.local_file_action {
+        Some(a) => a,
+        None => return,
+    };
+
     let area = f.size();
     let width = 60.min(area.width.saturating_sub(4));
-    let height = 7;
+    let height = 10;
     let x = (area.width - width) / 2;
     let y = (area.height - height) / 2;
     let dialog_area = Rect { x, y, width, height };
@@ -683,13 +689,13 @@ fn draw_confirm_upload_dialog(f: &mut Frame, file_path: &str) {
     f.render_widget(Clear, dialog_area);
 
     // 外框
+    let title = format!("本地文件操作  [{}]", action.file_path);
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("确认上传")
-        .style(Style::default().bg(Color::Black).fg(Color::Yellow));
+        .title(truncate_str(&title, dialog_area.width as usize - 2))
+        .style(Style::default().bg(Color::Black).fg(Color::White));
     f.render_widget(block, dialog_area);
 
-    // 内部
     let inner = Rect {
         x: dialog_area.x + 1,
         y: dialog_area.y + 1,
@@ -697,33 +703,119 @@ fn draw_confirm_upload_dialog(f: &mut Frame, file_path: &str) {
         height: dialog_area.height.saturating_sub(2),
     };
 
-    // 文件路径
-    let path_display = truncate_str(file_path, inner.width as usize);
-    let path_line = Paragraph::new(Line::from(vec![
-        Span::styled("文件: ", Style::default().fg(Color::Cyan)),
-        Span::raw(path_display),
-    ]));
-    f.render_widget(path_line, Rect {
+    // ── Tab 栏 ──────────────────────────────────
+    let tab_titles = ["上传", "向量索引"];
+    let tab_area = Rect {
         x: inner.x,
         y: inner.y,
         width: inner.width,
         height: 1,
-    });
+    };
+    let tab_spans: Vec<Span> = tab_titles.iter().enumerate().map(|(i, t)| {
+        let selected = i == action.tab;
+        let sep = if i == 0 { "" } else { "  " };
+        if selected {
+            Span::styled(
+                format!("{}[ {} ]", sep, t),
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled(
+                format!("{} {} ", sep, t),
+                Style::default().fg(Color::DarkGray),
+            )
+        }
+    }).collect();
+    f.render_widget(Paragraph::new(Line::from(tab_spans)), tab_area);
 
-    // 提示文字
-    let hint = Paragraph::new(Line::from(vec![
-        Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::raw("确认上传  "),
-        Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        Span::raw("取消"),
-    ]))
-    .alignment(Alignment::Center);
-    f.render_widget(hint, Rect {
+    // ── Tab 内容区 ──────────────────────────────
+    let content_area = Rect {
         x: inner.x,
-        y: inner.y + 3,
+        y: inner.y + 2,
         width: inner.width,
-        height: 1,
-    });
+        height: inner.height.saturating_sub(3),
+    };
+
+    match action.tab {
+        0 => {
+            // 上传 Tab
+            let path_display = truncate_str(&action.file_path, content_area.width as usize);
+            let path_line = Paragraph::new(Line::from(vec![
+                Span::styled("文件: ", Style::default().fg(Color::Cyan)),
+                Span::raw(path_display),
+            ]));
+            f.render_widget(path_line, Rect {
+                x: content_area.x,
+                y: content_area.y,
+                width: content_area.width,
+                height: 1,
+            });
+
+            let hint = Paragraph::new(Line::from(vec![
+                Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::raw("确认上传  "),
+                Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Span::raw("取消  "),
+                Span::styled("←/→ ", Style::default().fg(Color::Cyan)),
+                Span::raw("切换 Tab"),
+            ]))
+            .alignment(Alignment::Center);
+            f.render_widget(hint, Rect {
+                x: content_area.x,
+                y: content_area.y + 3,
+                width: content_area.width,
+                height: 1,
+            });
+        }
+        1 => {
+            // 向量索引 Tab
+            let path_display = truncate_str(&action.file_path, content_area.width as usize);
+            let path_line = Paragraph::new(Line::from(vec![
+                Span::styled("文件: ", Style::default().fg(Color::Cyan)),
+                Span::raw(path_display),
+            ]));
+            f.render_widget(path_line, Rect {
+                x: content_area.x,
+                y: content_area.y,
+                width: content_area.width,
+                height: 1,
+            });
+
+            let info_line = Paragraph::new(Line::from(vec![
+                Span::styled("模型: ", Style::default().fg(Color::Cyan)),
+                Span::raw(&action.model_name.value),
+                Span::raw("  "),
+                Span::styled("索引: ", Style::default().fg(Color::Cyan)),
+                Span::raw(&action.index_name.value),
+            ]));
+            f.render_widget(info_line, Rect {
+                x: content_area.x,
+                y: content_area.y + 1,
+                width: content_area.width,
+                height: 1,
+            });
+
+            let hint = Paragraph::new(Line::from(vec![
+                Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::raw("确认向量索引  "),
+                Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Span::raw("取消  "),
+                Span::styled("←/→ ", Style::default().fg(Color::Cyan)),
+                Span::raw("切换 Tab"),
+            ]))
+            .alignment(Alignment::Center);
+            f.render_widget(hint, Rect {
+                x: content_area.x,
+                y: content_area.y + 3,
+                width: content_area.width,
+                height: 1,
+            });
+        }
+        _ => {}
+    }
 }
 
 /// 将 Unix 时间戳字符串（秒）格式化为 Asia/Shanghai 时区的时间字符串
@@ -742,7 +834,7 @@ fn format_timestamp(ts: &str) -> String {
 }
 
 /// 绘制图片操作弹窗
-const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "删除图片"];
+const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "下载图片", "删除图片"];
 
 fn draw_image_action_popup(f: &mut Frame, app: &mut App) {
     let area = f.size();
@@ -844,7 +936,7 @@ fn draw_delete_confirm_dialog(f: &mut Frame, key: &str) {
 fn draw_download_confirm_dialog(f: &mut Frame, app: &mut App) {
     let area = f.size();
     let width = 60.min(area.width.saturating_sub(4));
-    let height = 7;
+    let height = 12;
     let x = (area.width - width) / 2;
     let y = (area.height - height) / 2;
     let dialog_area = Rect { x, y, width, height };
@@ -864,8 +956,10 @@ fn draw_download_confirm_dialog(f: &mut Frame, app: &mut App) {
         height: dialog_area.height.saturating_sub(2),
     };
 
+    const VISIBLE_LINES: usize = 4;
+
     // 提示文字
-    let label = Paragraph::new("保存路径:");
+    let label = Paragraph::new("保存路径（支持多行编辑，方向键移动光标）:");
     f.render_widget(label, Rect {
         x: inner.x,
         y: inner.y,
@@ -873,21 +967,42 @@ fn draw_download_confirm_dialog(f: &mut Frame, app: &mut App) {
         height: 1,
     });
 
-    // 路径输入框
+    // 计算光标所在行，并更新滚动偏移
+    let line_width = inner.width as usize;
+    let cursor_line = if line_width > 0 {
+        app.image_tab.download_path.cursor / line_width
+    } else {
+        0
+    };
+
+    // 自动滚动：确保光标在可见区域内
+    if cursor_line < app.image_tab.download_path_scroll {
+        app.image_tab.download_path_scroll = cursor_line;
+    }
+    if cursor_line >= app.image_tab.download_path_scroll + VISIBLE_LINES {
+        app.image_tab.download_path_scroll = cursor_line - VISIBLE_LINES + 1;
+    }
+
+    // 路径输入框（4 行，可滚动，自动换行）
     let input_style = Style::default().bg(Color::DarkGray).fg(Color::White);
     let input = Paragraph::new(app.image_tab.download_path.value.as_str())
-        .style(input_style);
+        .style(input_style)
+        .scroll((app.image_tab.download_path_scroll as u16, 0))
+        .wrap(ratatui::widgets::Wrap { trim: false });
     f.render_widget(input, Rect {
         x: inner.x,
         y: inner.y + 1,
         width: inner.width,
-        height: 1,
+        height: VISIBLE_LINES as u16,
     });
 
     // 光标
     if app.image_tab.download_confirm.is_some() {
-        let cursor_x = inner.x + app.image_tab.download_path.cursor_pos();
-        f.set_cursor(cursor_x, inner.y + 1);
+        let visible_line = cursor_line - app.image_tab.download_path_scroll;
+        let col = app.image_tab.download_path.cursor - cursor_line * line_width;
+        let cursor_y = inner.y + 1 + visible_line as u16;
+        let cursor_x = inner.x + col as u16;
+        f.set_cursor(cursor_x, cursor_y);
     }
 
     // 操作提示
@@ -895,13 +1010,42 @@ fn draw_download_confirm_dialog(f: &mut Frame, app: &mut App) {
         Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
         Span::raw("确认下载  "),
         Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        Span::raw("取消"),
+        Span::raw("取消  "),
+        Span::styled("←/→ ", Style::default().fg(Color::Cyan)),
+        Span::raw("移动光标"),
     ]))
     .alignment(Alignment::Center);
     f.render_widget(hint, Rect {
         x: inner.x,
-        y: inner.y + 4,
+        y: inner.y + 6,
         width: inner.width,
         height: 1,
     });
+
+    // 滚动指示
+    let total_lines = if line_width > 0 {
+        (app.image_tab.download_path.value.len() + line_width - 1) / line_width
+    } else {
+        0
+    };
+    if total_lines > VISIBLE_LINES {
+        let max_scroll = total_lines - VISIBLE_LINES;
+        let pct = if max_scroll > 0 {
+            app.image_tab.download_path_scroll as f64 / max_scroll as f64
+        } else {
+            0.0
+        };
+        let scrollbar_pos = (pct * (VISIBLE_LINES as f64 - 1.0)).round() as u16;
+        let scrollbar_x = inner.x + inner.width;
+        for i in 0..VISIBLE_LINES as u16 {
+            let ch = if i == scrollbar_pos { "█" } else { "░" };
+            let s = Paragraph::new(ch).style(Style::default().fg(Color::DarkGray));
+            f.render_widget(s, Rect {
+                x: scrollbar_x,
+                y: inner.y + 1 + i,
+                width: 1,
+                height: 1,
+            });
+        }
+    }
 }

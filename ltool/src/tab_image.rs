@@ -254,3 +254,90 @@ pub async fn download_image(app: &mut App) -> Result<()> {
     app.set_status(format!("下载完成: {} → {}", key, save_path));
     Ok(())
 }
+
+/// 对图片进行向量化并索引
+///
+/// 1. 读取本地文件
+/// 2. 调用 VectorService.CreateEmbedding 生成向量
+/// 3. 调用 EmbeddingIndexService.InsertEmbedding 索引向量
+pub async fn vector_index_image(app: &mut App, model_name: &str, index_name: &str) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+    let file_path = app.image_tab.file_path.value.clone();
+    if file_path.is_empty() {
+        app.set_error("请先选择图片文件");
+        return Ok(());
+    }
+
+    let data = std::fs::read(&file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
+
+    let model_name = model_name.to_string();
+    let index_name = index_name.to_string();
+
+    // 1. 调用 VectorService.CreateEmbedding 生成向量
+    use laoflchdb_vector_service_proto::proto::EmbeddingRequest;
+    let req = EmbeddingRequest {
+        model_name: model_name.clone(),
+        texts: vec![],
+        dim: 0,
+        images: vec![data],
+    };
+
+    app.set_status("正在生成向量...");
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(req);
+        clients
+            .vector
+            .create_embedding(auth_req)
+            .await
+            .map_err(|e| anyhow!("向量化失败: {}", e))?
+            .into_inner()
+    };
+    if !resp.success {
+        app.set_error(format!("向量化失败: {}", resp.message));
+        return Ok(());
+    }
+
+    let embedding = match resp.results.first() {
+        Some(r) => r.embedding.clone(),
+        None => {
+            app.set_error("向量化结果为空");
+            return Ok(());
+        }
+    };
+
+    // 生成一个基于文件路径的确定性 ID
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    file_path.hash(&mut hasher);
+    let id = hasher.finish();
+
+    // 2. 调用 EmbeddingIndexService.InsertEmbedding 索引向量
+    use laoflchdb_embedding_service_proto::proto::InsertEmbeddingRequest;
+    let req = InsertEmbeddingRequest {
+        id,
+        index_name,
+        embedding,
+    };
+
+    app.set_status("正在索引向量...");
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(req);
+        clients
+            .embedding
+            .insert_embedding(auth_req)
+            .await
+            .map_err(|e| anyhow!("索引失败: {}", e))?
+            .into_inner()
+    };
+    if !resp.success {
+        app.set_error(format!("索引失败: {}", resp.message));
+        return Ok(());
+    }
+
+    app.set_status(format!("向量索引成功: {} (id={}, model={})", file_path, id, model_name));
+    Ok(())
+}

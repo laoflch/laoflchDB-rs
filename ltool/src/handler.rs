@@ -48,18 +48,22 @@ pub async fn handle_event(app: &mut App, event: KeyEvent) -> bool {
             return true;
         }
         KeyCode::Char('1') if event.modifiers.contains(KeyModifiers::ALT) => {
+            app.clear_image_tab_popups();
             app.current_tab = Tab::Image;
             return true;
         }
         KeyCode::Char('2') if event.modifiers.contains(KeyModifiers::ALT) => {
+            app.clear_image_tab_popups();
             app.current_tab = Tab::Face;
             return true;
         }
         KeyCode::Char('3') if event.modifiers.contains(KeyModifiers::ALT) => {
+            app.clear_image_tab_popups();
             app.current_tab = Tab::Vector;
             return true;
         }
         KeyCode::Char('4') if event.modifiers.contains(KeyModifiers::ALT) => {
+            app.clear_image_tab_popups();
             app.current_tab = Tab::Sql;
             return true;
         }
@@ -180,17 +184,47 @@ const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "下载图片", "删�
 
 /// 处理图片 Tab 的事件
 async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
-    // 确认上传弹窗优先
-    if app.image_tab.confirm_upload.is_some() {
+    // 本地文件操作弹窗优先
+    if app.image_tab.local_file_action.is_some() {
         match event.code {
+            KeyCode::Tab | KeyCode::Right => {
+                let tab = &mut app.image_tab.local_file_action.as_mut().unwrap().tab;
+                if *tab < 1 {
+                    *tab += 1;
+                }
+                return true;
+            }
+            KeyCode::Left => {
+                let tab = &mut app.image_tab.local_file_action.as_mut().unwrap().tab;
+                if *tab > 0 {
+                    *tab -= 1;
+                }
+                return true;
+            }
             KeyCode::Enter => {
-                let _ = crate::tab_image::upload_image(app).await;
-                app.image_tab.confirm_upload = None;
+                let tab = app.image_tab.local_file_action.as_ref().map(|a| a.tab).unwrap_or(0);
+                let file_path = app.image_tab.local_file_action.as_ref().map(|a| a.file_path.clone()).unwrap_or_default();
+                app.image_tab.file_path.set_value(&file_path);
+                match tab {
+                    0 => {
+                        // 上传图片
+                        app.image_tab.local_file_action = None;
+                        let _ = crate::tab_image::upload_image(app).await;
+                    }
+                    1 => {
+                        // 向量索引
+                        let model_name = app.image_tab.local_file_action.as_ref().map(|a| a.model_name.value.clone()).unwrap_or_default();
+                        let index_name = app.image_tab.local_file_action.as_ref().map(|a| a.index_name.value.clone()).unwrap_or_default();
+                        app.image_tab.local_file_action = None;
+                        let _ = crate::tab_image::vector_index_image(app, &model_name, &index_name).await;
+                    }
+                    _ => {}
+                }
                 return true;
             }
             KeyCode::Esc => {
-                app.image_tab.confirm_upload = None;
-                app.set_status("已取消上传");
+                app.image_tab.local_file_action = None;
+                app.set_status("已取消操作");
                 return true;
             }
             _ => {}
@@ -275,12 +309,17 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                                 let meta = &app.image_tab.images[si];
                                 let key = meta.key.clone();
                                 app.image_tab.key.set_value(&key);
-                                // 预填保存路径：优先使用 name，否则用 key 拼扩展名
-                                let default_path = if !meta.name.is_empty() {
-                                    meta.name.clone()
-                                } else {
-                                    format!("{}.jpg", key)
+                                // 默认保存到 ~/Pictures/{key}.{ext}
+                                let ext = match meta.content_type.as_str() {
+                                    "image/jpeg" => "jpg",
+                                    "image/png" => "png",
+                                    "image/gif" => "gif",
+                                    "image/webp" => "webp",
+                                    "image/bmp" => "bmp",
+                                    _ => "jpg",
                                 };
+                                let home = std::env::var("HOME").unwrap_or_default();
+                                let default_path = format!("{home}/Pictures/{key}.{ext}");
                                 app.image_tab.download_path.set_value(&default_path);
                                 app.image_tab.download_confirm = Some(key);
                             }
@@ -352,8 +391,13 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                         let cs = crate::path_complete::list_candidates(&full);
                         app.image_tab.path_popup.open(cs);
                     } else {
-                        // 选中文件后弹出确认上传对话框
-                        app.image_tab.confirm_upload = Some(full);
+                        // 选中文件后弹出本地文件操作对话框（上传/向量索引）
+                        app.image_tab.local_file_action = Some(crate::app::LocalFileAction {
+                            file_path: full,
+                            tab: 0,
+                            model_name: crate::app::InputState::with_value("bge-small-zh-v1.5"),
+                            index_name: crate::app::InputState::with_value("image"),
+                        });
                     }
                 } else {
                     app.image_tab.path_popup.close();

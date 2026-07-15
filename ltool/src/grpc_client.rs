@@ -13,6 +13,7 @@ use laoflchdb_client::pb::rpc::LoginRequest;
 use laoflchdb_image_service_proto::proto::image_service_client::ImageServiceClient;
 use laoflchdb_face_service_proto::proto::face_service_client::FaceServiceClient;
 use laoflchdb_embedding_service_proto::proto::embedding_index_service_client::EmbeddingIndexServiceClient;
+use laoflchdb_vector_service_proto::proto::vector_service_client::VectorServiceClient;
 
 /// 所有 gRPC 客户端的集合
 ///
@@ -27,6 +28,8 @@ pub struct GrpcClients {
     pub face: FaceServiceClient<Channel>,
     /// 向量索引服务客户端
     pub embedding: EmbeddingIndexServiceClient<Channel>,
+    /// 向量化模型服务客户端
+    pub vector: VectorServiceClient<Channel>,
     /// 登录成功后保存的 token
     pub token: Option<String>,
 }
@@ -45,7 +48,8 @@ impl GrpcClients {
             laoflchdb: LaoflchDbClient::new(channel.clone()),
             image: ImageServiceClient::new(channel.clone()),
             face: FaceServiceClient::new(channel.clone()),
-            embedding: EmbeddingIndexServiceClient::new(channel),
+            embedding: EmbeddingIndexServiceClient::new(channel.clone()),
+            vector: VectorServiceClient::new(channel),
             token: None,
         })
     }

@@ -179,8 +179,8 @@ pub struct ImageTabState {
     pub list_scroll: usize,
     /// 本地路径输入框的补全下拉菜单
     pub path_popup: PathPopup,
-    /// 确认上传弹窗：选中文件后显示，Enter 确认上传，Esc 取消
-    pub confirm_upload: Option<String>,
+    /// 本地文件操作弹窗：选择文件后弹出，提供上传和向量索引两个 Tab
+    pub local_file_action: Option<LocalFileAction>,
     /// 图片操作弹窗（选中列表中图片后按 Enter 弹出）
     pub action_popup_open: bool,
     /// 操作弹窗中当前选中的选项索引
@@ -191,6 +191,20 @@ pub struct ImageTabState {
     pub download_confirm: Option<String>,
     /// 下载保存路径输入
     pub download_path: InputState,
+    /// 下载路径的滚动偏移（行数）
+    pub download_path_scroll: usize,
+}
+
+/// 本地文件操作弹窗：选择文件后弹出，提供上传和向量索引两个 Tab
+pub struct LocalFileAction {
+    /// 文件路径
+    pub file_path: String,
+    /// 当前选中的 Tab：0=上传，1=向量索引
+    pub tab: usize,
+    /// 向量索引模型名称
+    pub model_name: InputState,
+    /// 向量索引名称
+    pub index_name: InputState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,12 +225,13 @@ impl Default for ImageTabState {
             selected_index: None,
             list_scroll: 0,
             path_popup: PathPopup::default(),
-            confirm_upload: None,
+            local_file_action: None,
             action_popup_open: false,
             action_popup_selected: 0,
             delete_confirm: None,
             download_confirm: None,
             download_path: InputState::new(),
+            download_path_scroll: 0,
         }
     }
 }
@@ -491,6 +506,7 @@ impl App {
 
     /// 切换到下一个 Tab（Tab 键）
     pub fn next_tab(&mut self) {
+        self.clear_image_tab_popups();
         self.current_tab = match self.current_tab {
             Tab::Image => Tab::Face,
             Tab::Face => Tab::Vector,
@@ -501,12 +517,24 @@ impl App {
 
     /// 切换到上一个 Tab（Shift+Tab）
     pub fn prev_tab(&mut self) {
+        self.clear_image_tab_popups();
         self.current_tab = match self.current_tab {
             Tab::Image => Tab::Sql,
             Tab::Face => Tab::Image,
             Tab::Vector => Tab::Face,
             Tab::Sql => Tab::Vector,
         };
+    }
+
+    /// 清除图片 Tab 的所有弹窗
+    pub fn clear_image_tab_popups(&mut self) {
+        self.image_tab.local_file_action = None;
+        self.image_tab.action_popup_open = false;
+        self.image_tab.delete_confirm = None;
+        self.image_tab.download_confirm = None;
+        self.image_tab.download_path.clear();
+        self.image_tab.download_path_scroll = 0;
+        self.image_tab.path_popup.close();
     }
 
     /// 进入命令模式

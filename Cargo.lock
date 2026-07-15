@@ -3694,6 +3694,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "laoflchdb_vector_service_proto"
+version = "0.1.0"
+dependencies = [
+ "prost 0.12.6",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3922,6 +3931,7 @@ dependencies = [
  "laoflchdb_embedding_service_proto",
  "laoflchdb_face_service_proto",
  "laoflchdb_image_service_proto",
+ "laoflchdb_vector_service_proto",
  "log",
  "prost 0.12.6",
  "ratatui",

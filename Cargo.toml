@@ -18,6 +18,7 @@ members = [
     "laoflchdb_sql_df_engine",
     "laoflchdb_index_tantivy_engine",
     "laoflchdb_vector_service",
+    "laoflchdb_vector_service_proto",
     "laoflchdb_kv_rocksdb_engine",
     "laoflchdb_embedding_service",
     "laoflchdb_object_store_service",
