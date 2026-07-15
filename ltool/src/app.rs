@@ -78,6 +78,12 @@ impl InputState {
         self.cursor = self.value.chars().count();
     }
 
+    /// 清空输入框
+    pub fn clear(&mut self) {
+        self.value.clear();
+        self.cursor = 0;
+    }
+
     /// 在光标位置插入字符（支持 UTF-8 中文）
     pub fn insert_char(&mut self, c: char) {
         let idx = self.char_to_byte_idx();
@@ -144,6 +150,11 @@ impl InputState {
         self.cursor = self.value.chars().count();
     }
 
+    /// 光标位置（终端列数）
+    pub fn cursor_pos(&self) -> u16 {
+        self.cursor as u16
+    }
+
     fn char_to_byte_idx(&self) -> usize {
         self.value
             .char_indices()
@@ -174,6 +185,12 @@ pub struct ImageTabState {
     pub action_popup_open: bool,
     /// 操作弹窗中当前选中的选项索引
     pub action_popup_selected: usize,
+    /// 删除确认弹窗：存储待删除的 key
+    pub delete_confirm: Option<String>,
+    /// 下载确认弹窗：存储待下载的 key
+    pub download_confirm: Option<String>,
+    /// 下载保存路径输入
+    pub download_path: InputState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +214,9 @@ impl Default for ImageTabState {
             confirm_upload: None,
             action_popup_open: false,
             action_popup_selected: 0,
+            delete_confirm: None,
+            download_confirm: None,
+            download_path: InputState::new(),
         }
     }
 }

@@ -176,7 +176,7 @@ fn execute_command(app: &mut App, cmd: &str) {
 }
 
 /// 图片操作弹窗的选项
-const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "删除图片"];
+const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "下载图片", "删除图片"];
 
 /// 处理图片 Tab 的事件
 async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
@@ -194,6 +194,46 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                 return true;
             }
             _ => {}
+        }
+    }
+
+    // 删除确认弹窗
+    if app.image_tab.delete_confirm.is_some() {
+        match event.code {
+            KeyCode::Enter => {
+                let _ = crate::tab_image::delete_image(app).await;
+                app.image_tab.delete_confirm = None;
+                return true;
+            }
+            KeyCode::Esc => {
+                app.image_tab.delete_confirm = None;
+                app.set_status("已取消删除");
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 下载确认弹窗
+    if app.image_tab.download_confirm.is_some() {
+        match event.code {
+            KeyCode::Enter => {
+                let _ = crate::tab_image::download_image(app).await;
+                app.image_tab.download_confirm = None;
+                app.image_tab.download_path.clear();
+                return true;
+            }
+            KeyCode::Esc => {
+                app.image_tab.download_confirm = None;
+                app.image_tab.download_path.clear();
+                app.set_status("已取消下载");
+                return true;
+            }
+            _ => {
+                // 下载路径输入框编辑
+                let changed = handle_input_event(&mut app.image_tab.download_path, event);
+                return changed;
+            }
         }
     }
 
@@ -229,12 +269,30 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                         }
                     }
                     1 => {
+                        // 下载图片
+                        if let Some(si) = selected {
+                            if si < app.image_tab.images.len() {
+                                let meta = &app.image_tab.images[si];
+                                let key = meta.key.clone();
+                                app.image_tab.key.set_value(&key);
+                                // 预填保存路径：优先使用 name，否则用 key 拼扩展名
+                                let default_path = if !meta.name.is_empty() {
+                                    meta.name.clone()
+                                } else {
+                                    format!("{}.jpg", key)
+                                };
+                                app.image_tab.download_path.set_value(&default_path);
+                                app.image_tab.download_confirm = Some(key);
+                            }
+                        }
+                    }
+                    2 => {
                         // 删除图片
                         if let Some(si) = selected {
                             if si < app.image_tab.images.len() {
                                 let key = &app.image_tab.images[si].key;
                                 app.image_tab.key.set_value(key);
-                                let _ = crate::tab_image::delete_image(app).await;
+                                app.image_tab.delete_confirm = Some(key.clone());
                             }
                         }
                     }
@@ -656,8 +714,8 @@ pub async fn handle_mouse_event(app: &mut App, event: MouseEvent) {
     match event.kind {
         MouseEventKind::Down(_) => {
             if app.current_tab == Tab::Image {
-                // 路径输入框占 3 行，表格边框 1 行，表头 1 行 → 数据行起始 y
-                let data_start_y = 3 + 2; // path_area(3) + border(1) + header(1)
+                // 布局：Tab栏(3行) + 路径输入框(3行) + 表格边框(1行) + 表头(1行) → 数据行起始 y
+                let data_start_y = 3 + 3 + 2; // tab_bar(3) + path_area(3) + border(1) + header(1) = 8
                 if event.row >= data_start_y {
                     // 点击在表格区域 → 选中该行
                     let row = (event.row - data_start_y) as usize + app.image_tab.list_scroll;
@@ -672,8 +730,8 @@ pub async fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                             }
                         }
                     }
-                } else {
-                    // 点击在表格区域上方（路径输入框区域）→ 清除选中
+                } else if event.row >= 3 {
+                    // 点击在路径输入框区域（y=3..8）→ 清除选中
                     app.image_tab.selected_index = None;
                     app.image_tab.action_popup_open = false;
                 }

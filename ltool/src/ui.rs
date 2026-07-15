@@ -2,7 +2,7 @@
 //!
 //! 使用 ratatui 渲染主界面：顶部 Tab 栏、中间内容区、底部状态栏和命令行。
 
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table};
@@ -74,6 +74,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // 图片操作弹窗（浮在最顶层）
     if app.image_tab.action_popup_open {
         draw_image_action_popup(f, app);
+    }
+
+    // 删除确认弹窗
+    if let Some(ref key) = app.image_tab.delete_confirm {
+        draw_delete_confirm_dialog(f, key);
+    }
+
+    // 下载确认弹窗
+    if app.image_tab.download_confirm.is_some() {
+        draw_download_confirm_dialog(f, app);
     }
 }
 
@@ -776,4 +786,122 @@ fn draw_image_action_popup(f: &mut Frame, app: &mut App) {
             height: 1,
         });
     }
+}
+
+/// 绘制删除确认弹窗
+fn draw_delete_confirm_dialog(f: &mut Frame, key: &str) {
+    let area = f.size();
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = 5;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("确认删除")
+        .style(Style::default().bg(Color::Black).fg(Color::Red));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let key_display = truncate_str(key, inner.width as usize);
+    let msg = Paragraph::new(Line::from(vec![
+        Span::styled("确认删除图片 ", Style::default().fg(Color::White)),
+        Span::styled(key_display, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::raw(" ?"),
+    ]));
+    f.render_widget(msg, Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    });
+
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw("确认删除  "),
+        Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw("取消"),
+    ]))
+    .alignment(Alignment::Center);
+    f.render_widget(hint, Rect {
+        x: inner.x,
+        y: inner.y + 2,
+        width: inner.width,
+        height: 1,
+    });
+}
+
+/// 绘制下载确认弹窗
+fn draw_download_confirm_dialog(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 60.min(area.width.saturating_sub(4));
+    let height = 7;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("下载图片")
+        .style(Style::default().bg(Color::Black).fg(Color::Cyan));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    // 提示文字
+    let label = Paragraph::new("保存路径:");
+    f.render_widget(label, Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    });
+
+    // 路径输入框
+    let input_style = Style::default().bg(Color::DarkGray).fg(Color::White);
+    let input = Paragraph::new(app.image_tab.download_path.value.as_str())
+        .style(input_style);
+    f.render_widget(input, Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: 1,
+    });
+
+    // 光标
+    if app.image_tab.download_confirm.is_some() {
+        let cursor_x = inner.x + app.image_tab.download_path.cursor_pos();
+        f.set_cursor(cursor_x, inner.y + 1);
+    }
+
+    // 操作提示
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw("确认下载  "),
+        Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw("取消"),
+    ]))
+    .alignment(Alignment::Center);
+    f.render_widget(hint, Rect {
+        x: inner.x,
+        y: inner.y + 4,
+        width: inner.width,
+        height: 1,
+    });
 }

@@ -6,7 +6,8 @@ use anyhow::{anyhow, Result};
 use std::path::Path;
 
 use laoflchdb_image_service_proto::proto::{
-    DeleteImageRequest, GetImageMetadataRequest, ListImagesRequest, UploadImageRequest,
+    DeleteImageRequest, GetImageMetadataRequest, GetImageRequest, ListImagesRequest,
+    UploadImageRequest,
 };
 
 use crate::app::App;
@@ -117,7 +118,7 @@ pub async fn list_images(app: &mut App) -> Result<()> {
 
     let count = resp.images.len();
     app.image_tab.images = resp.images;
-    app.image_tab.selected_index = None;
+    app.image_tab.selected_index = if count > 0 { Some(0) } else { None };
     app.image_tab.list_scroll = 0;
     app.set_status(format!("列出 {} 张图片", count));
     Ok(())
@@ -179,6 +180,7 @@ pub async fn delete_image(app: &mut App) -> Result<()> {
         app.set_error("请输入要删除的图片 key");
         return Ok(());
     };
+    let deleted_key = key.clone();
 
     let req = DeleteImageRequest { bucket, key };
     app.set_status("正在删除图片...");
@@ -196,6 +198,59 @@ pub async fn delete_image(app: &mut App) -> Result<()> {
         app.set_error(format!("删除失败: {}", resp.message));
         return Ok(());
     }
-    app.set_status(format!("已删除 {} 个对象", resp.deleted_keys.len()));
+
+    // 删除后刷新列表
+    let _ = list_images(app).await;
+
+    app.set_status(format!("删除图片 {}", deleted_key));
+    Ok(())
+}
+
+/// 下载图片
+///
+/// 从 `download_confirm` 获取 key，调用 GetImage 获取数据，保存到 `download_path` 指定路径。
+pub async fn download_image(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+    let bucket = app.image_tab.bucket.value.clone();
+    let key = match &app.image_tab.download_confirm {
+        Some(k) => k.clone(),
+        None => {
+            app.set_error("未指定下载 key");
+            return Ok(());
+        }
+    };
+    let save_path = app.image_tab.download_path.value.clone();
+    if save_path.is_empty() {
+        app.set_error("请输入保存路径");
+        return Ok(());
+    }
+
+    let req = GetImageRequest {
+        bucket,
+        key: key.clone(),
+    };
+    app.set_status("正在下载图片...");
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(req);
+        clients
+            .image
+            .get_image(auth_req)
+            .await
+            .map_err(|e| anyhow!("下载失败: {}", e))?
+            .into_inner()
+    };
+    if !resp.success {
+        app.set_error(format!("下载失败: {}", resp.message));
+        return Ok(());
+    }
+
+    // 写入本地文件
+    std::fs::write(&save_path, &resp.data)
+        .map_err(|e| anyhow!("写入文件失败: {}", e))?;
+
+    app.set_status(format!("下载完成: {} → {}", key, save_path));
     Ok(())
 }
