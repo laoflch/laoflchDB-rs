@@ -133,12 +133,11 @@ fn default_vector_auto_load() -> bool {
     true
 }
 
-/// 嵌入向量索引服务配置
+/// 单个 HNSW 索引定义
 #[derive(Debug, Deserialize, Clone)]
-pub struct EmbeddingIndexConfig {
-    /// 是否启用
-    #[serde(default)]
-    pub enabled: bool,
+pub struct IndexDef {
+    /// 索引名称（如 default, image, face, memory）
+    pub name: String,
     /// 向量维度
     #[serde(default = "default_hnsw_dim")]
     pub dim: usize,
@@ -154,12 +153,71 @@ pub struct EmbeddingIndexConfig {
     /// 最大元素数
     #[serde(default = "default_hnsw_max_elements")]
     pub max_elements: usize,
+    /// 距离度量
+    #[serde(default = "default_hnsw_distance_metric")]
+    pub distance_metric: String,
+}
+
+fn default_hnsw_distance_metric() -> String {
+    "Cosine".to_string()
+}
+
+/// 嵌入向量索引服务配置
+#[derive(Debug, Deserialize, Clone)]
+pub struct EmbeddingIndexConfig {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// 索引定义列表（至少定义一个）
+    #[serde(default = "default_hnsw_indices")]
+    pub indices: Vec<IndexDef>,
     /// KV RocksDB 数据路径
     #[serde(default = "default_hnsw_kv_db_path")]
     pub kv_db_path: String,
     /// 图拓扑快照保存路径
     #[serde(default = "default_hnsw_snapshot_path")]
     pub snapshot_path: String,
+}
+
+fn default_hnsw_indices() -> Vec<IndexDef> {
+    vec![
+        IndexDef {
+            name: "default".to_string(),
+            dim: 512,
+            m: 32,
+            ef_construction: 200,
+            ef_search: 50,
+            max_elements: 1_000_000,
+            distance_metric: "Cosine".to_string(),
+        },
+        IndexDef {
+            name: "image".to_string(),
+            dim: 512,
+            m: 32,
+            ef_construction: 200,
+            ef_search: 50,
+            max_elements: 1_000_000,
+            distance_metric: "Cosine".to_string(),
+        },
+        IndexDef {
+            name: "face".to_string(),
+            dim: 512,
+            m: 32,
+            ef_construction: 200,
+            ef_search: 50,
+            max_elements: 1_000_000,
+            distance_metric: "Cosine".to_string(),
+        },
+        IndexDef {
+            name: "memory".to_string(),
+            dim: 512,
+            m: 32,
+            ef_construction: 200,
+            ef_search: 50,
+            max_elements: 1_000_000,
+            distance_metric: "Cosine".to_string(),
+        },
+    ]
 }
 
 fn default_hnsw_dim() -> usize { 512 }
@@ -174,11 +232,7 @@ impl Default for EmbeddingIndexConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            dim: default_hnsw_dim(),
-            m: default_hnsw_m(),
-            ef_construction: default_hnsw_ef_construction(),
-            ef_search: default_hnsw_ef_search(),
-            max_elements: default_hnsw_max_elements(),
+            indices: default_hnsw_indices(),
             kv_db_path: default_hnsw_kv_db_path(),
             snapshot_path: default_hnsw_snapshot_path(),
         }

@@ -20,9 +20,11 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use tonic::{Request, Response, Status};
 
-/// 嵌入向量索引服务配置
+/// 单个索引配置
 #[derive(Debug, Clone)]
-pub struct EmbeddingServiceConfig {
+pub struct IndexConfig {
+    /// 索引名称
+    pub name: String,
     /// 向量维度
     pub dim: usize,
     /// HNSW max connections (M)
@@ -33,6 +35,26 @@ pub struct EmbeddingServiceConfig {
     pub ef_search: usize,
     /// 最大元素数
     pub max_elements: u64,
+    /// 距离度量
+    pub distance_metric: DistanceMetric,
+}
+
+impl IndexConfig {
+    /// 从字符串创建距离度量（支持 "cosine", "euclidean", "dot", "dotproduct"）
+    pub fn distance_metric_from_str(s: &str) -> DistanceMetric {
+        match s.to_lowercase().as_str() {
+            "euclidean" => DistanceMetric::Euclidean,
+            "dot" | "dotproduct" => DistanceMetric::DotProduct,
+            _ => DistanceMetric::Cosine,
+        }
+    }
+}
+
+/// 嵌入向量索引服务配置
+#[derive(Debug, Clone)]
+pub struct EmbeddingServiceConfig {
+    /// 索引定义列表
+    pub indices: Vec<IndexConfig>,
     /// KV RocksDB 数据存储路径（向量数据持久化）
     pub kv_db_path: String,
     /// HNSW 图拓扑快照保存路径
@@ -42,15 +64,56 @@ pub struct EmbeddingServiceConfig {
 impl Default for EmbeddingServiceConfig {
     fn default() -> Self {
         Self {
-            dim: 512,
-            m: 32,
-            ef_construction: 200,
-            ef_search: 50,
-            max_elements: 1_000_000,
+            indices: vec![
+                IndexConfig {
+                    name: "default".to_string(),
+                    dim: 512,
+                    m: 32,
+                    ef_construction: 200,
+                    ef_search: 50,
+                    max_elements: 1_000_000,
+                    distance_metric: DistanceMetric::Cosine,
+                },
+                IndexConfig {
+                    name: "image".to_string(),
+                    dim: 512,
+                    m: 32,
+                    ef_construction: 200,
+                    ef_search: 50,
+                    max_elements: 1_000_000,
+                    distance_metric: DistanceMetric::Cosine,
+                },
+                IndexConfig {
+                    name: "face".to_string(),
+                    dim: 512,
+                    m: 32,
+                    ef_construction: 200,
+                    ef_search: 50,
+                    max_elements: 1_000_000,
+                    distance_metric: DistanceMetric::Cosine,
+                },
+                IndexConfig {
+                    name: "memory".to_string(),
+                    dim: 512,
+                    m: 32,
+                    ef_construction: 200,
+                    ef_search: 50,
+                    max_elements: 1_000_000,
+                    distance_metric: DistanceMetric::Cosine,
+                },
+            ],
             kv_db_path: "./laoflch_hnsw_data".to_string(),
             snapshot_path: "./laoflch_hnsw_snapshots".to_string(),
         }
     }
+}
+
+/// 单个索引的状态
+struct IndexState {
+    /// HNSW 内存索引
+    index: RwLock<HnswIndex>,
+    /// 该索引的配置
+    config: IndexConfig,
 }
 
 /// HNSW 索引服务实现
@@ -59,9 +122,11 @@ impl Default for EmbeddingServiceConfig {
 /// - `anda_db_hnsw` (HnswIndex): 管理内存中的 HNSW 图拓扑（分层可导航小世界图）
 /// - `KVRocksDBEngine`: 持久化存储向量数据（RocksDB）
 /// - `snapshot_path`: 图拓扑快照文件保存路径（用于启动恢复）
+///
+/// 支持多索引：每个索引名对应一个独立的 HNSW 图拓扑和 RocksDB 表。
 pub struct EmbeddingIndexServiceImpl {
-    /// HNSW 内存索引（tokio RwLock 允许跨 .await 持有 guard）
-    index: RwLock<HnswIndex>,
+    /// 按名称索引的 HNSW 内存图集合
+    indices: HashMap<String, IndexState>,
     /// 向量数据持久化存储（RocksDB）
     storage: Mutex<KVRocksDBEngine>,
     /// 服务配置
@@ -70,20 +135,9 @@ pub struct EmbeddingIndexServiceImpl {
 
 impl EmbeddingIndexServiceImpl {
     /// 创建 HNSW 索引服务实例
+    ///
+    /// 根据配置中的 `indices` 列表，为每个索引名创建一个独立的 HNSW 图。
     pub async fn new(config: &EmbeddingServiceConfig) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
-        let hnsw_config = HnswConfig {
-            dimension: config.dim,
-            max_layers: 16,
-            max_connections: config.m,
-            ef_construction: config.ef_construction,
-            ef_search: config.ef_search,
-            distance_metric: DistanceMetric::Cosine,
-            scale_factor: None,
-            select_neighbors_strategy: SelectNeighborsStrategy::Heuristic,
-        };
-
-        let index = HnswIndex::new("default".to_string(), Some(hnsw_config));
-
         // 确保快照目录存在
         tokio::fs::create_dir_all(&config.snapshot_path).await?;
 
@@ -98,74 +152,107 @@ impl EmbeddingIndexServiceImpl {
         };
         let storage = KVRocksDBEngine::new(&opts)?;
 
+        // 为每个索引定义创建 HNSW 图
+        let mut indices = HashMap::new();
+        for ic in &config.indices {
+            let hnsw_config = HnswConfig {
+                dimension: ic.dim,
+                max_layers: 16,
+                max_connections: ic.m,
+                ef_construction: ic.ef_construction,
+                ef_search: ic.ef_search,
+                distance_metric: ic.distance_metric,
+                scale_factor: None,
+                select_neighbors_strategy: SelectNeighborsStrategy::Heuristic,
+            };
+            let index = HnswIndex::new(ic.name.clone(), Some(hnsw_config));
+            indices.insert(ic.name.clone(), IndexState {
+                index: RwLock::new(index),
+                config: ic.clone(),
+            });
+            log::info!("HNSW 索引创建: name={}, dim={}, metric={:?}", ic.name, ic.dim, ic.distance_metric);
+        }
+
         Ok(Self {
-            index: RwLock::new(index),
+            indices,
             storage: Mutex::new(storage),
             config: Arc::new(config.clone()),
         })
     }
 
-    /// 从快照文件恢复 HNSW 图拓扑（如果快照文件存在）
+    /// 获取指定索引的配置
+    fn get_index_config(&self, index_name: &str) -> Option<&IndexConfig> {
+        self.indices.get(index_name).map(|s| &s.config)
+    }
+
+    /// 从快照文件恢复所有 HNSW 图拓扑（如果快照文件存在）
+    ///
+    /// 每个索引的独立快照文件命名: {snapshot_path}/{name}.{meta|ids|nodes}.cbor
     pub async fn try_load_snapshot(&self) -> Result<Option<u64>, Box<dyn std::error::Error + Send + Sync>> {
-        let meta_path = format!("{}/hnsw_index.meta.cbor", self.config.snapshot_path);
-        let ids_path = format!("{}/hnsw_index.ids.cbor", self.config.snapshot_path);
-        let nodes_path = format!("{}/hnsw_index.nodes.cbor", self.config.snapshot_path);
+        let mut total = 0u64;
+        for (name, state) in &self.indices {
+            let meta_path = format!("{}/{}.meta.cbor", self.config.snapshot_path, name);
+            let ids_path = format!("{}/{}.ids.cbor", self.config.snapshot_path, name);
+            let nodes_path = format!("{}/{}.nodes.cbor", self.config.snapshot_path, name);
 
-        // 检查快照文件是否存在（以 meta 文件为准）
-        if !std::path::Path::new(&meta_path).exists() {
-            log::info!("未找到 HNSW 快照 ({}), 使用空索引启动", meta_path);
-            return Ok(None);
-        }
-
-        // 读取节点数据到 HashMap
-        let nodes_data = if std::path::Path::new(&nodes_path).exists() {
-            let bytes = tokio::fs::read(&nodes_path).await?;
-            let mut map = HashMap::new();
-            let mut cursor = std::io::Cursor::new(&bytes);
-            let mut buf_id = [0u8; 8];
-            let mut buf_len = [0u8; 4];
-
-            loop {
-                match cursor.read_exact(&mut buf_id) {
-                    Ok(()) => {}
-                    Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                    Err(e) => return Err(e.into()),
-                }
-                cursor.read_exact(&mut buf_len)?;
-                let data_len = u32::from_le_bytes(buf_len) as usize;
-                let mut data = vec![0u8; data_len];
-                cursor.read_exact(&mut data)?;
-
-                map.insert(u64::from_le_bytes(buf_id), data);
+            if !std::path::Path::new(&meta_path).exists() {
+                log::info!("索引 [{}] 未找到快照 ({}), 使用空索引启动", name, meta_path);
+                continue;
             }
 
-            Arc::new(map)
+            let nodes_data = if std::path::Path::new(&nodes_path).exists() {
+                let bytes = tokio::fs::read(&nodes_path).await?;
+                let mut map = HashMap::new();
+                let mut cursor = std::io::Cursor::new(&bytes);
+                let mut buf_id = [0u8; 8];
+                let mut buf_len = [0u8; 4];
+
+                loop {
+                    match cursor.read_exact(&mut buf_id) {
+                        Ok(()) => {}
+                        Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                        Err(e) => return Err(e.into()),
+                    }
+                    cursor.read_exact(&mut buf_len)?;
+                    let data_len = u32::from_le_bytes(buf_len) as usize;
+                    let mut data = vec![0u8; data_len];
+                    cursor.read_exact(&mut data)?;
+                    map.insert(u64::from_le_bytes(buf_id), data);
+                }
+                Arc::new(map)
+            } else {
+                Arc::new(HashMap::new())
+            };
+
+            let meta_file = std::fs::File::open(&meta_path)?;
+            let ids_file = std::fs::File::open(&ids_path)?;
+
+            let loaded = HnswIndex::load_all(
+                std::io::BufReader::new(meta_file),
+                std::io::BufReader::new(ids_file),
+                move |id| {
+                    let map = nodes_data.clone();
+                    async move { Ok(map.get(&id).cloned()) }
+                },
+            )
+            .await?;
+
+            let stats = loaded.stats();
+            let mut index = state.index.write().await;
+            *index = loaded;
+            total += stats.num_elements;
+
+            log::info!(
+                "索引 [{}] 快照加载成功: {} 条向量",
+                name, stats.num_elements
+            );
+        }
+
+        if total > 0 {
+            Ok(Some(total))
         } else {
-            Arc::new(HashMap::new())
-        };
-
-        let meta_file = std::fs::File::open(&meta_path)?;
-        let ids_file = std::fs::File::open(&ids_path)?;
-
-        let loaded = HnswIndex::load_all(
-            std::io::BufReader::new(meta_file),
-            std::io::BufReader::new(ids_file),
-            move |id| {
-                let map = nodes_data.clone();
-                async move { Ok(map.get(&id).cloned()) }
-            },
-        )
-        .await?;
-
-        let stats = loaded.stats();
-        *self.index.write().await = loaded;
-
-        log::info!(
-            "HNSW 快照加载成功: {} 条向量, 路径: {}",
-            stats.num_elements,
-            self.config.snapshot_path
-        );
-        Ok(Some(stats.num_elements))
+            Ok(None)
+        }
     }
 
     /// 确保索引的 KV 表存在
@@ -189,78 +276,88 @@ impl EmbeddingIndexServiceImpl {
             .as_millis() as u64
     }
 
-    /// 保存快照的内部方法：metadata + ids + dirty nodes
+    /// 保存所有索引的快照：metadata + ids + dirty nodes（每个索引独立文件）
     async fn save_snapshot_internal(&self) -> Result<String, Status> {
         tokio::fs::create_dir_all(&self.config.snapshot_path)
             .await
             .map_err(|e| Status::internal(format!("创建快照目录失败: {}", e)))?;
 
-        let stem = format!("{}/hnsw_index", self.config.snapshot_path);
-        let meta_path = format!("{}.meta.cbor", stem);
-        let ids_path = format!("{}.ids.cbor", stem);
-        let nodes_path = format!("{}.nodes.cbor", stem);
-
         let ts = Self::unix_ms();
-        let guard = self.index.read().await;
 
-        // 1. 保存 metadata
-        {
-            let file = std::fs::File::create(&meta_path).map_err(|e| {
-                Status::internal(format!("创建 metadata 文件失败: {}", e))
-            })?;
-            guard
-                .store_metadata(std::io::BufWriter::new(file), ts)
-                .map_err(|e| Status::internal(format!("保存 metadata 失败: {}", e)))?;
-        }
+        for (name, state) in &self.indices {
+            let stem = format!("{}/{}", self.config.snapshot_path, name);
+            let meta_path = format!("{}.meta.cbor", stem);
+            let ids_path = format!("{}.ids.cbor", stem);
+            let nodes_path = format!("{}.nodes.cbor", stem);
 
-        // 2. 保存 IDs
-        {
-            let file = std::fs::File::create(&ids_path).map_err(|e| {
-                Status::internal(format!("创建 ids 文件失败: {}", e))
-            })?;
-            guard
-                .store_ids(std::io::BufWriter::new(file))
-                .map_err(|e| Status::internal(format!("保存 ids 失败: {}", e)))?;
-        }
+            let guard = state.index.read().await;
 
-        // 3. 保存 dirty nodes
-        {
-            let file = tokio::fs::File::create(&nodes_path)
-                .await
-                .map_err(|e| Status::internal(format!("创建 nodes 文件失败: {}", e)))?;
-            let writer = Arc::new(tokio::sync::Mutex::new(file));
+            // 1. 保存 metadata
+            {
+                let file = std::fs::File::create(&meta_path).map_err(|e| {
+                    Status::internal(format!("创建 metadata 文件失败: {}", e))
+                })?;
+                guard
+                    .store_metadata(std::io::BufWriter::new(file), ts)
+                    .map_err(|e| Status::internal(format!("保存 metadata 失败: {}", e)))?;
+            }
 
-            guard
-                .store_dirty_nodes({
-                    let w = writer.clone();
-                    move |id: u64, data: &[u8]| {
-                        let w = w.clone();
-                        let owned_data = data.to_vec();
-                        async move {
-                            let mut f = w.lock().await;
-                            f.write_all(&id.to_le_bytes())
-                                .await
-                                .map_err(|e| Box::new(e) as BoxError)?;
-                            f.write_all(&(owned_data.len() as u32).to_le_bytes())
-                                .await
-                                .map_err(|e| Box::new(e) as BoxError)?;
-                            f.write_all(&owned_data)
-                                .await
-                                .map_err(|e| Box::new(e) as BoxError)?;
-                            Ok(true)
+            // 2. 保存 IDs
+            {
+                let file = std::fs::File::create(&ids_path).map_err(|e| {
+                    Status::internal(format!("创建 ids 文件失败: {}", e))
+                })?;
+                guard
+                    .store_ids(std::io::BufWriter::new(file))
+                    .map_err(|e| Status::internal(format!("保存 ids 失败: {}", e)))?;
+            }
+
+            // 3. 保存 dirty nodes
+            {
+                let file = tokio::fs::File::create(&nodes_path)
+                    .await
+                    .map_err(|e| Status::internal(format!("创建 nodes 文件失败: {}", e)))?;
+                let writer = Arc::new(tokio::sync::Mutex::new(file));
+
+                guard
+                    .store_dirty_nodes({
+                        let w = writer.clone();
+                        move |id: u64, data: &[u8]| {
+                            let w = w.clone();
+                            let owned_data = data.to_vec();
+                            async move {
+                                let mut f = w.lock().await;
+                                f.write_all(&id.to_le_bytes())
+                                    .await
+                                    .map_err(|e| Box::new(e) as BoxError)?;
+                                f.write_all(&(owned_data.len() as u32).to_le_bytes())
+                                    .await
+                                    .map_err(|e| Box::new(e) as BoxError)?;
+                                f.write_all(&owned_data)
+                                    .await
+                                    .map_err(|e| Box::new(e) as BoxError)?;
+                                Ok(true)
+                            }
                         }
-                    }
-                })
-                .await
-                .map_err(|e| Status::internal(format!("保存 nodes 失败: {}", e)))?;
+                    })
+                    .await
+                    .map_err(|e| Status::internal(format!("保存 nodes 失败: {}", e)))?;
+            }
         }
 
         // 保存 JSON 元数据
         let meta_json = serde_json::json!({
-            "dim": self.config.dim,
-            "m": self.config.m,
-            "ef_construction": self.config.ef_construction,
-            "ef_search": self.config.ef_search,
+            "indices": self.config.indices.iter().map(|ic| {
+                serde_json::json!({
+                    "name": ic.name,
+                    "dim": ic.dim,
+                    "m": ic.m,
+                    "ef_construction": ic.ef_construction,
+                    "ef_search": ic.ef_search,
+                    "max_elements": ic.max_elements,
+                    "distance_metric": format!("{:?}", ic.distance_metric),
+                })
+            }).collect::<Vec<_>>(),
             "saved_at": ts,
         });
         let meta_json_path = format!("{}/hnsw_meta.json", self.config.snapshot_path);
@@ -268,73 +365,77 @@ impl EmbeddingIndexServiceImpl {
             .await
             .map_err(|e| Status::internal(format!("保存 JSON 元数据失败: {}", e)))?;
 
-        let snapshot_file = format!("{}/hnsw_index.*", self.config.snapshot_path);
-        log::info!("HNSW 快照已保存: {}", snapshot_file);
+        log::info!("所有 HNSW 索引快照已保存: {}", self.config.snapshot_path);
         Ok(self.config.snapshot_path.clone())
     }
 
-    /// 加载快照的内部方法
+    /// 加载所有索引的快照
     async fn load_snapshot_internal(&self) -> Result<u64, Status> {
-        let meta_path = format!("{}/hnsw_index.meta.cbor", self.config.snapshot_path);
-        let ids_path = format!("{}/hnsw_index.ids.cbor", self.config.snapshot_path);
-        let nodes_path = format!("{}/hnsw_index.nodes.cbor", self.config.snapshot_path);
+        let mut total = 0u64;
+        for (name, state) in &self.indices {
+            let meta_path = format!("{}/{}.meta.cbor", self.config.snapshot_path, name);
+            let ids_path = format!("{}/{}.ids.cbor", self.config.snapshot_path, name);
+            let nodes_path = format!("{}/{}.nodes.cbor", self.config.snapshot_path, name);
 
-        // 读取节点数据到 HashMap
-        let nodes_data = {
-            let bytes = tokio::fs::read(&nodes_path)
-                .await
-                .map_err(|e| Status::not_found(format!("nodes 文件不存在: {} ({})", nodes_path, e)))?;
-            let mut map = HashMap::new();
-            let mut cursor = std::io::Cursor::new(&bytes);
-            let mut buf_id = [0u8; 8];
-            let mut buf_len = [0u8; 4];
-
-            loop {
-                match cursor.read_exact(&mut buf_id) {
-                    Ok(()) => {}
-                    Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                    Err(e) => {
-                        return Err(Status::internal(format!("解析 nodes 数据失败: {}", e)))
-                    }
-                }
-                cursor
-                    .read_exact(&mut buf_len)
-                    .map_err(|e| Status::internal(format!("解析 nodes 长度失败: {}", e)))?;
-                let data_len = u32::from_le_bytes(buf_len) as usize;
-                let mut data = vec![0u8; data_len];
-                cursor
-                    .read_exact(&mut data)
-                    .map_err(|e| Status::internal(format!("解析 nodes 内容失败: {}", e)))?;
-
-                map.insert(u64::from_le_bytes(buf_id), data);
+            if !std::path::Path::new(&meta_path).exists() {
+                log::warn!("索引 [{}] 快照文件不存在: {}", name, meta_path);
+                continue;
             }
 
-            Arc::new(map)
-        };
+            let nodes_data = {
+                let bytes = tokio::fs::read(&nodes_path)
+                    .await
+                    .map_err(|e| Status::not_found(format!("nodes 文件不存在: {} ({})", nodes_path, e)))?;
+                let mut map = HashMap::new();
+                let mut cursor = std::io::Cursor::new(&bytes);
+                let mut buf_id = [0u8; 8];
+                let mut buf_len = [0u8; 4];
 
-        let meta_file =
-            std::fs::File::open(&meta_path)
+                loop {
+                    match cursor.read_exact(&mut buf_id) {
+                        Ok(()) => {}
+                        Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                        Err(e) => return Err(Status::internal(format!("解析 nodes 数据失败: {}", e))),
+                    }
+                    cursor.read_exact(&mut buf_len)
+                        .map_err(|e| Status::internal(format!("解析 nodes 长度失败: {}", e)))?;
+                    let data_len = u32::from_le_bytes(buf_len) as usize;
+                    let mut data = vec![0u8; data_len];
+                    cursor.read_exact(&mut data)
+                        .map_err(|e| Status::internal(format!("解析 nodes 内容失败: {}", e)))?;
+                    map.insert(u64::from_le_bytes(buf_id), data);
+                }
+                Arc::new(map)
+            };
+
+            let meta_file = std::fs::File::open(&meta_path)
                 .map_err(|e| Status::not_found(format!("meta 文件不存在: {} ({})", meta_path, e)))?;
-        let ids_file =
-            std::fs::File::open(&ids_path)
+            let ids_file = std::fs::File::open(&ids_path)
                 .map_err(|e| Status::not_found(format!("ids 文件不存在: {} ({})", ids_path, e)))?;
 
-        let loaded = HnswIndex::load_all(
-            std::io::BufReader::new(meta_file),
-            std::io::BufReader::new(ids_file),
-            move |id| {
-                let map = nodes_data.clone();
-                async move { Ok(map.get(&id).cloned()) }
-            },
-        )
-        .await
-        .map_err(|e| Status::internal(format!("加载快照失败: {}", e)))?;
+            let loaded = HnswIndex::load_all(
+                std::io::BufReader::new(meta_file),
+                std::io::BufReader::new(ids_file),
+                move |id| {
+                    let map = nodes_data.clone();
+                    async move { Ok(map.get(&id).cloned()) }
+                },
+            )
+            .await
+            .map_err(|e| Status::internal(format!("加载快照失败: {}", e)))?;
 
-        let stats = loaded.stats();
-        *self.index.write().await = loaded;
+            let stats = loaded.stats();
+            let mut index = state.index.write().await;
+            *index = loaded;
+            total += stats.num_elements;
 
-        log::info!("HNSW 快照加载成功: {} 条向量", stats.num_elements);
-        Ok(stats.num_elements)
+            log::info!("索引 [{}] 快照加载成功: {} 条向量", name, stats.num_elements);
+        }
+
+        if total == 0 {
+            return Err(Status::not_found(format!("未找到任何快照: {}", self.config.snapshot_path)));
+        }
+        Ok(total)
     }
 }
 
@@ -388,7 +489,7 @@ impl proto::embedding_index_service_server::EmbeddingIndexService
 
 #[tonic::async_trait]
 impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
-    /// 插入向量到 HNSW 索引
+    /// 插入向量到指定名称的 HNSW 索引
     async fn insert_embedding(
         &self,
         request: Request<InsertEmbeddingRequest>,
@@ -400,12 +501,17 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             &req.index_name
         };
 
+        // 查找索引
+        let state = self.indices.get(index_name).ok_or_else(|| {
+            Status::not_found(format!("索引不存在: {}", index_name))
+        })?;
+        let dim = state.config.dim;
+
         // 维度校验
-        let dim = self.config.dim;
         if req.embedding.len() != dim {
             return Ok(Response::new(InsertEmbeddingResponse {
                 success: false,
-                message: format!("向量维度不匹配: 需要 {}, 实际 {}", dim, req.embedding.len()),
+                message: format!("向量维度不匹配: 索引名={}, 需要 {}, 实际 {}", index_name, dim, req.embedding.len()),
             }));
         }
 
@@ -426,7 +532,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
 
         // 2. 插入 HNSW 内存索引（构建图拓扑）
         let ts = Self::unix_ms();
-        let index = self.index.read().await;
+        let index = state.index.read().await;
         index.insert_f32(req.id, req.embedding, ts).map_err(|e| {
             Status::internal(format!("HNSW 插入失败: {}", e))
         })?;
@@ -434,7 +540,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         log::info!("向量插入成功: id={}, index={}", req.id, index_name);
         Ok(Response::new(InsertEmbeddingResponse {
             success: true,
-            message: format!("向量插入成功, id={}", req.id),
+            message: format!("向量插入成功, id={}, index={}", req.id, index_name),
         }))
     }
 
@@ -444,6 +550,11 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         request: Request<SearchEmbeddingRequest>,
     ) -> Result<Response<SearchEmbeddingResponse>, Status> {
         let req = request.into_inner();
+        let index_name = if req.index_name.is_empty() {
+            "default"
+        } else {
+            &req.index_name
+        };
         let top_k = if req.top_k <= 0 { 10 } else { req.top_k as usize };
 
         if req.query_embedding.is_empty() {
@@ -454,9 +565,14 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             }));
         }
 
+        // 查找索引
+        let state = self.indices.get(index_name).ok_or_else(|| {
+            Status::not_found(format!("索引不存在: {}", index_name))
+        })?;
+
         // 执行 HNSW ANN 搜索
         let results = {
-            let index = self.index.read().await;
+            let index = state.index.read().await;
             index.search_f32(&req.query_embedding, top_k).map_err(|e| {
                 Status::internal(format!("HNSW 搜索失败: {}", e))
             })?
@@ -471,11 +587,6 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         }
 
         // 从 KV RocksDB 加载向量数据
-        let index_name = if req.index_name.is_empty() {
-            "default"
-        } else {
-            &req.index_name
-        };
         let table_name = format!("hnsw_{}", index_name);
 
         let mut search_results = Vec::with_capacity(results.len());
@@ -517,10 +628,15 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             &req.index_name
         };
 
+        // 查找索引
+        let state = self.indices.get(index_name).ok_or_else(|| {
+            Status::not_found(format!("索引不存在: {}", index_name))
+        })?;
+
         // 1. 从 HNSW 索引删除
         let ts = Self::unix_ms();
         let removed = {
-            let index = self.index.read().await;
+            let index = state.index.read().await;
             index.remove(req.id, ts)
         };
 
@@ -536,45 +652,64 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             log::info!("向量删除成功: id={}, index={}", req.id, index_name);
             Ok(Response::new(DeleteEmbeddingResponse {
                 success: true,
-                message: format!("向量删除成功, id={}", req.id),
+                message: format!("向量删除成功, id={}, index={}", req.id, index_name),
             }))
         } else {
             Ok(Response::new(DeleteEmbeddingResponse {
                 success: false,
-                message: format!("未找到向量 id={}", req.id),
+                message: format!("未找到向量 id={}, index={}", req.id, index_name),
             }))
         }
     }
 
-    /// 获取索引统计信息
+    /// 获取所有索引的统计信息
     async fn get_index_info(
         &self,
         _request: Request<GetIndexInfoRequest>,
     ) -> Result<Response<GetIndexInfoResponse>, Status> {
-        let stats = {
-            let index = self.index.read().await;
-            index.stats()
-        };
+        let mut all_stats = Vec::new();
+        let mut total_elements = 0u64;
 
-        Ok(Response::new(GetIndexInfoResponse {
-            success: true,
-            message: "ok".to_string(),
-            stats: Some(IndexStats {
+        for (name, state) in &self.indices {
+            let stats = {
+                let index = state.index.read().await;
+                index.stats()
+            };
+            total_elements += stats.num_elements;
+            all_stats.push(IndexStats {
                 num_elements: stats.num_elements,
                 max_layers: stats.max_layer as u32,
-                // avg_connections 在 anda_db_hnsw v0.4 中已移除
                 avg_connections: 0.0,
                 search_count: stats.search_count,
                 insert_count: stats.insert_count,
                 delete_count: stats.delete_count,
-                dim: self.config.dim as u32,
-                distance_metric: "Cosine".to_string(),
+                dim: state.config.dim as u32,
+                distance_metric: format!("{:?}", state.config.distance_metric),
                 snapshot_path: self.config.snapshot_path.clone(),
-            }),
+            });
+        }
+
+        // 返回第一个索引的统计（兼容旧客户端）
+        let main_stats = all_stats.into_iter().next().unwrap_or(IndexStats {
+            num_elements: total_elements,
+            max_layers: 0,
+            avg_connections: 0.0,
+            search_count: 0,
+            insert_count: 0,
+            delete_count: 0,
+            dim: 0,
+            distance_metric: "".to_string(),
+            snapshot_path: self.config.snapshot_path.clone(),
+        });
+
+        Ok(Response::new(GetIndexInfoResponse {
+            success: true,
+            message: format!("索引数: {}, 总向量数: {}", self.indices.len(), total_elements),
+            stats: Some(main_stats),
         }))
     }
 
-    /// 保存 HNSW 图拓扑快照
+    /// 保存所有 HNSW 图拓扑快照
     async fn save_snapshot(
         &self,
         _request: Request<SaveSnapshotRequest>,
@@ -582,12 +717,12 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         let path = self.save_snapshot_internal().await?;
         Ok(Response::new(SaveSnapshotResponse {
             success: true,
-            message: format!("快照已保存: {}", path),
+            message: format!("所有索引快照已保存: {}", path),
             path,
         }))
     }
 
-    /// 加载 HNSW 图拓扑快照
+    /// 加载所有 HNSW 图拓扑快照
     async fn load_snapshot(
         &self,
         _request: Request<LoadSnapshotRequest>,
@@ -595,7 +730,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         let num_elements = self.load_snapshot_internal().await?;
         Ok(Response::new(LoadSnapshotResponse {
             success: true,
-            message: format!("快照加载成功: {} 条向量", num_elements),
+            message: format!("所有索引快照加载成功: {} 条向量", num_elements),
             num_elements,
         }))
     }

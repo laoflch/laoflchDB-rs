@@ -184,6 +184,7 @@ const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "下载图片", "删�
 async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
     // 向量搜索结果显示弹窗优先
     if app.image_tab.show_search_results {
+        let n = app.image_tab.search_results.len();
         match event.code {
             KeyCode::Esc => {
                 app.image_tab.show_search_results = false;
@@ -193,35 +194,37 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                 return true;
             }
             KeyCode::Up => {
-                let n = app.image_tab.search_results.len();
                 if n > 0 {
                     let cur = app.image_tab.search_selected.unwrap_or(0);
                     app.image_tab.search_selected = Some(if cur == 0 { n - 1 } else { cur - 1 });
-                    auto_scroll_search_results(&mut app.image_tab);
                 }
                 return true;
             }
             KeyCode::Down => {
-                let n = app.image_tab.search_results.len();
                 if n > 0 {
                     let cur = app.image_tab.search_selected.unwrap_or(0);
                     app.image_tab.search_selected = Some(if cur >= n - 1 { 0 } else { cur + 1 });
-                    auto_scroll_search_results(&mut app.image_tab);
                 }
                 return true;
             }
             KeyCode::PageUp => {
-                app.image_tab.search_results_scroll = app.image_tab.search_results_scroll.saturating_sub(10);
+                if n > 0 {
+                    let cur = app.image_tab.search_selected.unwrap_or(0);
+                    app.image_tab.search_selected = Some(cur.saturating_sub(10));
+                }
                 return true;
             }
             KeyCode::PageDown => {
-                app.image_tab.search_results_scroll += 10;
+                if n > 0 {
+                    let cur = app.image_tab.search_selected.unwrap_or(0);
+                    app.image_tab.search_selected = Some((cur + 10).min(n - 1));
+                }
                 return true;
             }
             KeyCode::Enter => {
                 // 查看选中图片的元数据
                 if let Some(idx) = app.image_tab.search_selected {
-                    if idx < app.image_tab.search_results.len() {
+                    if idx < n {
                         let key = app.image_tab.search_results[idx].id.to_string();
                         app.image_tab.key.set_value(&key);
                         let _ = crate::tab_image::get_metadata(app).await;
@@ -667,17 +670,6 @@ fn auto_scroll_image(tab: &mut crate::app::ImageTabState) {
         tab.list_scroll = idx;
     } else if idx >= tab.list_scroll + visible {
         tab.list_scroll = idx - visible + 1;
-    }
-}
-
-/// 确保搜索结果选中行在可见范围内
-fn auto_scroll_search_results(tab: &mut crate::app::ImageTabState) {
-    const VISIBLE: usize = 10;
-    let Some(idx) = tab.search_selected else { return };
-    if idx < tab.search_results_scroll {
-        tab.search_results_scroll = idx;
-    } else if idx >= tab.search_results_scroll + VISIBLE {
-        tab.search_results_scroll = idx - VISIBLE + 1;
     }
 }
 

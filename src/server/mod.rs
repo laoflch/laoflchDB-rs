@@ -66,12 +66,20 @@ impl LaoflchDBServer {
         // 创建嵌入向量索引服务（如果配置启用）
         let embedding_service = match &config.embedding_index {
             Some(embedding_cfg) if embedding_cfg.enabled => {
+                let indices: Vec<laoflchdb_embedding_service::IndexConfig> = embedding_cfg.indices.iter().map(|idx| {
+                    laoflchdb_embedding_service::IndexConfig {
+                        name: idx.name.clone(),
+                        dim: idx.dim,
+                        m: idx.m as u8,
+                        ef_construction: idx.ef_construction as usize,
+                        ef_search: idx.ef_search as usize,
+                        max_elements: idx.max_elements as u64,
+                        distance_metric: laoflchdb_embedding_service::IndexConfig::distance_metric_from_str(&idx.distance_metric),
+                    }
+                }).collect();
+
                 let embedding_config = laoflchdb_embedding_service::EmbeddingServiceConfig {
-                    dim: embedding_cfg.dim,
-                    m: embedding_cfg.m as u8,
-                    ef_construction: embedding_cfg.ef_construction as usize,
-                    ef_search: embedding_cfg.ef_search as usize,
-                    max_elements: embedding_cfg.max_elements as u64,
+                    indices,
                     kv_db_path: embedding_cfg.kv_db_path.clone(),
                     snapshot_path: embedding_cfg.snapshot_path.clone(),
                 };

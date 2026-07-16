@@ -872,8 +872,7 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
 
 /// 绘制向量搜索结果弹窗
 ///
-/// 显示搜索到的相似图片 ID 和相似度分数，按分数降序排列。
-/// 支持 ↑/↓/PageUp/PageDown 滚动浏览。
+/// 固定显示 5 行结果，超出时支持 ↑/↓ 选择并自动滚动，PgUp/PgDn 翻页。
 fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
     let area = f.size();
     let results = &app.image_tab.search_results;
@@ -882,18 +881,19 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
         return;
     }
 
-    // 弹窗最大高度：不超过终端高度 - 4，最小显示 4 行内容
-    let max_content_rows = (area.height.saturating_sub(8)) as usize;
-    let content_rows = max_content_rows.min(total).max(1);
+    // 固定显示 5 行结果
+    const VISIBLE_RESULTS: usize = 5;
+    let result_rows = VISIBLE_RESULTS;
     let width = 50.min(area.width.saturating_sub(4));
-    let height = content_rows as u16 + 4; // 边框 + 表头 + 分隔线 + 内容 + 底部提示
+    // 弹窗高度 = 上下边框(2) + 表头(1) + 分隔线(1) + 结果行 + 底部提示(1)
+    let height = result_rows as u16 + 5;
     let x = (area.width - width) / 2;
     let y = (area.height - height) / 2;
     let dialog_area = Rect { x, y, width, height };
 
     f.render_widget(Clear, dialog_area);
 
-    let title = format!("相似图片搜索结果  ({}/{}  scroll={})", total, total, app.image_tab.search_results_scroll);
+    let title = format!("相似图片搜索结果  ({}/{})", total, total);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(truncate_str(&title, dialog_area.width as usize - 2))
@@ -945,22 +945,35 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
         height: 1,
     });
 
-    // 结果行（支持滚动）
-    let visible_rows = content_area.height.saturating_sub(3); // 表头 + 分隔线 + 底部提示
+    // 结果行区域：从 y+2 到 y+height-2（留 1 行给底部提示）
+    let result_area_y = content_area.y + 2;
+    let result_area_h = content_area.height.saturating_sub(3); // 表头+分隔+提示
+    let visible = result_area_h as usize;
 
-    // 限制滚动范围（使用 visible_rows 而非 content_rows）
-    if visible_rows as usize >= total {
+    // ── 自动滚动：确保选中行在可见区域内 ──
+    if let Some(sel) = app.image_tab.search_selected {
+        if sel < app.image_tab.search_results_scroll {
+            app.image_tab.search_results_scroll = sel;
+        } else if sel >= app.image_tab.search_results_scroll + visible {
+            app.image_tab.search_results_scroll = sel - visible + 1;
+        }
+    }
+    // 限制滚动范围
+    if visible >= total {
         app.image_tab.search_results_scroll = 0;
-    } else if app.image_tab.search_results_scroll + visible_rows as usize > total {
-        app.image_tab.search_results_scroll = total.saturating_sub(visible_rows as usize);
+    } else if app.image_tab.search_results_scroll + visible > total {
+        app.image_tab.search_results_scroll = total.saturating_sub(visible);
     }
 
     let start = app.image_tab.search_results_scroll;
-    let end = (start + visible_rows as usize).min(total);
+    let end = (start + visible).min(total);
 
     for (i, idx) in (start..end).enumerate() {
         let result = &results[idx];
-        let row_y = content_area.y + 2 + i as u16;
+        let row_y = result_area_y + i as u16;
+        if row_y >= content_area.y + content_area.height - 1 {
+            break;
+        }
         let is_selected = app.image_tab.search_selected == Some(idx);
         let row_style = if is_selected {
             Style::default().bg(Color::Green).fg(Color::Black)
@@ -988,15 +1001,15 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
         });
     }
 
-    // 滚动条
-    if total > visible_rows as usize {
+    // 滚动条（仅当结果数超过可见行数时显示）
+    if total > visible {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
             .end_symbol(None)
             .thumb_symbol("█")
             .track_symbol(Some("░"))
             .style(Style::default().fg(Color::DarkGray));
-        let mut state = ScrollbarState::new(total).position(app.image_tab.search_results_scroll);
+        let mut state = ScrollbarState::new(total - visible + 1).position(app.image_tab.search_results_scroll);
         f.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
     }
 
@@ -1007,7 +1020,7 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
         Span::styled("PgUp/PgDn ", Style::default().fg(Color::Cyan)),
         Span::raw("翻页  "),
         Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::raw("查看元数据  "),
+        Span::raw("元数据  "),
         Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
         Span::raw("关闭"),
     ]))

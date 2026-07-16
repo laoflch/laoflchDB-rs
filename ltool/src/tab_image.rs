@@ -429,12 +429,14 @@ pub async fn search_similar_image(app: &mut App, model_name: &str, dim: i32, top
 
     let count = app.image_tab.search_results.len();
     if count == 0 {
+        app.image_tab.search_selected = None;
         if total > 0 {
             app.set_status(format!("搜索完成，原始 {} 个结果均被距离阈值 {:.2} 过滤掉", total, max_distance));
         } else {
             app.set_status("未找到相似图片");
         }
     } else {
+        app.image_tab.search_selected = Some(0);
         app.set_status(format!("搜索完成，{} 个结果（过滤前 {} 个，距离阈值 ≤ {:.2}）", count, total, max_distance));
         app.image_tab.show_search_results = true;
     }
