@@ -145,18 +145,22 @@ impl FaceServiceImpl {
         }
     }
 
-    /// 检测推理设备：CUDA 优先，回退 CPU
+    /// 检测推理设备：优先使用 GPU 2，其次 GPU 1，最后回退到 CPU
+    /// 避免与向量服务（GPU 0/2）冲突
     fn detect_device() -> Device {
         #[cfg(feature = "cuda")]
         {
             info!("CUDA feature 已启用，检测 GPU...");
-            match Device::cuda_if_available(0) {
-                Ok(device) => {
-                    info!("CUDA GPU 可用，使用 GPU 设备进行人脸推理");
-                    return device;
-                }
-                Err(e) => {
-                    warn!("CUDA 设备初始化失败: {}，回退到 CPU", e);
+            // 先尝试 GPU 2，然后是 GPU 1，最后是 GPU 0
+            for device_id in [2, 1, 0] {
+                match Device::cuda_if_available(device_id) {
+                    Ok(device) => {
+                        info!("CUDA GPU 可用，使用 GPU 设备 {} 进行人脸推理", device_id);
+                        return device;
+                    }
+                    Err(e) => {
+                        warn!("CUDA 设备 {} 初始化失败: {}", device_id, e);
+                    }
                 }
             }
         }

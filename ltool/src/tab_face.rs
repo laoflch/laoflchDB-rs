@@ -43,15 +43,19 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
     };
 
     app.set_status("正在提取人脸特征...");
-    let resp = {
+    let resp = match {
         let clients = app.clients.as_mut().unwrap();
         let auth_req = clients.auth_request(req);
         clients
             .face
             .extract_face_features(auth_req)
             .await
-            .map_err(|e| anyhow!("提取失败: {}", e))?
-            .into_inner()
+    } {
+        Ok(r) => r.into_inner(),
+        Err(e) => {
+            app.set_error(format!("提取失败: {}", e));
+            return Ok(());
+        }
     };
     if !resp.success {
         app.set_error(format!("提取失败: {}", resp.message));
@@ -115,15 +119,19 @@ pub async fn compare_features(app: &mut App) -> Result<()> {
         feature2: f2,
     };
     app.set_status("正在比较特征...");
-    let resp = {
+    let resp = match {
         let clients = app.clients.as_mut().unwrap();
         let auth_req = clients.auth_request(req);
         clients
             .face
             .compare_features(auth_req)
             .await
-            .map_err(|e| anyhow!("比较失败: {}", e))?
-            .into_inner()
+    } {
+        Ok(r) => r.into_inner(),
+        Err(e) => {
+            app.set_error(format!("比较失败: {}", e));
+            return Ok(());
+        }
     };
     if !resp.success {
         app.set_error(format!("比较失败: {}", resp.message));
