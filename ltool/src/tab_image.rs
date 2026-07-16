@@ -88,7 +88,7 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
     app.set_status(format!("上传成功: {}", resp.key));
 
     // ── 自动向量索引 ──────────────────────────────────
-    app.set_status(format!("上传成功: {}, 正在生成向量索引...", resp.key));
+    app.set_status(format!("上传成功: {}, 正在获取索引维度...", resp.key));
 
     // 重新读取文件（data 已被 UploadImageRequest 消费）
     let image_data = match std::fs::read(&file_path) {
@@ -99,11 +99,30 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
         }
     };
 
+    // 查询目标索引的 dim，确保向量维度匹配
+    use laoflchdb_embedding_service_proto::proto::GetIndexInfoRequest;
+    let target_dim = {
+        let clients = app.clients.as_mut().unwrap();
+        let req = GetIndexInfoRequest { index_name: "image".to_string() };
+        let auth_req = clients.auth_request(req);
+        match clients.embedding.get_index_info(auth_req).await {
+            Ok(r) => {
+                let resp = r.into_inner();
+                if resp.success {
+                    resp.stats.map(|s| s.dim as i32).unwrap_or(512)
+                } else {
+                    512
+                }
+            }
+            Err(_) => 512,
+        }
+    };
+
     use laoflchdb_vector_service_proto::proto::EmbeddingRequest;
     let emb_req = EmbeddingRequest {
         model_name: "jina-clip-v2".to_string(),
         texts: vec![],
-        dim: 512,
+        dim: target_dim,
         images: vec![image_data],
     };
 
@@ -158,7 +177,7 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
         }
     };
     if ins_resp.success {
-        app.set_status(format!("上传成功: {}, 向量索引成功 (id={})", resp.key, id));
+        app.set_status(format!("上传成功: {}, 向量索引成功 (id={}, dim={})", resp.key, id, target_dim));
     } else {
         app.set_status(format!("上传成功: {}（索引失败: {}）", resp.key, ins_resp.message));
     }
@@ -443,4 +462,25 @@ pub async fn search_similar_image(app: &mut App, model_name: &str, index_name: &
     }
 
     Ok(())
+}
+
+/// 获取 image 索引的 dim，失败时返回默认值 "512"
+pub async fn get_image_index_dim(app: &mut App) -> String {
+    use laoflchdb_embedding_service_proto::proto::GetIndexInfoRequest;
+    if let Some(clients) = app.clients.as_mut() {
+        let req = GetIndexInfoRequest { index_name: "image".to_string() };
+        let auth_req = clients.auth_request(req);
+        match clients.embedding.get_index_info(auth_req).await {
+            Ok(r) => {
+                let resp = r.into_inner();
+                if resp.success {
+                    if let Some(stats) = resp.stats {
+                        return stats.dim.to_string();
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+    "512".to_string()
 }

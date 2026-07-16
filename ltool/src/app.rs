@@ -313,8 +313,8 @@ impl Default for FaceTabState {
             file_path: InputState::new(),
             det_threshold: InputState::with_value("0.5"),
             max_faces: InputState::with_value("0"),
-            save_aligned_images: true,
-            index_embedding: true,
+            save_aligned_images: false,
+            index_embedding: false,
             bucket: InputState::with_value("faces"),
             faces: Vec::new(),
             selected_face: 0,
@@ -325,40 +325,43 @@ impl Default for FaceTabState {
     }
 }
 
+/// 索引信息
+#[derive(Debug, Clone)]
+pub struct IndexInfo {
+    pub name: String,
+    pub num_elements: u64,
+    pub dim: u32,
+    pub distance_metric: String,
+    pub max_layers: u32,
+    pub search_count: u64,
+    pub insert_count: u64,
+    pub delete_count: u64,
+    pub snapshot_path: String,
+}
+
 /// 向量 Tab 状态
 #[derive(Debug, Clone)]
 pub struct VectorTabState {
-    pub focus: VectorFocus,
+    /// 索引名称输入框
     pub index_name: InputState,
-    pub query_vec: InputState,
-    pub top_k: InputState,
-    /// 索引信息（num_elements, dim, distance_metric, max_layers）
-    pub index_info: Option<(u64, u32, String, u32)>,
-    /// 搜索结果列表 (id, distance)
-    pub search_results: Vec<(u64, f32)>,
-    pub delete_id: InputState,
-    pub list_scroll: usize,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VectorFocus {
-    IndexName,
-    QueryVec,
-    TopK,
-    DeleteId,
+    /// 所有索引的统计信息
+    pub all_indices: Vec<IndexInfo>,
+    /// 下拉菜单是否展开
+    pub show_dropdown: bool,
+    /// 下拉菜单当前选中项索引
+    pub selected_dropdown: usize,
+    /// 是否已自动刷新（首次进入时加载）
+    pub auto_refreshed: bool,
 }
 
 impl Default for VectorTabState {
     fn default() -> Self {
         Self {
-            focus: VectorFocus::IndexName,
             index_name: InputState::with_value("default"),
-            query_vec: InputState::new(),
-            top_k: InputState::with_value("5"),
-            index_info: None,
-            search_results: Vec::new(),
-            delete_id: InputState::new(),
-            list_scroll: 0,
+            all_indices: Vec::new(),
+            show_dropdown: false,
+            selected_dropdown: 0,
+            auto_refreshed: false,
         }
     }
 }

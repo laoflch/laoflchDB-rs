@@ -2,7 +2,7 @@
 //!
 //! 使用 ratatui 渲染主界面：顶部 Tab 栏、中间内容区、底部状态栏和命令行。
 
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table};
@@ -23,17 +23,32 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     draw_tabs(f, app, chunks[0]);
 
-    // 各 Tab 渲染返回路径输入框的 area（用于补全弹窗锚定）
-    let path_anchor: Option<Rect> = match app.current_tab {
-        Tab::Image => draw_image_tab(f, app, chunks[1]),
-        Tab::Face => draw_face_tab(f, app, chunks[1]),
+    // 各 Tab 渲染
+    let image_path_anchor: Option<Rect>;
+    let face_path_anchor: Option<Rect>;
+    let vector_input_anchor: Option<Rect>;
+
+    match app.current_tab {
+        Tab::Image => {
+            image_path_anchor = draw_image_tab(f, app, chunks[1]);
+            face_path_anchor = None;
+            vector_input_anchor = None;
+        }
+        Tab::Face => {
+            face_path_anchor = draw_face_tab(f, app, chunks[1]);
+            image_path_anchor = None;
+            vector_input_anchor = None;
+        }
         Tab::Vector => {
-            draw_vector_tab(f, app, chunks[1]);
-            None
+            vector_input_anchor = Some(draw_vector_tab(f, app, chunks[1]));
+            image_path_anchor = None;
+            face_path_anchor = None;
         }
         Tab::Sql => {
             draw_sql_tab(f, app, chunks[1]);
-            None
+            image_path_anchor = None;
+            face_path_anchor = None;
+            vector_input_anchor = None;
         }
     };
 
@@ -41,26 +56,21 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     // 路径补全弹窗最后渲染，浮在所有内容之上
     // 弹窗从路径输入框下方延伸到内容区底部（chunks[1] 的底部）
-    if let Some(anchor) = path_anchor {
-        let content_bottom = chunks[1].y + chunks[1].height;
+    let content_bottom = chunks[1].y + chunks[1].height;
+
+    if let Some(anchor) = image_path_anchor {
         let max_visible = (content_bottom.saturating_sub(anchor.y + anchor.height)) as usize;
-
-        // 先更新 popup.visible（需要 &mut App），再不可变借用渲染
-        match app.current_tab {
-            Tab::Image => {
-                app.image_tab.path_popup.visible = max_visible;
-            }
-            Tab::Face => {
-                app.face_tab.path_popup.visible = max_visible;
-            }
-            _ => {}
+        app.image_tab.path_popup.visible = max_visible;
+        let popup = &app.image_tab.path_popup;
+        if popup.is_active() {
+            draw_path_popup(f, popup, anchor, content_bottom);
         }
+    }
 
-        let popup = match app.current_tab {
-            Tab::Image => &app.image_tab.path_popup,
-            Tab::Face => &app.face_tab.path_popup,
-            _ => unreachable!(),
-        };
+    if let Some(anchor) = face_path_anchor {
+        let max_visible = (content_bottom.saturating_sub(anchor.y + anchor.height)) as usize;
+        app.face_tab.path_popup.visible = max_visible;
+        let popup = &app.face_tab.path_popup;
         if popup.is_active() {
             draw_path_popup(f, popup, anchor, content_bottom);
         }
@@ -89,6 +99,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // 下载确认弹窗
     if app.image_tab.download_confirm.is_some() {
         draw_download_confirm_dialog(f, app);
+    }
+
+    // 向量索引导航下拉菜单（浮在最顶层）
+    if app.vector_tab.show_dropdown && !app.vector_tab.all_indices.is_empty() {
+        if let Some(anchor) = vector_input_anchor {
+            draw_index_dropdown_popup(f, app, anchor, content_bottom);
+        }
     }
 }
 
@@ -161,10 +178,10 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     let help_text = match app.current_tab {
         Tab::Image => "F1上传 F2列出 :bucket/:key设置 ↑↓选路径 Enter确认 Esc取消 | ",
         Tab::Face => "F1提取 F2比较 F4保存 F5索引 ↑↓选路径 Enter确认 Esc取消 | ",
-        Tab::Vector => "F1索引信息 F2搜索 F3删除 | ",
+        Tab::Vector => "F1刷新列表 F2/Enter查看详情 ↓/Tab展开菜单 ↑↓导航 Esc关闭 | ",
         Tab::Sql => "F5执行 Ctrl+L清空 | ",
     };
-    let help_span = Span::styled(help_text, Style::default().fg(Color::DarkGray));
+    let help_span = Span::styled(help_text, Style::default().fg(Color::Gray));
 
     // 图片 Tab 在状态栏显示 bucket/key（留空表示自动生成）
     let ctx_span = if app.current_tab == Tab::Image {
@@ -392,54 +409,88 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
 
 // ── 向量 Tab ──────────────────────────────────────
 
-fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) {
-    use crate::app::VectorFocus;
+fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(9), Constraint::Min(5)])
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
         .split(area);
 
-    let row1 = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(20), Constraint::Length(10), Constraint::Length(60)])
-        .split(chunks[0]);
+    // ── 顶部：索引名称输入框 ─────────────────────
+    let input_area = chunks[0];
+    draw_input_box(f, input_area, "索引名称（F1 刷新列表，F2/Enter 查看详情）", &app.vector_tab.index_name, true);
 
-    draw_input_box(f, row1[0], "index_name", &app.vector_tab.index_name, app.vector_tab.focus == VectorFocus::IndexName);
-    draw_input_box(f, row1[1], "top_k", &app.vector_tab.top_k, app.vector_tab.focus == VectorFocus::TopK);
-    draw_input_box(f, row1[2], "查询向量（逗号分隔）", &app.vector_tab.query_vec, app.vector_tab.focus == VectorFocus::QueryVec);
-
-    let row2 = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(20)])
-        .split({
-            Rect { x: chunks[0].x, y: chunks[0].y + 3, width: chunks[0].width, height: 3 }
-        });
-    draw_input_box(f, row2[0], "删除向量 ID", &app.vector_tab.delete_id, app.vector_tab.focus == VectorFocus::DeleteId);
-
-    // 索引信息
-    let info_str = if let Some((n, dim, metric, layers)) = &app.vector_tab.index_info {
-        format!("num_elements={}, dim={}, metric={}, max_layers={}", n, dim, metric, layers)
+    // ── 下部：索引信息详情 ─────────────────────
+    let info = if !app.vector_tab.index_name.value.is_empty() {
+        app.vector_tab.all_indices.iter().find(|i| i.name == app.vector_tab.index_name.value)
     } else {
-        "(尚未获取索引信息，按 i 获取)".to_string()
+        app.vector_tab.all_indices.first()
     };
 
-    // 搜索结果
-    let rows: Vec<Row> = app
-        .vector_tab
-        .search_results
-        .iter()
-        .skip(app.vector_tab.list_scroll)
-        .take(50)
-        .map(|(id, dist)| Row::new(vec![Cell::from(id.to_string()), Cell::from(format!("{:.4}", dist))]))
-        .collect();
-    let header = Row::new(vec![Cell::from("id"), Cell::from("distance")])
-        .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
+    let header = Row::new(vec![
+        Cell::from("属性"),
+        Cell::from("值"),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
 
-    let table = Table::new(rows, [Constraint::Length(20), Constraint::Length(20)])
+    let mut rows = Vec::new();
+
+    // 头部信息
+    if let Some(info) = info {
+        rows.push(Row::new(vec![
+            Cell::from("索引名称"),
+            Cell::from(info.name.clone()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("向量数"),
+            Cell::from(info.num_elements.to_string()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("维度"),
+            Cell::from(info.dim.to_string()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("距离度量"),
+            Cell::from(info.distance_metric.clone()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("最大层数"),
+            Cell::from(info.max_layers.to_string()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("搜索次数"),
+            Cell::from(info.search_count.to_string()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("插入次数"),
+            Cell::from(info.insert_count.to_string()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("删除次数"),
+            Cell::from(info.delete_count.to_string()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("快照路径"),
+            Cell::from(info.snapshot_path.clone()),
+        ]));
+    } else {
+        let hint = if app.vector_tab.all_indices.is_empty() {
+            "按 F1 获取所有索引列表，或在输入框输入索引名称后按 Enter/F2 查看详情"
+        } else {
+            "按 ↓/Tab 展开下拉菜单选择索引，或输入索引名称后按 Enter/F2 查看详情"
+        };
+        rows.push(Row::new(vec![
+            Cell::from(hint),
+            Cell::from(""),
+        ]));
+    }
+
+    let table = Table::new(rows, [Constraint::Length(16), Constraint::Min(20)])
         .header(header)
-        .block(Block::default().borders(Borders::ALL).title(format!("搜索结果  | {}", info_str)));
+        .block(Block::default().borders(Borders::ALL).title("索引信息"));
 
     f.render_widget(table, chunks[1]);
+
+    input_area
 }
 
 // ── SQL Tab ──────────────────────────────────────
@@ -673,6 +724,88 @@ fn draw_path_popup(f: &mut Frame, popup: &PathPopup, anchor: Rect, content_botto
     }
 }
 
+/// 绘制向量索引选择下拉菜单（浮在顶层，延伸至内容区底部）
+///
+/// 锚定在索引名称输入框的正下方，高度延伸到内容区底部（content_bottom）。
+/// 必须在所有其他渲染之后调用，确保浮在最顶层。
+fn draw_index_dropdown_popup(f: &mut Frame, app: &App, anchor: Rect, content_bottom: u16) {
+    let total = app.vector_tab.all_indices.len();
+    if total == 0 {
+        return;
+    }
+
+    // 弹窗宽度 = 输入框宽度，最小 40
+    let width = anchor.width.max(40).min(60);
+    let x = anchor.x;
+
+    // 底部可用的最大行数
+    let max_rows = content_bottom.saturating_sub(anchor.y + anchor.height);
+    let visible = total.min(max_rows as usize).min(10); // 最多显示10个
+    if visible == 0 {
+        return;
+    }
+
+    let height = visible as u16 + 2;
+    let y = anchor.y + anchor.height;
+    let area = Rect { x, y, width, height };
+
+    // 清除背景
+    f.render_widget(Clear, area);
+
+    // 外框（黑色背景 + 黄色边框，与路径补全一致）
+    let title = format!(" 选择索引 {}/{} ", app.vector_tab.selected_dropdown + 1, total);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(Color::Black).fg(Color::Yellow));
+    f.render_widget(block, area);
+
+    // 内部内容区
+    let inner = Rect {
+        x: area.x + 1,
+        y: area.y + 1,
+        width: area.width.saturating_sub(2),
+        height: area.height.saturating_sub(2),
+    };
+
+    // 渲染每一行
+    for i in 0..visible {
+        let idx = i;
+        let info = &app.vector_tab.all_indices[idx];
+        let is_selected = idx == app.vector_tab.selected_dropdown;
+
+        let row_area = Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        };
+
+        // 选中行高亮背景（青色背景 + 黑色文字，与路径补全一致）
+        if is_selected {
+            let bg = Block::default().style(Style::default().bg(Color::Cyan));
+            f.render_widget(bg, row_area);
+        }
+
+        let name_display = truncate_str(&info.name, row_area.width as usize - 2);
+        let fg = if is_selected { Color::Black } else { Color::White };
+        let bold = is_selected;
+
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw(" "),
+                Span::styled(
+                    name_display,
+                    Style::default()
+                        .fg(fg)
+                        .add_modifier(if bold { Modifier::BOLD } else { Modifier::empty() }),
+                ),
+            ])),
+            row_area,
+        );
+    }
+}
+
 /// 绘制本地文件操作弹窗
 ///
 /// 包含两个 Tab：上传（Tab 0）和向量索引（Tab 1）。
@@ -711,7 +844,7 @@ fn draw_local_file_action_dialog(f: &mut Frame, app: &mut App) {
     };
 
     // ── Tab 栏 ──────────────────────────────────
-    let tab_titles = ["上传", "向量索引"];
+    let tab_titles = ["上传", "图片检索"];
     let tab_area = Rect {
         x: inner.x,
         y: inner.y,

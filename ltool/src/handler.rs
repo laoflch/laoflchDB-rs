@@ -5,7 +5,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 use crate::app::{
-    App, FaceFocus, InputState, Tab, VectorFocus,
+    App, FaceFocus, InputState, Tab,
 };
 
 /// 处理一个键盘事件
@@ -527,12 +527,14 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                             "siglip2".to_string(),
                             "bge-small-zh-v1.5".to_string(),
                         ];
+                        // 获取 image 索引的 dim 作为默认值
+                        let dim_default = crate::tab_image::get_image_index_dim(app).await;
                         app.image_tab.local_file_action = Some(crate::app::LocalFileAction {
                             file_path: full,
                             tab: 0,
                             model_name: crate::app::InputState::with_value("jina-clip-v2"),
                             index_name: crate::app::InputState::with_value("image"),
-                            dim: crate::app::InputState::with_value("512"),
+                            dim: crate::app::InputState::with_value(&dim_default),
                             top_k: crate::app::InputState::with_value("10"),
                             max_distance: crate::app::InputState::with_value("0.1"),
                             models,
@@ -554,11 +556,12 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
         }
     }
 
-    // 文件路径非空时按 Enter 重新打开操作对话框
+    // 文件路径非空时按 Enter 重新打开操作对话框（无选中行时）
     if event.code == KeyCode::Enter
         && !app.image_tab.file_path.value.is_empty()
         && app.image_tab.local_file_action.is_none()
         && !app.image_tab.path_popup.active
+        && app.image_tab.selected_index.is_none()
     {
         let models = vec![
             "jina-clip-v2".to_string(),
@@ -566,12 +569,14 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
             "bge-small-zh-v1.5".to_string(),
         ];
         let full = app.image_tab.file_path.value.clone();
+        // 获取 image 索引的 dim 作为默认值
+        let dim_default = crate::tab_image::get_image_index_dim(app).await;
         app.image_tab.local_file_action = Some(crate::app::LocalFileAction {
             file_path: full,
             tab: 0,
             model_name: crate::app::InputState::with_value("jina-clip-v2"),
             index_name: crate::app::InputState::with_value("image"),
-            dim: crate::app::InputState::with_value("512"),
+            dim: crate::app::InputState::with_value(&dim_default),
             top_k: crate::app::InputState::with_value("10"),
             max_distance: crate::app::InputState::with_value("0.1"),
             models,
@@ -808,69 +813,112 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
 
 /// 处理向量 Tab 的事件
 async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
-    // 快捷键用 F1/F2/F3，避免与输入框字符冲突
-    // F1=索引信息, F2=搜索, F3=删除
+    // 首次进入时自动刷新索引列表
+    if !app.vector_tab.auto_refreshed {
+        app.vector_tab.auto_refreshed = true;
+        let _ = crate::tab_vector::get_all_indices(app).await;
+    }
+
+    // F1: 刷新所有索引信息
+    // F2: 获取当前索引名的详细信息
     match event.code {
         KeyCode::F(1) => {
-            let _ = crate::tab_vector::get_index_info(app).await;
+            let _ = crate::tab_vector::get_all_indices(app).await;
             return true;
         }
         KeyCode::F(2) => {
-            let _ = crate::tab_vector::search(app).await;
+            let _ = crate::tab_vector::get_index_info(app).await;
             return true;
         }
-        KeyCode::F(3) => {
-            let _ = crate::tab_vector::delete_embedding(app).await;
+        // Enter 在输入框中触发获取指定索引信息
+        KeyCode::Enter => {
+            if app.vector_tab.show_dropdown {
+                // 从下拉菜单选中索引
+                if let Some(info) = app.vector_tab.all_indices.get(app.vector_tab.selected_dropdown) {
+                    app.vector_tab.index_name.set_value(info.name.clone());
+                }
+                app.vector_tab.show_dropdown = false;
+                let _ = crate::tab_vector::get_index_info(app).await;
+            } else if !app.vector_tab.index_name.value.is_empty() {
+                let _ = crate::tab_vector::get_index_info(app).await;
+            }
             return true;
         }
-        KeyCode::Tab => {
-            app.vector_tab.focus = match app.vector_tab.focus {
-                VectorFocus::IndexName => VectorFocus::QueryVec,
-                VectorFocus::QueryVec => VectorFocus::TopK,
-                VectorFocus::TopK => VectorFocus::DeleteId,
-                VectorFocus::DeleteId => VectorFocus::IndexName,
-            };
+        // Tab/Down 切换下拉菜单展开/收起
+        KeyCode::Tab | KeyCode::Down => {
+            if app.vector_tab.show_dropdown {
+                // 下拉菜单内部导航
+                let max = app.vector_tab.all_indices.len().saturating_sub(1);
+                if app.vector_tab.selected_dropdown < max {
+                    app.vector_tab.selected_dropdown += 1;
+                    // 实时更新输入框值，下方表格同步显示
+                    if let Some(info) = app.vector_tab.all_indices.get(app.vector_tab.selected_dropdown) {
+                        app.vector_tab.index_name.set_value(info.name.clone());
+                    }
+                }
+            } else if !app.vector_tab.all_indices.is_empty() {
+                // 第一次展开下拉菜单
+                app.vector_tab.show_dropdown = true;
+                // 默认选中第一个或当前匹配的
+                if !app.vector_tab.index_name.value.is_empty() {
+                    if let Some(pos) = app.vector_tab.all_indices.iter().position(|i| i.name == app.vector_tab.index_name.value) {
+                        app.vector_tab.selected_dropdown = pos;
+                    }
+                }
+            }
             return true;
         }
         KeyCode::Up => {
-            app.vector_tab.focus = match app.vector_tab.focus {
-                VectorFocus::IndexName => VectorFocus::DeleteId,
-                VectorFocus::QueryVec => VectorFocus::IndexName,
-                VectorFocus::TopK => VectorFocus::QueryVec,
-                VectorFocus::DeleteId => VectorFocus::TopK,
-            };
-            return true;
-        }
-        KeyCode::Down => {
-            app.vector_tab.focus = match app.vector_tab.focus {
-                VectorFocus::IndexName => VectorFocus::QueryVec,
-                VectorFocus::QueryVec => VectorFocus::TopK,
-                VectorFocus::TopK => VectorFocus::DeleteId,
-                VectorFocus::DeleteId => VectorFocus::IndexName,
-            };
+            if app.vector_tab.show_dropdown {
+                if app.vector_tab.selected_dropdown > 0 {
+                    app.vector_tab.selected_dropdown -= 1;
+                    // 实时更新输入框值，下方表格同步显示
+                    if let Some(info) = app.vector_tab.all_indices.get(app.vector_tab.selected_dropdown) {
+                        app.vector_tab.index_name.set_value(info.name.clone());
+                    }
+                }
+            } else {
+                return true;
+            }
             return true;
         }
         KeyCode::PageUp => {
-            if app.vector_tab.list_scroll > 0 {
-                app.vector_tab.list_scroll = app.vector_tab.list_scroll.saturating_sub(10);
+            if app.vector_tab.show_dropdown {
+                app.vector_tab.selected_dropdown = app.vector_tab.selected_dropdown.saturating_sub(10);
+                if let Some(info) = app.vector_tab.all_indices.get(app.vector_tab.selected_dropdown) {
+                    app.vector_tab.index_name.set_value(info.name.clone());
+                }
             }
             return true;
         }
         KeyCode::PageDown => {
-            let max = app.vector_tab.search_results.len().saturating_sub(10);
-            app.vector_tab.list_scroll = (app.vector_tab.list_scroll + 10).min(max);
+            if app.vector_tab.show_dropdown {
+                let max = app.vector_tab.all_indices.len().saturating_sub(1);
+                app.vector_tab.selected_dropdown = (app.vector_tab.selected_dropdown + 10).min(max);
+                if let Some(info) = app.vector_tab.all_indices.get(app.vector_tab.selected_dropdown) {
+                    app.vector_tab.index_name.set_value(info.name.clone());
+                }
+            }
             return true;
+        }
+        // Esc 关闭下拉菜单
+        KeyCode::Esc => {
+            if app.vector_tab.show_dropdown {
+                app.vector_tab.show_dropdown = false;
+                return true;
+            }
         }
         _ => {}
     }
 
-    let input = match app.vector_tab.focus {
-        VectorFocus::IndexName => &mut app.vector_tab.index_name,
-        VectorFocus::QueryVec => &mut app.vector_tab.query_vec,
-        VectorFocus::TopK => &mut app.vector_tab.top_k,
-        VectorFocus::DeleteId => &mut app.vector_tab.delete_id,
-    };
-    handle_input_event(input, event)
+    // 字符输入进入 index_name 输入框
+    let input = &mut app.vector_tab.index_name;
+    let handled = handle_input_event(input, event);
+    if handled {
+        // 用户输入时关闭下拉菜单
+        app.vector_tab.show_dropdown = false;
+    }
+    handled
 }
 
 /// 处理 SQL Tab 的事件

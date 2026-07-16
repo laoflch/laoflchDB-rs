@@ -81,12 +81,14 @@ message IndexStats {
   uint32 dim = 7;
   string distance_metric = 8;
   string snapshot_path = 9;
+  string name = 10;
 }
 
 message GetIndexInfoResponse {
   bool success = 1;
   string message = 2;
   IndexStats stats = 3;
+  repeated IndexStats all_stats = 4;
 }
 
 // ── SaveSnapshot ────────────────────────────

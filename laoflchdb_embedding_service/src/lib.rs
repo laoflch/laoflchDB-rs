@@ -662,21 +662,58 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         }
     }
 
-    /// 获取所有索引的统计信息
+    /// 获取指定索引的统计信息
     async fn get_index_info(
         &self,
-        _request: Request<GetIndexInfoRequest>,
+        request: Request<GetIndexInfoRequest>,
     ) -> Result<Response<GetIndexInfoResponse>, Status> {
-        let mut all_stats = Vec::new();
-        let mut total_elements = 0u64;
+        let req = request.into_inner();
 
-        for (name, state) in &self.indices {
-            let stats = {
-                let index = state.index.read().await;
-                index.stats()
-            };
-            total_elements += stats.num_elements;
-            all_stats.push(IndexStats {
+        // index_name 为空时返回所有索引
+        if req.index_name.is_empty() {
+            let mut all_stats = Vec::new();
+            let mut total_elements = 0u64;
+            for (name, state) in &self.indices {
+                let stats = {
+                    let index = state.index.read().await;
+                    index.stats()
+                };
+                total_elements += stats.num_elements;
+                all_stats.push(IndexStats {
+                    num_elements: stats.num_elements,
+                    max_layers: stats.max_layer as u32,
+                    avg_connections: 0.0,
+                    search_count: stats.search_count,
+                    insert_count: stats.insert_count,
+                    delete_count: stats.delete_count,
+                    dim: state.config.dim as u32,
+                    distance_metric: format!("{:?}", state.config.distance_metric),
+                    snapshot_path: self.config.snapshot_path.clone(),
+                    name: name.clone(),
+                });
+            }
+            let main_stats = all_stats.first().cloned().unwrap_or_default();
+            return Ok(Response::new(GetIndexInfoResponse {
+                success: true,
+                message: format!("索引数: {}, 总向量数: {}", self.indices.len(), total_elements),
+                stats: Some(main_stats),
+                all_stats,
+            }));
+        }
+
+        let state = self.indices.get(&req.index_name).ok_or_else(|| {
+            Status::not_found(format!("索引不存在: {}", req.index_name))
+        })?;
+
+        let stats = {
+            let index = state.index.read().await;
+            index.stats()
+        };
+
+        Ok(Response::new(GetIndexInfoResponse {
+            success: true,
+            message: format!("索引: {}, 向量数: {}", req.index_name, stats.num_elements),
+            stats: Some(IndexStats {
                 num_elements: stats.num_elements,
                 max_layers: stats.max_layer as u32,
                 avg_connections: 0.0,
@@ -686,26 +723,9 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
                 dim: state.config.dim as u32,
                 distance_metric: format!("{:?}", state.config.distance_metric),
                 snapshot_path: self.config.snapshot_path.clone(),
-            });
-        }
-
-        // 返回第一个索引的统计（兼容旧客户端）
-        let main_stats = all_stats.into_iter().next().unwrap_or(IndexStats {
-            num_elements: total_elements,
-            max_layers: 0,
-            avg_connections: 0.0,
-            search_count: 0,
-            insert_count: 0,
-            delete_count: 0,
-            dim: 0,
-            distance_metric: "".to_string(),
-            snapshot_path: self.config.snapshot_path.clone(),
-        });
-
-        Ok(Response::new(GetIndexInfoResponse {
-            success: true,
-            message: format!("索引数: {}, 总向量数: {}", self.indices.len(), total_elements),
-            stats: Some(main_stats),
+                name: req.index_name.clone(),
+            }),
+            all_stats: vec![],
         }))
     }
 

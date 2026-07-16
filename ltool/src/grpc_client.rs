@@ -4,6 +4,7 @@
 //! 共享同一个 Channel（默认端口 19777），并提供统一的认证请求构造方法。
 
 use anyhow::{anyhow, Result};
+use std::time::Duration;
 use tonic::transport::Channel;
 use tonic::Request;
 
@@ -58,6 +59,7 @@ impl GrpcClients {
     ///
     /// 如果已登录，会在 metadata 中注入 `authorization: Bearer {token}`。
     /// 未登录时返回原始请求（调用方需自行判断是否需要登录）。
+    /// 默认设置 30 秒超时，避免无限等待。
     pub fn auth_request<T>(&self, req: T) -> Request<T> {
         let mut request = Request::new(req);
         if let Some(ref token) = self.token {
@@ -66,6 +68,7 @@ impl GrpcClients {
                 .expect("token 必须是合法的 header value");
             request.metadata_mut().insert("authorization", value);
         }
+        request.set_timeout(Duration::from_secs(30));
         request
     }
 
