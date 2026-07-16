@@ -893,7 +893,7 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
 
     f.render_widget(Clear, dialog_area);
 
-    let title = format!("相似图片搜索结果  ({}/{})", total, total);
+    let title = format!("向量搜索[{}]  ({}/{})", app.image_tab.search_index_name, total, total);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(truncate_str(&title, dialog_area.width as usize - 2))

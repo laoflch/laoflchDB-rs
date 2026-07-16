@@ -201,6 +201,8 @@ pub struct ImageTabState {
     pub search_results_scroll: usize,
     /// 搜索结果中当前选中的索引
     pub search_selected: Option<usize>,
+    /// 搜索时使用的索引名称（用于弹窗标题展示）
+    pub search_index_name: String,
 }
 
 /// 向量搜索结果项
@@ -271,6 +273,7 @@ impl Default for ImageTabState {
             show_search_results: false,
             search_results_scroll: 0,
             search_selected: None,
+            search_index_name: String::new(),
         }
     }
 }
@@ -349,7 +352,7 @@ impl Default for VectorTabState {
     fn default() -> Self {
         Self {
             focus: VectorFocus::IndexName,
-            index_name: InputState::with_value("face"),
+            index_name: InputState::with_value("default"),
             query_vec: InputState::new(),
             top_k: InputState::with_value("5"),
             index_info: None,
@@ -577,6 +580,7 @@ impl App {
         self.image_tab.show_search_results = false;
         self.image_tab.search_results_scroll = 0;
         self.image_tab.search_selected = None;
+        self.image_tab.search_index_name.clear();
         self.image_tab.path_popup.close();
     }
 

@@ -339,9 +339,9 @@ pub async fn download_image(app: &mut App) -> Result<()> {
 ///
 /// 1. 读取本地图片文件
 /// 2. 调用 VectorService.CreateEmbedding 生成向量
-/// 3. 调用 EmbeddingIndexService.SearchEmbedding 搜索相似向量
+/// 3. 调用 EmbeddingIndexService.SearchEmbedding 在指定索引中搜索相似向量
 /// 4. 结果存入 app.image_tab.search_results，弹窗显示
-pub async fn search_similar_image(app: &mut App, model_name: &str, dim: i32, top_k: i32, max_distance: f32) -> Result<()> {
+pub async fn search_similar_image(app: &mut App, model_name: &str, index_name: &str, dim: i32, top_k: i32, max_distance: f32) -> Result<()> {
     if !app.require_login() {
         return Ok(());
     }
@@ -392,7 +392,7 @@ pub async fn search_similar_image(app: &mut App, model_name: &str, dim: i32, top
     let search_req = SearchEmbeddingRequest {
         query_embedding,
         top_k,
-        index_name: "image".to_string(),
+        index_name: index_name.to_string(),
     };
 
     app.set_status("正在搜索相似图片...");
@@ -426,6 +426,7 @@ pub async fn search_similar_image(app: &mut App, model_name: &str, dim: i32, top
         })
         .collect();
     app.image_tab.search_results = filtered;
+    app.image_tab.search_index_name = index_name.to_string();
 
     let count = app.image_tab.search_results.len();
     if count == 0 {

@@ -296,6 +296,7 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                     let file_path = app.image_tab.local_file_action.as_ref().map(|a| a.file_path.clone()).unwrap_or_default();
                     app.image_tab.file_path.set_value(&file_path);
                     let model_name = app.image_tab.local_file_action.as_ref().map(|a| a.model_name.value.clone()).unwrap_or_default();
+                    let index_name = app.image_tab.local_file_action.as_ref().map(|a| a.index_name.value.clone()).unwrap_or_default();
                     let dim: i32 = app.image_tab.local_file_action.as_ref()
                         .and_then(|a| a.dim.value.parse().ok())
                         .unwrap_or(0);
@@ -306,7 +307,7 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
                         .and_then(|a| a.max_distance.value.parse().ok())
                         .unwrap_or(0.1);
                     app.image_tab.local_file_action = None;
-                    let _ = crate::tab_image::search_similar_image(app, &model_name, dim, top_k, max_distance).await;
+                    let _ = crate::tab_image::search_similar_image(app, &model_name, &index_name, dim, top_k, max_distance).await;
                     return true;
                 }
                 KeyCode::Esc => {

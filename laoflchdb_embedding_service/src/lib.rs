@@ -44,7 +44,7 @@ impl IndexConfig {
     pub fn distance_metric_from_str(s: &str) -> DistanceMetric {
         match s.to_lowercase().as_str() {
             "euclidean" => DistanceMetric::Euclidean,
-            "dot" | "dotproduct" => DistanceMetric::DotProduct,
+            "dot" | "dotproduct" => DistanceMetric::InnerProduct,
             _ => DistanceMetric::Cosine,
         }
     }

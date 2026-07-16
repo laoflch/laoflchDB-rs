@@ -15,13 +15,37 @@ vector_service:
 # 嵌入向量索引服务配置
 embedding_index:
   enabled: true
-  dim: 512
-  m: 32
-  ef_construction: 200
-  ef_search: 50
-  max_elements: 1000000
   kv_db_path: /workspace/rust_space/laoflchDB-rust/laoflch_hnsw_data
   snapshot_path: /workspace/rust_space/laoflchDB-rust/laoflch_hnsw_snapshots
+  indices:
+    - name: default
+      dim: 512
+      m: 32
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 1000000
+      distance_metric: Cosine
+    - name: image
+      dim: 1024
+      m: 16
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 1000000
+      distance_metric: Cosine
+    - name: face
+      dim: 1024
+      m: 16
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 1000000
+      distance_metric: Cosine
+    - name: memory
+      dim: 768
+      m: 16
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 50000
+      distance_metric: Cosine
 
 # 对象存储服务配置（S3 兼容，基于 RocksDB BlobDB）
 object_store:
