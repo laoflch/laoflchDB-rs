@@ -149,11 +149,10 @@ impl FaceServiceImpl {
     fn detect_device() -> Device {
         #[cfg(feature = "cuda")]
         {
-            // 尝试 GPU 1（GPU 0 给向量服务，GPU 2 备用）
             for device_id in [1, 2, 0] {
                 match Device::cuda_if_available(device_id) {
                     Ok(device) => {
-                        info!("人脸服务使用 GPU {} 推理（预加载权重到设备）", device_id);
+                        info!("人脸服务使用 GPU {} 推理", device_id);
                         return device;
                     }
                     Err(e) => {
@@ -183,15 +182,11 @@ impl FaceServiceImpl {
         info!("加载 SCRFD 模型: {}", model_path.display());
         match candle_onnx::read_file(&model_path) {
             Ok(mut model) => {
-                // 预处理 Resize 算子：清空冲突的 scales 输入（保留 sizes）
-                // ONNX Resize 输入顺序: [X, roi, scales, sizes]
-                // SCRFD 模型中 scales 和 roi 用了同一个 initializer，导致 candle-onnx 报错
-                // 解决：将 scales 输入（第 3 个，index=2）设为空字符串
+                // 只做原始的 Resize 修复，不做其他修改
                 if let Some(ref mut graph) = model.graph.as_mut() {
                     let mut fixed = 0;
                     for node in &mut graph.node {
                         if node.op_type == "Resize" && node.input.len() >= 4 {
-                            // input[2] 是 scales，清空它让 candle-onnx 忽略
                             if !node.input[2].is_empty() {
                                 node.input[2] = String::new();
                                 fixed += 1;
@@ -202,26 +197,11 @@ impl FaceServiceImpl {
                         info!("SCRFD 模型预处理: 修复了 {} 个 Resize 节点的 scales/sizes 冲突", fixed);
                     }
                 }
-                // 预加载权重到目标设备
-                let preloaded_weights = match PreloadedWeights::from_model(&model, device) {
-                    Ok(pw) => {
-                        info!("SCRFD 权重预加载完成: {} 个权重 → {:?}", pw.len(), device);
-                        pw
-                    }
-                    Err(e) => {
-                        warn!("SCRFD 权重预加载失败: {}，回退到 CPU", e);
-                        PreloadedWeights::from_model(&model, &Device::Cpu)
-                            .map_err(|e2| {
-                                warn!("SCRFD CPU 回退也失败: {}", e2);
-                            })
-                            .unwrap_or(PreloadedWeights { weights: HashMap::new() })
-                    }
-                };
                 info!("SCRFD 模型加载成功");
                 Some(ScrfdModel {
                     model,
-                    preloaded_weights,
-                    device: device.clone(),
+                    preloaded_weights: PreloadedWeights { weights: HashMap::new() }, // 不预加载
+                    device: Device::Cpu,
                 })
             }
             Err(e) => {
@@ -245,26 +225,12 @@ impl FaceServiceImpl {
         info!("加载 ArcFace 模型: {}", model_path.display());
         match candle_onnx::read_file(&model_path) {
             Ok(model) => {
-                // 预加载权重到目标设备
-                let preloaded_weights = match PreloadedWeights::from_model(&model, device) {
-                    Ok(pw) => {
-                        info!("ArcFace 权重预加载完成: {} 个权重 → {:?}", pw.len(), device);
-                        pw
-                    }
-                    Err(e) => {
-                        warn!("ArcFace 权重预加载失败: {}，回退到 CPU", e);
-                        PreloadedWeights::from_model(&model, &Device::Cpu)
-                            .map_err(|e2| {
-                                warn!("ArcFace CPU 回退也失败: {}", e2);
-                            })
-                            .unwrap_or(PreloadedWeights { weights: HashMap::new() })
-                    }
-                };
-                info!("ArcFace 模型加载成功");
+                // 简单稳定：ArcFace 用 CPU
+                info!("ArcFace 模型加载成功（使用 CPU）");
                 Some(ArcfaceModel {
                     model,
-                    preloaded_weights,
-                    device: device.clone(),
+                    preloaded_weights: PreloadedWeights { weights: HashMap::new() },
+                    device: Device::Cpu,
                 })
             }
             Err(e) => {
@@ -397,31 +363,25 @@ impl ScrfdModel {
             .ok_or_else(|| Status::internal("SCRFD 模型无输入"))?;
 
         let mut inputs = std::collections::HashMap::new();
-        // 注入预加载的权重（已在目标设备上）
-        for (name, tensor) in &self.preloaded_weights.weights {
-            inputs.insert(name.clone(), tensor.clone());
-        }
         inputs.insert(input_name, input_tensor);
 
-        // clone 模型并清空 initializer，防止 simple_eval 用 CPU 重新加载
-        let mut model_clone = self.model.clone();
-        if let Some(ref mut graph) = model_clone.graph {
-            graph.initializer.clear();
-        }
-
-        // 推理
-        let outputs = candle_onnx::simple_eval(&model_clone, inputs).map_err(|e| {
+        // 直接用原始 simple_eval（CPU，权重在模型里）
+        let outputs = candle_onnx::simple_eval(&self.model, inputs).map_err(|e| {
             Status::internal(format!("SCRFD 推理失败: {}", e))
         })?;
+
+        // 调试日志
+        info!("SCRFD 推理输出数: {}", outputs.len());
+        let mut sorted_outputs: Vec<(&String, &Tensor)> = outputs.iter().collect();
+        sorted_outputs.sort_by(|a, b| a.0.cmp(b.0));
+        for (i, (name, tensor)) in sorted_outputs.iter().enumerate() {
+            info!("  输出[{}] name={}, shape={:?}", i, name, tensor.shape());
+        }
 
         // 解析输出：SCRFD 输出多个尺度的 bbox/score/kps
         // 典型输出名: score_0, score_1, score_2, bbox_0, bbox_1, bbox_2, kps_0, kps_1, kps_2
         // 或按顺序排列
         let mut all_faces = Vec::new();
-
-        // 按输出顺序解析（3 个尺度）
-        let mut sorted_outputs: Vec<(&String, &Tensor)> = outputs.iter().collect();
-        sorted_outputs.sort_by(|a, b| a.0.cmp(b.0));
 
         // SCRFD 有 9 个输出，按 stride 分组：每组 3 个 (score, bbox, kps)
         // 模型实际输出顺序（按名称排序后）：[s8_score, s8_bbox, s8_kps, s16_score, s16_bbox, s16_kps, s32_score, s32_bbox, s32_kps]
@@ -572,6 +532,13 @@ impl ScrfdModel {
             .map_err(|e| Status::internal(format!("score flatten 失败: {}", e)))?
             .to_vec1::<f32>()
             .map_err(|e| Status::internal(format!("score 提取失败: {}", e)))?;
+        
+        // 调试日志：打印分数分布
+        let max_score = scores.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+        let min_score = scores.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+        let num_above_thresh = scores.iter().filter(|&&s| s >= threshold).count();
+        info!("  stride={}: num_anchors={}, score_range=[{:.4}, {:.4}], threshold={:.4}, num_above={}", 
+              stride, scores.len(), min_score, max_score, threshold, num_above_thresh);
         // bbox/kps 可能是 2D [num_anchors, 4/10] 或 3D [batch, num_anchors, 4/10]
         // 去掉 batch 维度（如果有）
         let bboxes = if bbox_tensor.dims().len() == 3 {
@@ -675,19 +642,10 @@ impl ArcfaceModel {
             .ok_or_else(|| Status::internal("ArcFace 模型无输入"))?;
 
         let mut inputs = std::collections::HashMap::new();
-        // 注入预加载的权重（已在目标设备上）
-        for (name, tensor) in &self.preloaded_weights.weights {
-            inputs.insert(name.clone(), tensor.clone());
-        }
         inputs.insert(input_name, input_tensor);
 
-        // clone 模型并清空 initializer，防止 simple_eval 用 CPU 重新加载
-        let mut model_clone = self.model.clone();
-        if let Some(ref mut graph) = model_clone.graph {
-            graph.initializer.clear();
-        }
-
-        let outputs = candle_onnx::simple_eval(&model_clone, inputs).map_err(|e| {
+        // 直接用原始 simple_eval（CPU，权重在模型里）
+        let outputs = candle_onnx::simple_eval(&self.model, inputs).map_err(|e| {
             Status::internal(format!("ArcFace 推理失败: {}", e))
         })?;
 

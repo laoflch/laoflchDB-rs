@@ -293,6 +293,10 @@ pub struct FaceTabState {
     pub selected_face: usize,
     /// 当前选中人脸的 embedding（前 10 个值预览用）
     pub embedding_preview: Vec<f32>,
+    /// 对齐后的人脸图片数据（与 faces 一一对应）
+    pub aligned_images: Vec<Vec<u8>>,
+    /// 导出路径输入框
+    pub export_path: InputState,
     pub list_scroll: usize,
     /// 本地路径输入框的补全下拉菜单
     pub path_popup: PathPopup,
@@ -304,14 +308,20 @@ pub enum FaceFocus {
     DetThreshold,
     MaxFaces,
     Bucket,
+    ExportPath,
 }
 
 impl Default for FaceTabState {
     fn default() -> Self {
+        // 默认导出到用户主目录下的 faces 文件夹
+        let default_export_dir = dirs::home_dir()
+            .map(|h| h.join("faces"))
+            .unwrap_or_else(|| std::path::PathBuf::from("./faces"));
+        
         Self {
             focus: FaceFocus::FilePath,
             file_path: InputState::new(),
-            det_threshold: InputState::with_value("0.5"),
+            det_threshold: InputState::with_value("0.1"),
             max_faces: InputState::with_value("0"),
             save_aligned_images: false,
             index_embedding: false,
@@ -319,6 +329,10 @@ impl Default for FaceTabState {
             faces: Vec::new(),
             selected_face: 0,
             embedding_preview: Vec::new(),
+            aligned_images: Vec::new(),
+            export_path: InputState::with_value(
+                default_export_dir.to_str().unwrap_or("./faces")
+            ),
             list_scroll: 0,
             path_popup: PathPopup::default(),
         }

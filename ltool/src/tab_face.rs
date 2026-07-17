@@ -38,7 +38,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         max_faces,
         save_aligned_images: save_aligned,
         image_bucket,
-        return_aligned_images: false,
+        return_aligned_images: true, // 返回对齐后的人脸图片用于导出
         index_embedding,
     };
 
@@ -64,6 +64,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
 
     let mut faces = Vec::new();
     let mut first_embedding = Vec::new();
+    let mut aligned_images = Vec::new();
     for (i, f) in resp.faces.iter().enumerate() {
         let score = f.detection.as_ref().map(|d| d.score).unwrap_or(0.0);
         let bbox = f.detection.as_ref().map(|d| d.bbox.clone()).unwrap_or_default();
@@ -73,12 +74,14 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
             first_embedding = f.embedding.clone();
         }
         faces.push((i + 1, score, bbox, saved_key, vector_id));
+        aligned_images.push(f.aligned_image.clone());
     }
 
     let n = faces.len();
     app.face_tab.faces = faces;
     app.face_tab.selected_face = 0;
     app.face_tab.embedding_preview = first_embedding;
+    app.face_tab.aligned_images = aligned_images;
     app.face_tab.list_scroll = 0;
     app.set_status(format!("检测到 {} 张人脸", n));
     Ok(())
@@ -140,6 +143,39 @@ pub async fn compare_features(app: &mut App) -> Result<()> {
     app.set_status(format!(
         "相似度: {:.4}，是否同一人: {}",
         resp.similarity, resp.is_same_person
+    ));
+    Ok(())
+}
+
+/// 导出所有检测到的人脸图片到指定目录
+pub async fn export_faces(app: &mut App, output_dir: &str) -> Result<()> {
+    if app.face_tab.aligned_images.is_empty() {
+        app.set_error("没有检测到的人脸可导出，请先提取人脸特征");
+        return Ok(());
+    }
+
+    let output_path = std::path::Path::new(output_dir);
+    if !output_path.exists() {
+        std::fs::create_dir_all(output_path)
+            .map_err(|e| anyhow!("创建输出目录失败: {}", e))?;
+    }
+
+    let mut success_count = 0;
+    for (i, image_data) in app.face_tab.aligned_images.iter().enumerate() {
+        let face_num = i + 1;
+        let filename = format!("face_{:03}.jpg", face_num);
+        let filepath = output_path.join(filename);
+        
+        std::fs::write(&filepath, image_data)
+            .map_err(|e| anyhow!("保存人脸 {} 失败: {}", face_num, e))?;
+        
+        success_count += 1;
+    }
+
+    app.set_status(format!(
+        "成功导出 {} 张人脸图片到 {}",
+        success_count,
+        output_path.to_str().unwrap_or("")
     ));
     Ok(())
 }

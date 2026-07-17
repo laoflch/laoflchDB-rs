@@ -30,3 +30,5 @@ anyhow = "1.0"
 log = "0.4"
 # 时间格式化
 chrono = { version = "0.4", features = ["clock"] }
+# 目录路径
+dirs = "5.0"

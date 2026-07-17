@@ -177,7 +177,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     // 当前 Tab 的快捷键提示
     let help_text = match app.current_tab {
         Tab::Image => "F1上传 F2列出 :bucket/:key设置 ↑↓选路径 Enter确认 Esc取消 | ",
-        Tab::Face => "F1提取 F2比较 F4保存 F5索引 ↑↓选路径 Enter确认 Esc取消 | ",
+        Tab::Face => "F1提取 F2比较 F4保存 F5索引 F6导出 ↑↓选路径 Enter确认 Esc取消  ",
         Tab::Vector => "F1刷新列表 F2/Enter查看详情 ↓/Tab展开菜单 ↑↓导航 Esc关闭 | ",
         Tab::Sql => "F5执行 Ctrl+L清空 | ",
     };
@@ -320,10 +320,10 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     use crate::app::FaceFocus;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(9), Constraint::Min(5)])
+        .constraints([Constraint::Length(12), Constraint::Min(5)])
         .split(area);
 
-    // 输入区：分两行
+    // 输入区：分三行
     let row1 = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(40), Constraint::Length(15), Constraint::Length(15)])
@@ -354,6 +354,22 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     let p2 = Paragraph::new(format!("{} index_embedding (F5 切换)", idx_str))
         .block(Block::default().borders(Borders::ALL));
     f.render_widget(p2, row2[2]);
+
+    // 第三行：导出路径 + 提示
+    let row3 = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(50), Constraint::Length(25)])
+        .split({
+            let r = Rect { x: chunks[0].x, y: chunks[0].y + 6, width: chunks[0].width, height: 3 };
+            r
+        });
+
+    draw_input_box(f, row3[0], "导出路径", &app.face_tab.export_path, app.face_tab.focus == FaceFocus::ExportPath);
+
+    let p3 = Paragraph::new("F6 导出人脸图片")
+        .block(Block::default().borders(Borders::ALL))
+        .alignment(Alignment::Center);
+    f.render_widget(p3, row3[1]);
 
     // 结果区
     let rows: Vec<Row> = app

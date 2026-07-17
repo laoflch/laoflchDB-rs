@@ -681,8 +681,8 @@ fn auto_scroll_image(tab: &mut crate::app::ImageTabState) {
 
 /// 处理人脸 Tab 的事件
 async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
-    // 快捷键用 F1-F5，避免与输入框字符冲突
-    // F1=提取特征, F2=比较特征, F3=清空结果(预留), F4=切换save_aligned, F5=切换index_embedding
+    // 快捷键用 F1-F6，避免与输入框字符冲突
+    // F1=提取特征, F2=比较特征, F3=清空结果(预留), F4=切换save_aligned, F5=切换index_embedding, F6=导出人脸
     match event.code {
         KeyCode::F(1) => {
             let _ = crate::tab_face::extract_features(app).await;
@@ -706,6 +706,11 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
                 "index_embedding 已{}",
                 if app.face_tab.index_embedding { "开启" } else { "关闭" }
             ));
+            return true;
+        }
+        KeyCode::F(6) => {
+            let export_path = app.face_tab.export_path.value.clone();
+            let _ = crate::tab_face::export_faces(app, &export_path).await;
             return true;
         }
         _ => {}
@@ -755,7 +760,8 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
                 FaceFocus::FilePath => FaceFocus::DetThreshold,
                 FaceFocus::DetThreshold => FaceFocus::MaxFaces,
                 FaceFocus::MaxFaces => FaceFocus::Bucket,
-                FaceFocus::Bucket => FaceFocus::FilePath,
+                FaceFocus::Bucket => FaceFocus::ExportPath,
+                FaceFocus::ExportPath => FaceFocus::FilePath,
             };
             if app.face_tab.focus == FaceFocus::FilePath {
                 let cs = crate::path_complete::list_candidates(&app.face_tab.file_path.value);
@@ -766,10 +772,11 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         KeyCode::Up if app.face_tab.focus != FaceFocus::FilePath || !app.face_tab.path_popup.is_active() => {
             app.face_tab.path_popup.close();
             app.face_tab.focus = match app.face_tab.focus {
-                FaceFocus::FilePath => FaceFocus::Bucket,
+                FaceFocus::FilePath => FaceFocus::ExportPath,
                 FaceFocus::DetThreshold => FaceFocus::FilePath,
                 FaceFocus::MaxFaces => FaceFocus::DetThreshold,
                 FaceFocus::Bucket => FaceFocus::MaxFaces,
+                FaceFocus::ExportPath => FaceFocus::Bucket,
             };
             return true;
         }
@@ -779,7 +786,8 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
                 FaceFocus::FilePath => FaceFocus::DetThreshold,
                 FaceFocus::DetThreshold => FaceFocus::MaxFaces,
                 FaceFocus::MaxFaces => FaceFocus::Bucket,
-                FaceFocus::Bucket => FaceFocus::FilePath,
+                FaceFocus::Bucket => FaceFocus::ExportPath,
+                FaceFocus::ExportPath => FaceFocus::FilePath,
             };
             return true;
         }
@@ -802,6 +810,7 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         FaceFocus::DetThreshold => &mut app.face_tab.det_threshold,
         FaceFocus::MaxFaces => &mut app.face_tab.max_faces,
         FaceFocus::Bucket => &mut app.face_tab.bucket,
+        FaceFocus::ExportPath => &mut app.face_tab.export_path,
     };
     let changed = handle_input_event(input, event);
     if changed && app.face_tab.focus == FaceFocus::FilePath {

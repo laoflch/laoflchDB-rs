@@ -63,7 +63,7 @@ face_service:
   model_dir: /workspace/rust_space/laoflchDB-rust/laoflch_db_model
   scrfd_model_file: scrfd_10g.onnx
   arcface_model_file: arcface_w600k_r50.onnx
-  det_threshold: 0.5
+  det_threshold: 0.1
   max_faces: 0
 
 # Log configuration
