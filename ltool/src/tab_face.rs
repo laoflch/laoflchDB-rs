@@ -65,6 +65,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
     let mut faces = Vec::new();
     let mut first_embedding = Vec::new();
     let mut aligned_images = Vec::new();
+    let mut all_empty = true;
     for (i, f) in resp.faces.iter().enumerate() {
         let score = f.detection.as_ref().map(|d| d.score).unwrap_or(0.0);
         let bbox = f.detection.as_ref().map(|d| d.bbox.clone()).unwrap_or_default();
@@ -75,6 +76,9 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         }
         faces.push((i + 1, score, bbox, saved_key, vector_id));
         aligned_images.push(f.aligned_image.clone());
+        if !f.aligned_image.is_empty() {
+            all_empty = false;
+        }
     }
 
     let n = faces.len();
@@ -83,7 +87,11 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
     app.face_tab.embedding_preview = first_embedding;
     app.face_tab.aligned_images = aligned_images;
     app.face_tab.list_scroll = 0;
-    app.set_status(format!("检测到 {} 张人脸", n));
+    if all_empty && n > 0 {
+        app.set_status(format!("检测到 {} 张人脸，但对齐图片数据为空", n));
+    } else {
+        app.set_status(format!("检测到 {} 张人脸", n));
+    }
     Ok(())
 }
 
@@ -150,7 +158,11 @@ pub async fn compare_features(app: &mut App) -> Result<()> {
 /// 导出所有检测到的人脸图片到指定目录
 pub async fn export_faces(app: &mut App, output_dir: &str) -> Result<()> {
     if app.face_tab.aligned_images.is_empty() {
-        app.set_error("没有检测到的人脸可导出，请先提取人脸特征");
+        app.set_error(format!(
+            "没有检测到的人脸可导出，请先提取人脸特征。faces={}, aligned={}",
+            app.face_tab.faces.len(),
+            app.face_tab.aligned_images.len()
+        ));
         return Ok(());
     }
 
@@ -161,10 +173,18 @@ pub async fn export_faces(app: &mut App, output_dir: &str) -> Result<()> {
     }
 
     let mut success_count = 0;
-    for (i, image_data) in app.face_tab.aligned_images.iter().enumerate() {
+    let mut all_empty = true;
+    // 先克隆数据，避免借用问题
+    let images_to_export = app.face_tab.aligned_images.clone();
+    for (i, image_data) in images_to_export.iter().enumerate() {
         let face_num = i + 1;
         let filename = format!("face_{:03}.jpg", face_num);
         let filepath = output_path.join(filename);
+        
+        if image_data.is_empty() {
+            continue;
+        }
+        all_empty = false;
         
         std::fs::write(&filepath, image_data)
             .map_err(|e| anyhow!("保存人脸 {} 失败: {}", face_num, e))?;
@@ -172,10 +192,16 @@ pub async fn export_faces(app: &mut App, output_dir: &str) -> Result<()> {
         success_count += 1;
     }
 
-    app.set_status(format!(
-        "成功导出 {} 张人脸图片到 {}",
-        success_count,
-        output_path.to_str().unwrap_or("")
-    ));
+    if success_count > 0 {
+        app.set_status(format!(
+            "成功导出 {} 张人脸图片到 {}",
+            success_count,
+            output_path.to_str().unwrap_or("")
+        ));
+    } else if all_empty && !images_to_export.is_empty() {
+        app.set_error("检测到人脸，但对齐图片数据为空，无法导出");
+    } else {
+        app.set_error("没有成功导出任何人脸图片");
+    }
     Ok(())
 }

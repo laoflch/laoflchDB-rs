@@ -1,9 +1,8 @@
 //! 人脸服务 (FaceService)
 //!
-//! 技术体系：SCRFD ONNX 人脸检测 + 5 关键点 → 仿射对齐裁剪 112×112 → ArcFace 提取 512 维特征 + L2 归一化
+//! 技术体系：SCRFD ONNX 人脸检测 + 5 关键点 → 裁剪对齐 112×112 → ArcFace 提取 512 维特征 + L2 归一化
 //!
-//! 基于 candle-onnx 加载 ONNX 模型推理，支持 CUDA GPU 加速（通过 `cuda` feature 启用）。
-//! 可选通过 laoflchdb_image_service 保存对齐后的人脸图片。
+//! 基于 ort (ONNX Runtime) 加载 ONNX 模型推理，支持 CUDA GPU 加速。
 
 #![allow(clippy::too_many_arguments)]
 
@@ -18,13 +17,19 @@ use axum::{
     routing::post,
     Router,
 };
-use candle_core::{Device, Tensor};
-use image::{ImageBuffer, Rgba, RgbaImage};
+use image::ImageBuffer;
 use log::{info, warn};
+use ndarray::{Array4, ArrayViewD};
 use snowflake_me::Snowflake;
 use tonic::{Request, Response as TonicResponse, Status};
 
-// Proto 定义来自独立的 laoflchdb_face_service_proto crate（避免客户端拉入 candle-onnx）
+use ort::{
+    execution_providers::{CUDAExecutionProvider, CPUExecutionProvider, ExecutionProviderDispatch},
+    session::Session,
+    value::Value,
+};
+
+// Proto 定义来自独立的 laoflchdb_face_service_proto crate（避免客户端拉入 ort）
 pub use laoflchdb_face_service_proto::proto;
 
 use proto::face_service_server::{FaceService, FaceServiceServer};
@@ -42,8 +47,10 @@ const DEFAULT_DET_THRESHOLD: f32 = 0.5;
 const DEFAULT_MAX_FACES: i32 = 0;
 /// 人脸相似度判定阈值（余弦相似度 >= 0.5 视为同一人）
 const SAME_PERSON_THRESHOLD: f32 = 0.5;
-/// SCRFD 多尺度输入尺寸（长边）
-const DETECT_INPUT_SIZE: u32 = 640;
+/// SCRFD 输入最大尺寸（长边）
+const DETECT_MAX_INPUT_SIZE: u32 = 1280;
+/// SCRFD 输入最小尺寸（短边，避免小图片检测效果差）
+const DETECT_MIN_INPUT_SIZE: u32 = 320;
 
 // ── 配置 ─────────────────────────────────────────────────────────
 
@@ -81,15 +88,16 @@ impl Default for FaceServiceConfig {
 
 /// 人脸服务实现
 ///
-/// 基于 SCRFD 检测人脸 + 5 关键点，仿射对齐到 112x112，ArcFace 提取 512 维 L2 归一化特征。
-/// 支持 CUDA GPU 加速（通过 `cuda` feature）。
+/// 基于 SCRFD 检测人脸 + 5 关键点，裁剪对齐到 112x112，ArcFace 提取 512 维 L2 归一化特征。
+/// 支持 CUDA GPU 加速（通过 ort 的 CUDAExecutionProvider）。
 pub struct FaceServiceImpl {
     /// SCRFD 检测模型
     scrfd: Mutex<Option<ScrfdModel>>,
     /// ArcFace 特征提取模型
     arcface: Mutex<Option<ArcfaceModel>>,
-    /// 推理设备
-    device: Device,
+    /// 是否使用 GPU
+    #[allow(dead_code)]
+    use_gpu: bool,
     /// 配置
     config: FaceServiceConfig,
     /// 图片服务（可选，用于保存对齐后的人脸图片）
@@ -111,12 +119,13 @@ impl FaceServiceImpl {
         image_service: Option<Arc<laoflchdb_image_service::ImageServiceImpl>>,
         embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
     ) -> Self {
-        let device = Self::detect_device();
+        // 检测 GPU 可用性，尝试优先使用 GPU 0（因为人脸服务独立运行，不与向量服务冲突）
+        let use_gpu = Self::detect_gpu();
 
         // 加载 SCRFD 模型
-        let scrfd = Self::load_scrfd(&config, &device);
+        let scrfd = Self::load_scrfd(&config, use_gpu);
         // 加载 ArcFace 模型
-        let arcface = Self::load_arcface(&config, &device);
+        let arcface = Self::load_arcface(&config, use_gpu);
 
         let snowflake = Snowflake::new().unwrap_or_else(|_| {
             warn!("Snowflake 默认初始化失败，回退到 machine_id=0, data_center_id=0");
@@ -128,8 +137,8 @@ impl FaceServiceImpl {
         });
 
         info!(
-            "FaceService 初始化完成: device={:?}, scrfd_loaded={}, arcface_loaded={}",
-            device,
+            "FaceService 初始化完成: gpu={}, scrfd_loaded={}, arcface_loaded={}",
+            use_gpu,
             scrfd.is_some(),
             arcface.is_some()
         );
@@ -137,7 +146,7 @@ impl FaceServiceImpl {
         Self {
             scrfd: Mutex::new(scrfd),
             arcface: Mutex::new(arcface),
-            device,
+            use_gpu,
             config,
             image_service,
             embedding_service,
@@ -145,19 +154,18 @@ impl FaceServiceImpl {
         }
     }
 
-    /// 检测推理设备：使用 GPU 1（避免与向量服务的 GPU 0/2 冲突）
-    fn detect_device() -> Device {
+    /// 检测 GPU 可用性
+    fn detect_gpu() -> bool {
         #[cfg(feature = "cuda")]
         {
-            for device_id in [1, 2, 0] {
-                match Device::cuda_if_available(device_id) {
-                    Ok(device) => {
-                        info!("人脸服务使用 GPU {} 推理", device_id);
-                        return device;
-                    }
-                    Err(e) => {
-                        warn!("GPU {} 初始化失败: {}，尝试下一个", device_id, e);
-                    }
+            // 尝试创建 CUDA 执行提供者
+            match CUDAExecutionProvider::default().build() {
+                Ok(_) => {
+                    info!("人脸服务使用 CUDA GPU 推理");
+                    return true;
+                }
+                Err(e) => {
+                    warn!("CUDAExecutionProvider 初始化失败: {}，回退到 CPU", e);
                 }
             }
         }
@@ -165,11 +173,32 @@ impl FaceServiceImpl {
         {
             info!("CUDA feature 未启用，人脸服务使用 CPU 推理");
         }
-        Device::Cpu
+        false
+    }
+
+    /// 创建 ort Session 的通用函数
+    fn create_ort_session(
+        model_path: &Path,
+        use_gpu: bool,
+    ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
+        let mut builder = Session::builder()?;
+
+        // 配置执行提供者
+        if use_gpu {
+            // GPU 优先，CPU 作为 fallback
+            let mut providers: Vec<ExecutionProviderDispatch> = Vec::new();
+            providers.push(CUDAExecutionProvider::default().build());
+            providers.push(CPUExecutionProvider::default().build());
+            builder = builder.with_execution_providers(providers)?;
+        }
+
+        let session = builder.commit_from_file(model_path)?;
+
+        Ok(session)
     }
 
     /// 加载 SCRFD ONNX 模型
-    fn load_scrfd(config: &FaceServiceConfig, device: &Device) -> Option<ScrfdModel> {
+    fn load_scrfd(config: &FaceServiceConfig, use_gpu: bool) -> Option<ScrfdModel> {
         let model_path = Path::new(&config.model_dir).join(&config.scrfd_model_file);
         if !model_path.exists() {
             warn!(
@@ -179,30 +208,11 @@ impl FaceServiceImpl {
             return None;
         }
 
-        info!("加载 SCRFD 模型: {}", model_path.display());
-        match candle_onnx::read_file(&model_path) {
-            Ok(mut model) => {
-                // 只做原始的 Resize 修复，不做其他修改
-                if let Some(ref mut graph) = model.graph.as_mut() {
-                    let mut fixed = 0;
-                    for node in &mut graph.node {
-                        if node.op_type == "Resize" && node.input.len() >= 4 {
-                            if !node.input[2].is_empty() {
-                                node.input[2] = String::new();
-                                fixed += 1;
-                            }
-                        }
-                    }
-                    if fixed > 0 {
-                        info!("SCRFD 模型预处理: 修复了 {} 个 Resize 节点的 scales/sizes 冲突", fixed);
-                    }
-                }
+        info!("加载 SCRFD 模型: {} (GPU={})", model_path.display(), use_gpu);
+        match Self::create_ort_session(&model_path, use_gpu) {
+            Ok(session) => {
                 info!("SCRFD 模型加载成功");
-                Some(ScrfdModel {
-                    model,
-                    preloaded_weights: PreloadedWeights { weights: HashMap::new() }, // 不预加载
-                    device: Device::Cpu,
-                })
+                Some(ScrfdModel { session })
             }
             Err(e) => {
                 warn!("SCRFD 模型加载失败: {}", e);
@@ -212,7 +222,7 @@ impl FaceServiceImpl {
     }
 
     /// 加载 ArcFace ONNX 模型
-    fn load_arcface(config: &FaceServiceConfig, device: &Device) -> Option<ArcfaceModel> {
+    fn load_arcface(config: &FaceServiceConfig, use_gpu: bool) -> Option<ArcfaceModel> {
         let model_path = Path::new(&config.model_dir).join(&config.arcface_model_file);
         if !model_path.exists() {
             warn!(
@@ -222,16 +232,11 @@ impl FaceServiceImpl {
             return None;
         }
 
-        info!("加载 ArcFace 模型: {}", model_path.display());
-        match candle_onnx::read_file(&model_path) {
-            Ok(model) => {
-                // 简单稳定：ArcFace 用 CPU
-                info!("ArcFace 模型加载成功（使用 CPU）");
-                Some(ArcfaceModel {
-                    model,
-                    preloaded_weights: PreloadedWeights { weights: HashMap::new() },
-                    device: Device::Cpu,
-                })
+        info!("加载 ArcFace 模型: {} (GPU={})", model_path.display(), use_gpu);
+        match Self::create_ort_session(&model_path, use_gpu) {
+            Ok(session) => {
+                info!("ArcFace 模型加载成功");
+                Some(ArcfaceModel { session })
             }
             Err(e) => {
                 warn!("ArcFace 模型加载失败: {}", e);
@@ -286,106 +291,88 @@ impl FaceServiceImpl {
 
 // ── 模型封装 ─────────────────────────────────────────────────────
 
-/// 预加载到指定设备的权重
-struct PreloadedWeights {
-    /// 权重名称 → 已加载到目标设备的 Tensor
-    weights: HashMap<String, Tensor>,
-}
-
-impl PreloadedWeights {
-    /// 从 ONNX 模型的 initializer 加载所有权重到目标设备
-    fn from_model(
-        model: &candle_onnx::onnx::ModelProto,
-        device: &Device,
-    ) -> Result<Self, String> {
-        let mut weights = HashMap::new();
-        if let Some(ref graph) = model.graph {
-            for t in &graph.initializer {
-                let tensor = candle_onnx::eval::get_tensor(t, &t.name)
-                    .map_err(|e| format!("加载权重 {} 失败: {}", t.name, e))?;
-                // 把 CPU 上的 tensor 传到目标设备
-                let tensor = tensor
-                    .to_device(device)
-                    .map_err(|e| format!("权重 {} 传到设备失败: {}", t.name, e))?;
-                weights.insert(t.name.clone(), tensor);
-            }
-        }
-        Ok(Self { weights })
-    }
-
-    fn len(&self) -> usize {
-        self.weights.len()
-    }
-}
-
 /// SCRFD 检测模型封装
 struct ScrfdModel {
-    model: candle_onnx::onnx::ModelProto,
-    /// 预加载到目标设备的权重（避免每次推理都从 CPU 加载）
-    preloaded_weights: PreloadedWeights,
-    device: Device,
+    session: Session,
 }
 
 /// ArcFace 特征提取模型封装
 struct ArcfaceModel {
-    model: candle_onnx::onnx::ModelProto,
-    /// 预加载到目标设备的权重
-    preloaded_weights: PreloadedWeights,
-    device: Device,
+    session: Session,
 }
 
 // ── SCRFD 检测实现 ───────────────────────────────────────────────
 
 impl ScrfdModel {
+    /// 获取模型的输入名称
+    fn get_input_name(&self) -> Result<String, Status> {
+        self.session
+            .inputs
+            .first()
+            .map(|i| i.name.clone())
+            .ok_or_else(|| Status::internal("SCRFD 模型无输入"))
+    }
+
+    /// 获取模型输出名称列表
+    fn get_output_names(&self) -> Vec<String> {
+        self.session
+            .outputs
+            .iter()
+            .map(|o| o.name.clone())
+            .collect()
+    }
+
     /// 运行 SCRFD 检测
     ///
     /// 输入图片，返回检测到的人脸列表（bbox + score + 5 landmarks）
     fn detect(
-        &self,
+        &mut self,
         img: &image::DynamicImage,
         threshold: f32,
         max_faces: i32,
     ) -> Result<Vec<DetectedFaceInfo>, Status> {
         let (orig_w, orig_h) = (img.width(), img.height());
 
-        // 预处理：resize 到 640x640，保持长宽比的 letterbox
+        // 动态计算输入尺寸：根据原图长边，在 [DETECT_MIN_INPUT_SIZE, DETECT_MAX_INPUT_SIZE] 范围内
+        let long_side = orig_w.max(orig_h);
+        let input_size = long_side
+            .max(DETECT_MIN_INPUT_SIZE)
+            .min(DETECT_MAX_INPUT_SIZE);
+
+        // 预处理：letterbox resize 到目标尺寸
         let (input_tensor, scale, pad_w, pad_h) =
-            Self::preprocess(img, DETECT_INPUT_SIZE, &self.device)?;
+            Self::preprocess(img, input_size)?;
 
-        // 构造输入 map
-        let graph = self.model.graph.as_ref().ok_or_else(|| {
-            Status::internal("SCRFD 模型无计算图")
-        })?;
-        let input_name = graph
-            .input
-            .first()
-            .map(|i| i.name.clone())
-            .ok_or_else(|| Status::internal("SCRFD 模型无输入"))?;
+        let input_name = self.get_input_name()?;
+        let output_names = self.get_output_names();
 
-        let mut inputs = std::collections::HashMap::new();
-        inputs.insert(input_name, input_tensor);
-
-        // 直接用原始 simple_eval（CPU，权重在模型里）
-        let outputs = candle_onnx::simple_eval(&self.model, inputs).map_err(|e| {
-            Status::internal(format!("SCRFD 推理失败: {}", e))
-        })?;
+        // 运行推理（使用 HashMap 构造输入，ort::inputs! 宏在 rc.10 中不可用）
+        let mut input_map = HashMap::new();
+        input_map.insert(input_name, input_tensor);
+        let outputs = self
+            .session
+            .run(input_map)
+            .map_err(|e| Status::internal(format!("SCRFD 推理失败: {}", e)))?;
 
         // 调试日志
         info!("SCRFD 推理输出数: {}", outputs.len());
-        let mut sorted_outputs: Vec<(&String, &Tensor)> = outputs.iter().collect();
-        sorted_outputs.sort_by(|a, b| a.0.cmp(b.0));
-        for (i, (name, tensor)) in sorted_outputs.iter().enumerate() {
-            info!("  输出[{}] name={}, shape={:?}", i, name, tensor.shape());
+        let mut sorted_outputs: Vec<(String, ndarray::ArrayD<f32>)> = Vec::new();
+        for (i, name) in output_names.iter().enumerate() {
+            if let Some(v) = outputs.get(name) {
+                if let Ok(arr) = v.try_extract_array::<f32>() {
+                    let shape: Vec<usize> = arr.shape().to_vec();
+                    info!("  输出[{}] name={}, shape={:?}", i, name, shape);
+                    sorted_outputs.push((name.clone(), arr.to_owned().into_dyn()));
+                }
+            }
         }
+        sorted_outputs.sort_by(|a, b| a.0.cmp(&b.0));
 
         // 解析输出：SCRFD 输出多个尺度的 bbox/score/kps
-        // 典型输出名: score_0, score_1, score_2, bbox_0, bbox_1, bbox_2, kps_0, kps_1, kps_2
-        // 或按顺序排列
         let mut all_faces = Vec::new();
 
         // SCRFD 有 9 个输出，按 stride 分组：每组 3 个 (score, bbox, kps)
         // 模型实际输出顺序（按名称排序后）：[s8_score, s8_bbox, s8_kps, s16_score, s16_bbox, s16_kps, s32_score, s32_bbox, s32_kps]
-        // 因此连续 3 个为一组，而不是 i, i+3, i+6
         let strides = [8u32, 16, 32];
         for (i, &stride) in strides.iter().enumerate() {
             let score_idx = i * 3;
@@ -396,23 +383,22 @@ impl ScrfdModel {
                 break;
             }
 
-            let score_tensor = sorted_outputs[score_idx].1;
-            let bbox_tensor = sorted_outputs[bbox_idx].1;
-            let kps_tensor = sorted_outputs[kps_idx].1;
+            let score_view = sorted_outputs[score_idx].1.view();
+            let bbox_view = sorted_outputs[bbox_idx].1.view();
+            let kps_view = sorted_outputs[kps_idx].1.view();
 
             let faces = Self::parse_stride_output(
-                score_tensor,
-                bbox_tensor,
-                kps_tensor,
+                &score_view,
+                &bbox_view,
+                &kps_view,
                 stride,
-                DETECT_INPUT_SIZE,
+                input_size,
                 orig_w,
                 orig_h,
                 scale,
                 pad_w,
                 pad_h,
                 threshold,
-                &self.device,
             )?;
             all_faces.extend(faces);
         }
@@ -435,11 +421,11 @@ impl ScrfdModel {
     /// 预处理：letterbox resize 到目标尺寸
     ///
     /// 返回 (input_tensor, scale, pad_w, pad_h)
+    /// 输入 tensor 是 [1, 3, H, W] NCHW 格式，BGR 顺序，归一化到 [0,1] 并减均值除方差
     fn preprocess(
         img: &image::DynamicImage,
         target_size: u32,
-        device: &Device,
-    ) -> Result<(Tensor, f32, u32, u32), Status> {
+    ) -> Result<(Value, f32, u32, u32), Status> {
         let (orig_w, orig_h) = (img.width(), img.height());
         let scale = target_size as f32 / orig_w.max(orig_h) as f32;
         let new_w = (orig_w as f32 * scale).round() as u32;
@@ -456,36 +442,30 @@ impl ScrfdModel {
 
         // 转换为 RGB 并填充到 target_size x target_size
         let rgb = resized.to_rgb8();
-        let mut pixels: Vec<f32> = Vec::with_capacity((target_size * target_size * 3) as usize);
 
-        // 填充值为 0（黑色）
-        // 先按行填充
+        // 创建 ndarray: [1, 3, H, W]  NCHW
+        let mut array = Array4::<f32>::zeros((1, 3, target_size as usize, target_size as usize));
+
         for y in 0..target_size {
             for x in 0..target_size {
                 if x < new_w && y < new_h {
                     let p = rgb.get_pixel(x, y);
-                    // SCRFD 使用 BGR 顺序，归一化到 [0,1]，均值 [0.485, 0.456, 0.406]，方差 [0.229, 0.224, 0.225]
                     let r = p.0[0] as f32 / 255.0;
                     let g = p.0[1] as f32 / 255.0;
                     let b = p.0[2] as f32 / 255.0;
-                    // BGR
-                    let b = (b - 0.406) / 0.225;
-                    let g = (g - 0.456) / 0.224;
-                    let r = (r - 0.485) / 0.229;
-                    pixels.push(b);
-                    pixels.push(g);
-                    pixels.push(r);
-                } else {
-                    pixels.push(0.0);
-                    pixels.push(0.0);
-                    pixels.push(0.0);
+                    // SCRFD 使用 BGR 顺序，均值 [0.485, 0.456, 0.406]，方差 [0.229, 0.224, 0.225]
+                    array[[0, 0, y as usize, x as usize]] = (b - 0.406) / 0.225;
+                    array[[0, 1, y as usize, x as usize]] = (g - 0.456) / 0.224;
+                    array[[0, 2, y as usize, x as usize]] = (r - 0.485) / 0.229;
                 }
+                // 填充区域保持 0 值
             }
         }
 
-        // 构造 tensor [1, 3, H, W] NCHW
-        let input_tensor = Tensor::from_vec(pixels, (1, 3, target_size as usize, target_size as usize), device)
-            .map_err(|e| Status::internal(format!("构造输入 tensor 失败: {}", e)))?;
+        // 构造 ort Value
+        let input_tensor = Value::from_array(array)
+            .map_err(|e| Status::internal(format!("构造输入 tensor 失败: {}", e)))?
+            .into_dyn();
 
         Ok((input_tensor, scale, pad_w, pad_h))
     }
@@ -493,9 +473,9 @@ impl ScrfdModel {
     /// 解析单个 stride 的输出
     #[allow(clippy::too_many_arguments)]
     fn parse_stride_output(
-        score_tensor: &Tensor,
-        bbox_tensor: &Tensor,
-        kps_tensor: &Tensor,
+        score_view: &ArrayViewD<f32>,
+        bbox_view: &ArrayViewD<f32>,
+        kps_view: &ArrayViewD<f32>,
         stride: u32,
         input_size: u32,
         orig_w: u32,
@@ -504,71 +484,86 @@ impl ScrfdModel {
         pad_w: u32,
         pad_h: u32,
         threshold: f32,
-        device: &Device,
     ) -> Result<Vec<DetectedFaceInfo>, Status> {
-        // 将 tensor 移到 CPU 提取数据
-        let score_tensor = score_tensor.to_device(&Device::Cpu).map_err(|e| {
-            Status::internal(format!("score tensor 转换失败: {}", e))
-        })?;
-        let bbox_tensor = bbox_tensor.to_device(&Device::Cpu).map_err(|e| {
-            Status::internal(format!("bbox tensor 转换失败: {}", e))
-        })?;
-        let kps_tensor = kps_tensor.to_device(&Device::Cpu).map_err(|e| {
-            Status::internal(format!("kps tensor 转换失败: {}", e))
-        })?;
-
-        // SCRFD 输出维度可能为 [num_anchors, 1] (2D) 或 [batch, num_anchors, 1] (3D)
-        // 这里统一 flatten 到 1D 处理
-        let score_dims = score_tensor.dims();
-        let num_anchors = if score_dims.len() >= 2 {
-            score_dims[score_dims.len() - 2]
+        // 获取维度信息
+        let score_shape: Vec<usize> = score_view.shape().to_vec();
+        let num_anchors = if score_shape.len() >= 2 {
+            score_shape[score_shape.len() - 2]
         } else {
-            score_dims.first().copied().unwrap_or(0)
+            score_shape.first().copied().unwrap_or(0)
         };
 
-        // 将 score_tensor flatten 到 1D: [num_anchors * 1] → [num_anchors]
-        let scores = score_tensor
-            .flatten_all()
-            .map_err(|e| Status::internal(format!("score flatten 失败: {}", e)))?
-            .to_vec1::<f32>()
-            .map_err(|e| Status::internal(format!("score 提取失败: {}", e)))?;
-        
-        // 调试日志：打印分数分布
+        // 提取 scores: flatten 到 1D
+        let scores: Vec<f32> = score_view.iter().copied().collect();
+
+        // 调试日志
         let max_score = scores.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
         let min_score = scores.iter().fold(f32::INFINITY, |a, &b| a.min(b));
         let num_above_thresh = scores.iter().filter(|&&s| s >= threshold).count();
-        info!("  stride={}: num_anchors={}, score_range=[{:.4}, {:.4}], threshold={:.4}, num_above={}", 
+        info!("  stride={}: num_anchors={}, score_range=[{:.4}, {:.4}], threshold={:.4}, num_above={}",
               stride, scores.len(), min_score, max_score, threshold, num_above_thresh);
-        // bbox/kps 可能是 2D [num_anchors, 4/10] 或 3D [batch, num_anchors, 4/10]
-        // 去掉 batch 维度（如果有）
-        let bboxes = if bbox_tensor.dims().len() == 3 {
-            bbox_tensor
-                .squeeze(0)
-                .map_err(|e| Status::internal(format!("bbox squeeze 失败: {}", e)))?
-                .to_vec2::<f32>()
-                .map_err(|e| Status::internal(format!("bbox 提取失败: {}", e)))?
+
+        // 提取 bboxes: shape [num_anchors, 4] 或 [batch, num_anchors, 4]
+        let bbox_shape: Vec<usize> = bbox_view.shape().to_vec();
+        let bboxes: Vec<Vec<f32>> = if bbox_shape.len() == 3 {
+            // [batch, num_anchors, 4] - squeeze batch dim
+            let _batch_size = bbox_shape[0];
+            let num = bbox_shape[1];
+            let dim = bbox_shape[2];
+            let mut result = Vec::with_capacity(num);
+            for i in 0..num {
+                let mut row = Vec::with_capacity(dim);
+                for j in 0..dim {
+                    row.push(bbox_view[[0, i, j]]);
+                }
+                result.push(row);
+            }
+            result
         } else {
-            bbox_tensor
-                .to_vec2::<f32>()
-                .map_err(|e| Status::internal(format!("bbox 提取失败: {}", e)))?
-        };
-        let kps = if kps_tensor.dims().len() == 3 {
-            kps_tensor
-                .squeeze(0)
-                .map_err(|e| Status::internal(format!("kps squeeze 失败: {}", e)))?
-                .to_vec2::<f32>()
-                .map_err(|e| Status::internal(format!("kps 提取失败: {}", e)))?
-        } else {
-            kps_tensor
-                .to_vec2::<f32>()
-                .map_err(|e| Status::internal(format!("kps 提取失败: {}", e)))?
+            // [num_anchors, 4]
+            let num = bbox_shape[0];
+            let dim = bbox_shape[1];
+            let mut result = Vec::with_capacity(num);
+            for i in 0..num {
+                let mut row = Vec::with_capacity(dim);
+                for j in 0..dim {
+                    row.push(bbox_view[[i, j]]);
+                }
+                result.push(row);
+            }
+            result
         };
 
-        let _ = device; // 已转 CPU
+        // 提取 kps: shape [num_anchors, 10] 或 [batch, num_anchors, 10]
+        let kps_shape: Vec<usize> = kps_view.shape().to_vec();
+        let kps: Vec<Vec<f32>> = if kps_shape.len() == 3 {
+            let _batch_size = kps_shape[0];
+            let num = kps_shape[1];
+            let dim = kps_shape[2];
+            let mut result = Vec::with_capacity(num);
+            for i in 0..num {
+                let mut row = Vec::with_capacity(dim);
+                for j in 0..dim {
+                    row.push(kps_view[[0, i, j]]);
+                }
+                result.push(row);
+            }
+            result
+        } else {
+            let num = kps_shape[0];
+            let dim = kps_shape[1];
+            let mut result = Vec::with_capacity(num);
+            for i in 0..num {
+                let mut row = Vec::with_capacity(dim);
+                for j in 0..dim {
+                    row.push(kps_view[[i, j]]);
+                }
+                result.push(row);
+            }
+            result
+        };
 
         // 计算每个 anchor 的中心点
-        // SCRFD 每个特征图 cell 有 num_anchors_per_pos 个 anchor（默认 2）
-        // num_cells = (input_size / stride)^2，每个 cell 对应 num_anchors_per_pos 个 anchor
         let num_cells_per_row = input_size / stride;
         let num_anchors_per_pos = 2u32; // SCRFD 默认每个位置 2 个 anchor
         let mut faces = Vec::new();
@@ -626,45 +621,42 @@ impl ScrfdModel {
 // ── ArcFace 特征提取实现 ─────────────────────────────────────────
 
 impl ArcfaceModel {
-    /// 从对齐的 112x112 人脸图片提取 512 维特征并 L2 归一化
-    fn extract(&self, aligned: &image::DynamicImage) -> Result<Vec<f32>, Status> {
-        let input_tensor = Self::preprocess(aligned, &self.device)?;
-
-        let graph = self
-            .model
-            .graph
-            .as_ref()
-            .ok_or_else(|| Status::internal("ArcFace 模型无计算图"))?;
-        let input_name = graph
-            .input
+    /// 获取模型的输入名称
+    fn get_input_name(&self) -> Result<String, Status> {
+        self.session
+            .inputs
             .first()
             .map(|i| i.name.clone())
-            .ok_or_else(|| Status::internal("ArcFace 模型无输入"))?;
+            .ok_or_else(|| Status::internal("ArcFace 模型无输入"))
+    }
 
-        let mut inputs = std::collections::HashMap::new();
-        inputs.insert(input_name, input_tensor);
+    /// 从对齐的 112x112 人脸图片提取 512 维特征并 L2 归一化
+    fn extract(&mut self, aligned: &image::DynamicImage) -> Result<Vec<f32>, Status> {
+        let input_tensor = Self::preprocess(aligned)?;
 
-        // 直接用原始 simple_eval（CPU，权重在模型里）
-        let outputs = candle_onnx::simple_eval(&self.model, inputs).map_err(|e| {
-            Status::internal(format!("ArcFace 推理失败: {}", e))
-        })?;
+        let input_name = self.get_input_name()?;
+
+        // 运行推理（使用 HashMap 构造输入）
+        let mut input_map = HashMap::new();
+        input_map.insert(input_name, input_tensor);
+        let outputs = self
+            .session
+            .run(input_map)
+            .map_err(|e| Status::internal(format!("ArcFace 推理失败: {}", e)))?;
 
         // 取第一个输出
-        let (_name, embedding_tensor) = outputs
+        let (_name, output_value) = outputs
             .iter()
             .next()
             .ok_or_else(|| Status::internal("ArcFace 无输出"))?;
 
-        let embedding_tensor = embedding_tensor
-            .to_device(&Device::Cpu)
-            .map_err(|e| Status::internal(format!("embedding tensor 转换失败: {}", e)))?;
+        let output_arr = output_value
+            .try_extract_tensor::<f32>()
+            .map_err(|e| Status::internal(format!("ArcFace 输出提取失败: {}", e)))?;
 
         // ArcFace 输出维度可能是 [1, 512] (2D) 或 [512] (1D)，统一 flatten 到 1D
-        let embedding = embedding_tensor
-            .flatten_all()
-            .map_err(|e| Status::internal(format!("embedding flatten 失败: {}", e)))?
-            .to_vec1::<f32>()
-            .map_err(|e| Status::internal(format!("embedding 提取失败: {}", e)))?;
+        let (_shape, data) = output_arr;
+        let embedding: Vec<f32> = data.to_vec();
 
         // L2 归一化
         let norm = embedding.iter().map(|v| v * v).sum::<f32>().sqrt();
@@ -681,8 +673,7 @@ impl ArcfaceModel {
     /// ArcFace 标准预处理：像素值归一化到 [-1, 1]（即 (x - 127.5) / 127.5）
     fn preprocess(
         img: &image::DynamicImage,
-        device: &Device,
-    ) -> Result<Tensor, Status> {
+    ) -> Result<Value, Status> {
         let rgb = img.to_rgb8();
         let (w, h) = rgb.dimensions();
         if w != FACE_SIZE || h != FACE_SIZE {
@@ -692,27 +683,25 @@ impl ArcfaceModel {
             )));
         }
 
-        let mut pixels = Vec::with_capacity((FACE_SIZE * FACE_SIZE * 3) as usize);
+        let mut array = Array4::<f32>::zeros((1, 3, FACE_SIZE as usize, FACE_SIZE as usize));
+
         for y in 0..FACE_SIZE {
             for x in 0..FACE_SIZE {
                 let p = rgb.get_pixel(x, y);
                 // 归一化到 [-1, 1]
-                pixels.push((p.0[0] as f32 - 127.5) / 127.5);
-                pixels.push((p.0[1] as f32 - 127.5) / 127.5);
-                pixels.push((p.0[2] as f32 - 127.5) / 127.5);
+                array[[0, 0, y as usize, x as usize]] = (p.0[0] as f32 - 127.5) / 127.5;
+                array[[0, 1, y as usize, x as usize]] = (p.0[1] as f32 - 127.5) / 127.5;
+                array[[0, 2, y as usize, x as usize]] = (p.0[2] as f32 - 127.5) / 127.5;
             }
         }
 
-        Tensor::from_vec(
-            pixels,
-            (1usize, 3, FACE_SIZE as usize, FACE_SIZE as usize),
-            device,
-        )
-        .map_err(|e| Status::internal(format!("构造 ArcFace 输入 tensor 失败: {}", e)))
+        Value::from_array(array)
+            .map_err(|e| Status::internal(format!("构造 ArcFace 输入 tensor 失败: {}", e)))
+            .map(|v| v.into_dyn())
     }
 }
 
-// ── 仿射对齐 ─────────────────────────────────────────────────────
+// ── 裁剪对齐 ─────────────────────────────────────────────────────
 
 /// 检测到的人脸信息（内部结构）
 #[derive(Debug, Clone)]
@@ -722,169 +711,75 @@ struct DetectedFaceInfo {
     landmarks: [f32; 10],
 }
 
-/// ArcFace 标准对齐目标关键点（112x112 图像中 5 个关键点的标准位置）
-/// 来源：InsightFace 标准 alignment
-const ARCFACE_TARGET_LANDMARKS: [[f32; 2]; 5] = [
-    [38.2946, 51.6963], // 左眼
-    [73.5318, 51.5014], // 右眼
-    [56.0252, 71.7366], // 鼻尖
-    [41.5493, 92.3655], // 左嘴角
-    [70.7299, 92.2041], // 右嘴角
-];
-
-/// 基于 5 个关键点计算仿射变换矩阵，并将人脸对齐裁剪到 112x112
-///
-/// 使用相似变换（旋转+缩放+平移）将检测到的 5 个关键点对齐到标准位置。
-/// 参考 InsightFace 的 `get_affine_matrix` 实现。
+/// 基于检测到的人脸 bbox 裁剪人脸并调整大小到 112x112
 fn align_face(
     img: &image::DynamicImage,
-    landmarks: &[f32; 10],
+    bbox: &[f32; 4], // [x1, y1, x2, y2]
 ) -> Result<image::DynamicImage, Status> {
-    // 源关键点（检测到的）
-    let src_points: [[f32; 2]; 5] = [
-        [landmarks[0], landmarks[1]],
-        [landmarks[2], landmarks[3]],
-        [landmarks[4], landmarks[5]],
-        [landmarks[6], landmarks[7]],
-        [landmarks[8], landmarks[9]],
-    ];
+    info!("使用人脸 bbox 裁剪方案");
+    crop_face_from_bbox(img, bbox)
+}
 
-    // 计算相似变换矩阵 M（2x3）
-    let m = compute_similarity_transform(&src_points, &ARCFACE_TARGET_LANDMARKS);
-
-    // 应用仿射变换
+/// 基于人脸 bbox 裁剪并适当扩展为正方形
+fn crop_face_from_bbox(
+    img: &image::DynamicImage,
+    bbox: &[f32; 4],
+) -> Result<image::DynamicImage, Status> {
     let rgba = img.to_rgba8();
-    let (w, h) = rgba.dimensions();
-    let mut output = ImageBuffer::new(FACE_SIZE, FACE_SIZE);
+    let (img_w, img_h) = rgba.dimensions();
 
-    for oy in 0..FACE_SIZE {
-        for ox in 0..FACE_SIZE {
-            // 反向映射：output → input
-            let ix = m[0][0] * ox as f32 + m[0][1] * oy as f32 + m[0][2];
-            let iy = m[1][0] * ox as f32 + m[1][1] * oy as f32 + m[1][2];
+    let x1 = bbox[0];
+    let y1 = bbox[1];
+    let x2 = bbox[2];
+    let y2 = bbox[3];
 
-            let pixel = sample_bilinear(&rgba, w, h, ix, iy);
-            output.put_pixel(ox, oy, pixel);
+    let width = x2 - x1;
+    let height = y2 - y1;
+
+    // 计算正方形裁剪区域
+    let center_x = (x1 + x2) / 2.0;
+    let center_y = (y1 + y2) / 2.0;
+
+    // 扩展：向上多扩展一些，包含额头
+    let size = width.max(height) * 1.8; // 1.8倍
+    let half_size = size / 2.0;
+
+    // 调整中心点，向上移动一些
+    let adjusted_center_y = center_y - size * 0.15; // 向上移动 15%
+
+    let crop_x = (center_x - half_size).max(0.0) as u32;
+    let crop_y = (adjusted_center_y - half_size).max(0.0) as u32;
+    let crop_w = (center_x + half_size - crop_x as f32).min(img_w as f32 - crop_x as f32) as u32;
+    let crop_h = (adjusted_center_y + half_size - crop_y as f32).min(img_h as f32 - crop_y as f32) as u32;
+
+    info!("人脸 bbox: ({:.1},{:.1})-({:.1},{:.1})", x1, y1, x2, y2);
+    info!("裁剪人脸: x={}, y={}, w={}, h={} (原图: {}x{})", crop_x, crop_y, crop_w, crop_h, img_w, img_h);
+
+    // 手动裁剪图片，创建新的 ImageBuffer
+    let mut cropped_buf = ImageBuffer::new(crop_w, crop_h);
+    for y in 0..crop_h {
+        for x in 0..crop_w {
+            let src_x = crop_x + x;
+            let src_y = crop_y + y;
+            if src_x < img_w && src_y < img_h {
+                let pixel = *rgba.get_pixel(src_x, src_y);
+                cropped_buf.put_pixel(x, y, pixel);
+            }
         }
     }
 
-    Ok(image::DynamicImage::ImageRgba8(output))
-}
+    // 调整大小到 112x112
+    let resized = image::imageops::resize(
+        &cropped_buf,
+        FACE_SIZE,
+        FACE_SIZE,
+        image::imageops::FilterType::Triangle,
+    );
 
-/// 双线性采样
-fn sample_bilinear(
-    img: &RgbaImage,
-    w: u32,
-    h: u32,
-    x: f32,
-    y: f32,
-) -> Rgba<u8> {
-    if x < 0.0 || y < 0.0 || x >= w as f32 - 1.0 || y >= h as f32 - 1.0 {
-        return Rgba([0, 0, 0, 255]);
-    }
-
-    let x0 = x.floor() as u32;
-    let y0 = y.floor() as u32;
-    let x1 = x0 + 1;
-    let y1 = y0 + 1;
-    let dx = x - x0 as f32;
-    let dy = y - y0 as f32;
-
-    let p00 = img.get_pixel(x0, y0);
-    let p10 = img.get_pixel(x1, y0);
-    let p01 = img.get_pixel(x0, y1);
-    let p11 = img.get_pixel(x1, y1);
-
-    let mut result = [0u8; 4];
-    for c in 0..4 {
-        let v = p00.0[c] as f32 * (1.0 - dx) * (1.0 - dy)
-            + p10.0[c] as f32 * dx * (1.0 - dy)
-            + p01.0[c] as f32 * (1.0 - dx) * dy
-            + p11.0[c] as f32 * dx * dy;
-        result[c] = v.round().clamp(0.0, 255.0) as u8;
-    }
-    Rgba(result)
-}
-
-/// 计算相似变换矩阵（2x3）将 src 点对齐到 dst 点
-///
-/// 相似变换：旋转 + 均匀缩放 + 平移，共 4 个参数（角度、缩放、tx、ty）
-/// 使用最小二乘法求解
-fn compute_similarity_transform(src: &[[f32; 2]; 5], dst: &[[f32; 2]; 5]) -> [[f32; 3]; 2] {
-    // 参考 Umeyama 算法的简化版本
-    // 计算 src 和 dst 的质心
-    let src_mean = mean_2d(src);
-    let dst_mean = mean_2d(dst);
-
-    // 中心化
-    let src_centered: Vec<[f32; 2]> = src
-        .iter()
-        .map(|p| [p[0] - src_mean[0], p[1] - src_mean[1]])
-        .collect();
-    let dst_centered: Vec<[f32; 2]> = dst
-        .iter()
-        .map(|p| [p[0] - dst_mean[0], p[1] - dst_mean[1]])
-        .collect();
-
-    // 计算旋转和缩放
-    // 使用最小二乘法：[d_x, d_y] = R * [s_x, s_y] * scale
-    // 简化为 2x2 矩阵求解
-    let mut a = [[0.0f64; 2]; 2];
-    let mut b = [0.0f64; 2];
-    for i in 0..5 {
-        let sx = src_centered[i][0] as f64;
-        let sy = src_centered[i][1] as f64;
-        let dx = dst_centered[i][0] as f64;
-        let dy = dst_centered[i][1] as f64;
-        a[0][0] += sx * sx + sy * sy;
-        a[0][1] += 0.0;
-        a[1][0] += 0.0;
-        a[1][1] += sx * sx + sy * sy;
-        b[0] += sx * dx + sy * dy;
-        b[1] += sx * dy - sy * dx;
-    }
-
-    // 求解 [cos_theta * scale, sin_theta * scale]
-    let det = a[0][0] * a[1][1] - a[0][1] * a[1][0];
-    let scale_cos = if det.abs() > 1e-10 {
-        (a[1][1] * b[0] - a[0][1] * b[1]) / det
-    } else {
-        b[0] / a[0][0]
-    };
-    let scale_sin = if det.abs() > 1e-10 {
-        (-a[1][0] * b[0] + a[0][0] * b[1]) / det
-    } else {
-        0.0
-    };
-
-    // 仿射矩阵 M = [scale_cos, -scale_sin, tx; scale_sin, scale_cos, ty]
-    // 其中 tx = dst_mean[0] - scale_cos * src_mean[0] + scale_sin * src_mean[1]
-    let scale_cos = scale_cos as f32;
-    let scale_sin = scale_sin as f32;
-    let tx = dst_mean[0] - scale_cos * src_mean[0] + scale_sin * src_mean[1];
-    let ty = dst_mean[1] - scale_sin * src_mean[0] - scale_cos * src_mean[1];
-
-    [
-        [scale_cos, -scale_sin, tx],
-        [scale_sin, scale_cos, ty],
-    ]
-}
-
-fn mean_2d(points: &[[f32; 2]; 5]) -> [f32; 2] {
-    let mut sx = 0.0;
-    let mut sy = 0.0;
-    for p in points.iter() {
-        sx += p[0];
-        sy += p[1];
-    }
-    [sx / 5.0, sy / 5.0]
+    Ok(image::DynamicImage::ImageRgba8(resized))
 }
 
 // ── gRPC 服务实现 ────────────────────────────────────────────────
-
-// 注意：原本这里还有 `impl FaceService for Arc<FaceServiceImpl>`，
-// 但这违反了 orphan rule（FaceService 来自 proto crate，Arc 来自 std）。
-// 改为在 server 注册时使用 `FaceServiceServer::from_arc(arc)` 直接构造。
 
 #[tonic::async_trait]
 impl FaceService for FaceServiceImpl {
@@ -908,10 +803,10 @@ impl FaceService for FaceServiceImpl {
         let img = Self::decode_image(&req.image_data)?;
 
         // 检查 SCRFD 模型
-        let scrfd_guard = self.scrfd.lock().map_err(|e| {
+        let mut scrfd_guard = self.scrfd.lock().map_err(|e| {
             Status::internal(format!("SCRFD 模型锁获取失败: {}", e))
         })?;
-        let scrfd = scrfd_guard.as_ref().ok_or_else(|| {
+        let scrfd = scrfd_guard.as_mut().ok_or_else(|| {
             Status::failed_precondition("SCRFD 模型未加载，人脸检测不可用")
         })?;
 
@@ -959,27 +854,31 @@ impl FaceService for FaceServiceImpl {
         // 在同步块中完成检测 + 对齐 + 特征提取（避免 MutexGuard 跨 await）
         let detected_and_embeddings: Vec<(DetectedFaceInfo, image::DynamicImage, Vec<f32>)>;
         {
-            let scrfd_guard = self.scrfd.lock().map_err(|e| {
+            let mut scrfd_guard = self.scrfd.lock().map_err(|e| {
                 Status::internal(format!("SCRFD 模型锁获取失败: {}", e))
             })?;
-            let scrfd = scrfd_guard.as_ref().ok_or_else(|| {
+            let scrfd = scrfd_guard.as_mut().ok_or_else(|| {
                 Status::failed_precondition("SCRFD 模型未加载，人脸特征提取不可用")
             })?;
 
-            let arcface_guard = self.arcface.lock().map_err(|e| {
+            let mut arcface_guard = self.arcface.lock().map_err(|e| {
                 Status::internal(format!("ArcFace 模型锁获取失败: {}", e))
             })?;
-            let arcface = arcface_guard.as_ref().ok_or_else(|| {
+            let arcface = arcface_guard.as_mut().ok_or_else(|| {
                 Status::failed_precondition("ArcFace 模型未加载，人脸特征提取不可用")
             })?;
 
             // 1. 检测人脸
             let detected = scrfd.detect(&img, threshold, max_faces)?;
+            info!("检测到 {} 张人脸，原图尺寸: {}x{}", detected.len(), img.width(), img.height());
+            for (i, face) in detected.iter().enumerate() {
+                info!("  人脸 {}: bbox={:?}, score={}", i, face.bbox, face.score);
+            }
 
             let mut results = Vec::with_capacity(detected.len());
             for face_info in &detected {
-                // 2. 仿射对齐到 112x112
-                let aligned = align_face(&img, &face_info.landmarks)?;
+                // 2. 使用 bbox 裁剪并调整到 112x112
+                let aligned = align_face(&img, &face_info.bbox)?;
                 // 3. 提取 512 维特征并 L2 归一化
                 let embedding = arcface.extract(&aligned)?;
                 results.push((face_info.clone(), aligned, embedding));
@@ -991,7 +890,6 @@ impl FaceService for FaceServiceImpl {
         let mut face_features = Vec::with_capacity(detected_and_embeddings.len());
         for (face_info, aligned, embedding) in &detected_and_embeddings {
             // 4. 可选：保存对齐后的人脸图片到 image_service
-            // 当 index_embedding=true 时，向量 ID 复用图片的 Snowflake ID，所以即使不保存图片也要生成 ID
             let (saved_key, saved_bucket, face_id) = if req.save_aligned_images {
                 if let Some(ref img_svc) = self.image_service {
                     let (key, id) = self.make_face_image_key();
@@ -1084,10 +982,10 @@ impl FaceService for FaceServiceImpl {
         let img = Self::decode_image(&req.aligned_image_data)?;
 
         // 检查 ArcFace 模型
-        let arcface_guard = self.arcface.lock().map_err(|e| {
+        let mut arcface_guard = self.arcface.lock().map_err(|e| {
             Status::internal(format!("ArcFace 模型锁获取失败: {}", e))
         })?;
-        let arcface = arcface_guard.as_ref().ok_or_else(|| {
+        let arcface = arcface_guard.as_mut().ok_or_else(|| {
             Status::failed_precondition("ArcFace 模型未加载，特征提取不可用")
         })?;
 
