@@ -462,14 +462,15 @@ impl ScrfdModel {
         // 策略：1) 边缘微小检测（padding 导致的误检） 2) 整体尺寸过小的检测
         let edge_margin_x = (orig_w as f32 * 0.02).max(10.0);
         let edge_margin_y = (orig_h as f32 * 0.02).max(10.0);
-        // 最小人脸尺寸：原图短边的 2%，但至少 80px（3072x4096 中约 80px）
-        let min_face_size = (orig_w.min(orig_h) as f32 * 0.02).max(80.0);
+        // 最小人脸尺寸：原图短边的 1%，但至少 30px
+        // 用短边（w.min(h)）判断，避免窄长人脸被误过滤
+        let min_face_size = (orig_w.min(orig_h) as f32 * 0.01).max(30.0);
         nms_faces.retain(|f| {
             let (x1, y1, x2, y2) = (f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]);
             let w = x2 - x1;
             let h = y2 - y1;
-            // 过滤整体尺寸过小的检测（无论是否在边缘）
-            if w.max(h) < min_face_size {
+            // 过滤整体尺寸过小的检测（用短边判断）
+            if w.min(h) < min_face_size {
                 info!("  过滤过小假阳性: bbox=({:.1},{:.1})-({:.1},{:.1}), score={:.4}, size={:.0}x{:.0}, min_face={:.0}",
                     x1, y1, x2, y2, f.score, w, h, min_face_size);
                 return false;
