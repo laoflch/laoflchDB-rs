@@ -155,25 +155,21 @@ impl FaceServiceImpl {
     }
 
     /// 检测 GPU 可用性
+    ///
+    /// `CUDAExecutionProvider::default().build()` 在 ort-rs 2.0.0-rc.10 中直接返回
+    /// `ExecutionProviderDispatch`（非 Result），因此此处仅通过 feature 开关决定。
+    /// 实际的 CUDA 可用性验证在 `create_ort_session` 的 `with_execution_providers` 中处理。
     fn detect_gpu() -> bool {
         #[cfg(feature = "cuda")]
         {
-            // 尝试创建 CUDA 执行提供者
-            match CUDAExecutionProvider::default().build() {
-                Ok(_) => {
-                    info!("人脸服务使用 CUDA GPU 推理");
-                    return true;
-                }
-                Err(e) => {
-                    warn!("CUDAExecutionProvider 初始化失败: {}，回退到 CPU", e);
-                }
-            }
+            info!("人脸服务启用 CUDA GPU 推理（尝试）");
+            return true;
         }
         #[cfg(not(feature = "cuda"))]
         {
             info!("CUDA feature 未启用，人脸服务使用 CPU 推理");
+            false
         }
-        false
     }
 
     /// 创建 ort Session 的通用函数
