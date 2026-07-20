@@ -989,8 +989,21 @@ impl FaceService for FaceServiceImpl {
 
         let mut face_features = Vec::with_capacity(detected_and_embeddings.len());
         for (face_info, aligned, embedding) in &detected_and_embeddings {
-            // 4. 可选：保存对齐后的人脸图片到 image_service
-            let (saved_key, saved_bucket, face_id) = if req.save_aligned_images {
+            // 4. 去重检测：搜索 face 索引中是否有相同向量
+            let existing_id = if req.index_embedding || req.save_aligned_images {
+                if let Some(ref emb_svc) = self.embedding_service {
+                    search_face_embedding(emb_svc, embedding).await
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // 5. 已存在时跳过保存和索引，直接使用已有的 key 和 vector_id
+            let (saved_key, saved_bucket, face_id) = if let Some(existing_vid) = existing_id {
+                (format!("face_{}", existing_vid), String::new(), existing_vid)
+            } else if req.save_aligned_images {
                 if let Some(ref img_svc) = self.image_service {
                     let (key, id) = self.make_face_image_key();
                     let bucket = if req.image_bucket.is_empty() {
@@ -1016,8 +1029,10 @@ impl FaceService for FaceServiceImpl {
                 (String::new(), String::new(), 0)
             };
 
-            // 5. 可选：把人脸特征向量写入 embedding_service 的 HNSW 索引
-            let indexed_vector_id = if req.index_embedding && face_id > 0 {
+            // 6. 把人脸特征向量写入 embedding_service 的 HNSW 索引（已存在则跳过）
+            let indexed_vector_id = if existing_id.is_some() {
+                existing_id.unwrap()
+            } else if req.index_embedding && face_id > 0 {
                 if let Some(ref emb_svc) = self.embedding_service {
                     match index_face_embedding(emb_svc, face_id, embedding).await {
                         Ok(_) => face_id,
@@ -1191,6 +1206,45 @@ async fn index_face_embedding(
         return Err(format!("embedding_service 索引失败: {}", resp.message).into());
     }
     Ok(())
+}
+
+/// 搜索 face 索引中是否有相同的人脸特征向量
+///
+/// 对 embedding 执行 ANN 搜索（top_k=1），如果距离 ≈ 0 则视为同一张人脸。
+/// 使用 Cosine 距离，对于 L2 归一化的向量，相同向量的距离为 0。
+async fn search_face_embedding(
+    emb_svc: &Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>,
+    embedding: &[f32],
+) -> Option<u64> {
+    use laoflchdb_embedding_service::proto::embedding_index_service_server::EmbeddingIndexService;
+    use laoflchdb_embedding_service::proto::SearchEmbeddingRequest;
+
+    let request = tonic::Request::new(SearchEmbeddingRequest {
+        query_embedding: embedding.to_vec(),
+        top_k: 1,
+        index_name: "face".to_string(),
+    });
+
+    match emb_svc.search_embedding(request).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            if resp.success && !resp.results.is_empty() {
+                let result = &resp.results[0];
+                // Cosine 距离 < 0.01 视为完全相同的人脸
+                // 对于 L2 归一化向量，cosine_distance = 1 - dot_product
+                // 完全相同 → distance = 0
+                if result.distance < 0.01 {
+                    info!("  检测到重复人脸: existing_id={}, distance={}", result.id, result.distance);
+                    return Some(result.id);
+                }
+            }
+            None
+        }
+        Err(e) => {
+            warn!("搜索 face 索引失败: {}", e);
+            None
+        }
+    }
 }
 
 // ── REST API ─────────────────────────────────────────────────────

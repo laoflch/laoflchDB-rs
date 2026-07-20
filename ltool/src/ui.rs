@@ -414,7 +414,7 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
         .join(", ");
     let title = format!("人脸列表  | embedding 前10: [{}]", preview);
 
-    let table = Table::new(rows, [Constraint::Length(5), Constraint::Length(12), Constraint::Length(30), Constraint::Length(20), Constraint::Length(12)])
+    let table = Table::new(rows, [Constraint::Length(5), Constraint::Length(12), Constraint::Length(30), Constraint::Length(25), Constraint::Length(20)])
         .header(header)
         .block(Block::default().borders(Borders::ALL).title(title));
 
