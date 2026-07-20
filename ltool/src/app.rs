@@ -321,7 +321,7 @@ impl Default for FaceTabState {
         Self {
             focus: FaceFocus::FilePath,
             file_path: InputState::new(),
-            det_threshold: InputState::with_value("0.1"),
+            det_threshold: InputState::with_value("0.5"),
             max_faces: InputState::with_value("0"),
             save_aligned_images: false,
             index_embedding: false,

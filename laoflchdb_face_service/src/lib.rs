@@ -338,6 +338,10 @@ impl ScrfdModel {
         // 预处理：letterbox resize 到目标尺寸
         let (input_tensor, scale, pad_w, pad_h) =
             Self::preprocess(img, input_size)?;
+        info!(
+            "检测预处理: orig={}x{}, input_size={}, scale={:.6}, pad_w={}, pad_h={}",
+            orig_w, orig_h, input_size, scale, pad_w, pad_h
+        );
 
         let input_name = self.get_input_name()?;
         let output_names = self.get_output_names();
@@ -350,53 +354,66 @@ impl ScrfdModel {
             .run(input_map)
             .map_err(|e| Status::internal(format!("SCRFD 推理失败: {}", e)))?;
 
-        // 调试日志
+        // 调试日志：收集所有输出
         info!("SCRFD 推理输出数: {}", outputs.len());
-        let mut sorted_outputs: Vec<(String, ndarray::ArrayD<f32>)> = Vec::new();
+        let mut all_outputs: Vec<(String, ndarray::ArrayD<f32>)> = Vec::new();
         for (i, name) in output_names.iter().enumerate() {
             if let Some(v) = outputs.get(name) {
                 if let Ok(arr) = v.try_extract_array::<f32>() {
                     let shape: Vec<usize> = arr.shape().to_vec();
                     info!("  输出[{}] name={}, shape={:?}", i, name, shape);
-                    sorted_outputs.push((name.clone(), arr.to_owned().into_dyn()));
+                    all_outputs.push((name.clone(), arr.to_owned().into_dyn()));
                 }
             }
         }
-        sorted_outputs.sort_by(|a, b| a.0.cmp(&b.0));
 
-        // 解析输出：SCRFD 输出多个尺度的 bbox/score/kps
+        // 解析输出：按每个 tensor 的第一维长度匹配 stride
         let mut all_faces = Vec::new();
+        let strides = [8u32, 16u32, 32u32];
 
-        // SCRFD 有 9 个输出，按 stride 分组：每组 3 个 (score, bbox, kps)
-        // 模型实际输出顺序（按名称排序后）：[s8_score, s8_bbox, s8_kps, s16_score, s16_bbox, s16_kps, s32_score, s32_bbox, s32_kps]
-        let strides = [8u32, 16, 32];
-        for (i, &stride) in strides.iter().enumerate() {
-            let score_idx = i * 3;
-            let bbox_idx = i * 3 + 1;
-            let kps_idx = i * 3 + 2;
+        for stride in strides.iter() {
+            // 根据当前 input_size 动态计算这个 stride 的 tensor 长度
+            let num_cells_per_side = input_size / stride;
+            let expected_len = (num_cells_per_side * num_cells_per_side * 2) as usize;
 
-            if sorted_outputs.len() < 9 {
-                break;
+            // 找这个 stride 的所有 tensor（len 匹配）
+            let group: Vec<_> = all_outputs
+                .iter()
+                .filter(|(_, arr)| arr.shape()[0] == expected_len)
+                .collect();
+
+            // 在这个组里找 score, bbox, kps（按 last_dim）
+            let mut score_arr: Option<&ndarray::ArrayD<f32>> = None;
+            let mut bbox_arr: Option<&ndarray::ArrayD<f32>> = None;
+            let mut kps_arr: Option<&ndarray::ArrayD<f32>> = None;
+
+            for (_, arr) in group.iter() {
+                let last_dim = *arr.shape().last().unwrap_or(&0);
+                match last_dim {
+                    1 => score_arr = Some(arr),
+                    4 => bbox_arr = Some(arr),
+                    10 => kps_arr = Some(arr),
+                    _ => {}
+                }
             }
 
-            let score_view = sorted_outputs[score_idx].1.view();
-            let bbox_view = sorted_outputs[bbox_idx].1.view();
-            let kps_view = sorted_outputs[kps_idx].1.view();
-
-            let faces = Self::parse_stride_output(
-                &score_view,
-                &bbox_view,
-                &kps_view,
-                stride,
-                input_size,
-                orig_w,
-                orig_h,
-                scale,
-                pad_w,
-                pad_h,
-                threshold,
-            )?;
-            all_faces.extend(faces);
+            // 如果找到了三个输出，解析
+            if let (Some(sa), Some(ba), Some(ka)) = (score_arr, bbox_arr, kps_arr) {
+                let faces = Self::parse_stride_output(
+                    &sa.view(),
+                    &ba.view(),
+                    &ka.view(),
+                    *stride,
+                    input_size,
+                    orig_w,
+                    orig_h,
+                    scale,
+                    pad_w,
+                    pad_h,
+                    threshold,
+                )?;
+                all_faces.extend(faces);
+            }
         }
 
         // 按置信度降序排序
@@ -406,55 +423,126 @@ impl ScrfdModel {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
 
-        // 限制最大数量
-        if max_faces > 0 && all_faces.len() > max_faces as usize {
-            all_faces.truncate(max_faces as usize);
+        // NMS: 非极大值抑制，去除重叠检测
+        let nms_threshold = 0.4;
+        let mut keep = Vec::new();
+        let mut suppressed = vec![false; all_faces.len()];
+
+        for i in 0..all_faces.len() {
+            if suppressed[i] {
+                continue;
+            }
+            keep.push(i);
+
+            let bbox_i = &all_faces[i].bbox;
+            for j in (i + 1)..all_faces.len() {
+                if suppressed[j] {
+                    continue;
+                }
+                let bbox_j = &all_faces[j].bbox;
+                let iou = compute_iou(bbox_i, bbox_j);
+                if iou > nms_threshold {
+                    suppressed[j] = true;
+                }
+            }
         }
 
-        Ok(all_faces)
+        let mut nms_faces = Vec::new();
+        for &idx in &keep {
+            nms_faces.push(all_faces[idx].clone());
+        }
+
+        info!("检测到 {} 张人脸 (NMS 后):", nms_faces.len());
+        for (i, face) in nms_faces.iter().enumerate() {
+            info!("  人脸 {}: score={:.4}, bbox={:?}, landmarks={:?}", 
+                i, face.score, face.bbox, face.landmarks);
+        }
+
+        // 过滤假阳性检测
+        // 策略：1) 边缘微小检测（padding 导致的误检） 2) 整体尺寸过小的检测
+        let edge_margin_x = (orig_w as f32 * 0.02).max(10.0);
+        let edge_margin_y = (orig_h as f32 * 0.02).max(10.0);
+        // 最小人脸尺寸：原图短边的 2%，但至少 80px（3072x4096 中约 80px）
+        let min_face_size = (orig_w.min(orig_h) as f32 * 0.02).max(80.0);
+        nms_faces.retain(|f| {
+            let (x1, y1, x2, y2) = (f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]);
+            let w = x2 - x1;
+            let h = y2 - y1;
+            // 过滤整体尺寸过小的检测（无论是否在边缘）
+            if w.max(h) < min_face_size {
+                info!("  过滤过小假阳性: bbox=({:.1},{:.1})-({:.1},{:.1}), score={:.4}, size={:.0}x{:.0}, min_face={:.0}",
+                    x1, y1, x2, y2, f.score, w, h, min_face_size);
+                return false;
+            }
+            // 排除完全在边缘上的微小检测（宽或高 < 20px 且贴着边缘）
+            let near_left = x1 <= edge_margin_x;
+            let near_right = x2 >= orig_w as f32 - edge_margin_x;
+            let near_top = y1 <= edge_margin_y;
+            let near_bottom = y2 >= orig_h as f32 - edge_margin_y;
+            if (w < 20.0 || h < 20.0) && (near_left || near_right || near_top || near_bottom) {
+                info!("  过滤边缘假阳性: bbox=({:.1},{:.1})-({:.1},{:.1}), score={:.4}", x1, y1, x2, y2, f.score);
+                return false;
+            }
+            true
+        });
+
+        // 限制最大数量
+        if max_faces > 0 && nms_faces.len() > max_faces as usize {
+            nms_faces.truncate(max_faces as usize);
+        }
+
+        Ok(nms_faces)
     }
 
-    /// 预处理：letterbox resize 到目标尺寸
+    /// 预处理：参考 InsightFace 官方实现
+    /// 关键点：1) 不居中 padding，放在左上角  2) 使用 (pixel - 127.5) / 128 归一化
     ///
     /// 返回 (input_tensor, scale, pad_w, pad_h)
-    /// 输入 tensor 是 [1, 3, H, W] NCHW 格式，BGR 顺序，归一化到 [0,1] 并减均值除方差
+    /// 这里 pad_w 和 pad_h 实际上都是 0（因为不 padding），但保留参数兼容接口
     fn preprocess(
         img: &image::DynamicImage,
         target_size: u32,
     ) -> Result<(Value, f32, u32, u32), Status> {
         let (orig_w, orig_h) = (img.width(), img.height());
-        let scale = target_size as f32 / orig_w.max(orig_h) as f32;
-        let new_w = (orig_w as f32 * scale).round() as u32;
-        let new_h = (orig_h as f32 * scale).round() as u32;
-        let pad_w = (target_size - new_w) / 2;
-        let pad_h = (target_size - new_h) / 2;
 
-        // resize
-        let resized = img.resize_exact(
-            new_w,
-            new_h,
-            image::imageops::FilterType::Triangle,
-        );
+        // 官方逻辑：按 height 计算 scale，不居中
+        let im_ratio = orig_h as f32 / orig_w as f32;
+        let model_ratio = 1.0; // target_size x target_size 是正方形
+        let (new_w, new_h) = if im_ratio > model_ratio {
+            let new_h = target_size;
+            let new_w = (new_h as f32 / im_ratio) as u32;
+            (new_w, new_h)
+        } else {
+            let new_w = target_size;
+            let new_h = (new_w as f32 * im_ratio) as u32;
+            (new_w, new_h)
+        };
 
-        // 转换为 RGB 并填充到 target_size x target_size
+        // scale = new_height / orig_height（官方只按 height 算）
+        let scale = new_h as f32 / orig_h as f32;
+
+        // resize（官方用 cv2.resize，这里用 image::resize，效果接近）
+        let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
         let rgb = resized.to_rgb8();
 
         // 创建 ndarray: [1, 3, H, W]  NCHW
+        // 官方：det_img = np.zeros((input_size[1], input_size[0], 3))
+        //       det_img[:new_height, :new_width, :] = resized_img
+        // 即：图片放在左上角，不 padding！
         let mut array = Array4::<f32>::zeros((1, 3, target_size as usize, target_size as usize));
 
-        for y in 0..target_size {
-            for x in 0..target_size {
-                if x < new_w && y < new_h {
-                    let p = rgb.get_pixel(x, y);
-                    let r = p.0[0] as f32 / 255.0;
-                    let g = p.0[1] as f32 / 255.0;
-                    let b = p.0[2] as f32 / 255.0;
-                    // SCRFD 使用 BGR 顺序，均值 [0.485, 0.456, 0.406]，方差 [0.229, 0.224, 0.225]
-                    array[[0, 0, y as usize, x as usize]] = (b - 0.406) / 0.225;
-                    array[[0, 1, y as usize, x as usize]] = (g - 0.456) / 0.224;
-                    array[[0, 2, y as usize, x as usize]] = (r - 0.485) / 0.229;
-                }
-                // 填充区域保持 0 值
+        for y in 0..new_h {
+            for x in 0..new_w {
+                let p = rgb.get_pixel(x, y);
+                let r = p.0[0] as f32;
+                let g = p.0[1] as f32;
+                let b = p.0[2] as f32;
+                // 官方：blob = cv2.dnn.blobFromImage(img, 1/std, input_size, (mean,mean,mean), swapRB=True)
+                // swapRB=True 表示 BGR → RGB
+                // 所以最终 channel 顺序是 R, G, B
+                array[[0, 0, y as usize, x as usize]] = (r - 127.5) / 128.0;
+                array[[0, 1, y as usize, x as usize]] = (g - 127.5) / 128.0;
+                array[[0, 2, y as usize, x as usize]] = (b - 127.5) / 128.0;
             }
         }
 
@@ -463,7 +551,8 @@ impl ScrfdModel {
             .map_err(|e| Status::internal(format!("构造输入 tensor 失败: {}", e)))?
             .into_dyn();
 
-        Ok((input_tensor, scale, pad_w, pad_h))
+        // pad_w = pad_h = 0，因为图片放在左上角，没有 padding
+        Ok((input_tensor, scale, 0, 0))
     }
 
     /// 解析单个 stride 的输出
@@ -481,125 +570,80 @@ impl ScrfdModel {
         pad_h: u32,
         threshold: f32,
     ) -> Result<Vec<DetectedFaceInfo>, Status> {
-        // 获取维度信息
-        let score_shape: Vec<usize> = score_view.shape().to_vec();
-        let num_anchors = if score_shape.len() >= 2 {
-            score_shape[score_shape.len() - 2]
-        } else {
-            score_shape.first().copied().unwrap_or(0)
-        };
-
-        // 提取 scores: flatten 到 1D
+        // ── 第一步：正确提取数据，确保三者长度一致 ──
+        // 展平所有张量，方便统一处理
         let scores: Vec<f32> = score_view.iter().copied().collect();
+        let bboxes_flat: Vec<f32> = bbox_view.iter().copied().collect();
+        let kps_flat: Vec<f32> = kps_view.iter().copied().collect();
+
+        let num_anchors = scores.len(); // score 的长度就是 anchor 数量
+        let num_bbox_anchors = bboxes_flat.len() / 4; // 每个 anchor 4个坐标
+        let num_kps_anchors = kps_flat.len() /10; // 每个 anchor 10个坐标 (5个点)
+        // 确保三者的 anchor 数量一致，取最小的避免越界
+        let actual_num_anchors = num_anchors.min(num_bbox_anchors).min(num_kps_anchors);
 
         // 调试日志
         let max_score = scores.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
         let min_score = scores.iter().fold(f32::INFINITY, |a, &b| a.min(b));
         let num_above_thresh = scores.iter().filter(|&&s| s >= threshold).count();
         info!("  stride={}: num_anchors={}, score_range=[{:.4}, {:.4}], threshold={:.4}, num_above={}",
-              stride, scores.len(), min_score, max_score, threshold, num_above_thresh);
-
-        // 提取 bboxes: shape [num_anchors, 4] 或 [batch, num_anchors, 4]
-        let bbox_shape: Vec<usize> = bbox_view.shape().to_vec();
-        let bboxes: Vec<Vec<f32>> = if bbox_shape.len() == 3 {
-            // [batch, num_anchors, 4] - squeeze batch dim
-            let _batch_size = bbox_shape[0];
-            let num = bbox_shape[1];
-            let dim = bbox_shape[2];
-            let mut result = Vec::with_capacity(num);
-            for i in 0..num {
-                let mut row = Vec::with_capacity(dim);
-                for j in 0..dim {
-                    row.push(bbox_view[[0, i, j]]);
-                }
-                result.push(row);
-            }
-            result
-        } else {
-            // [num_anchors, 4]
-            let num = bbox_shape[0];
-            let dim = bbox_shape[1];
-            let mut result = Vec::with_capacity(num);
-            for i in 0..num {
-                let mut row = Vec::with_capacity(dim);
-                for j in 0..dim {
-                    row.push(bbox_view[[i, j]]);
-                }
-                result.push(row);
-            }
-            result
-        };
-
-        // 提取 kps: shape [num_anchors, 10] 或 [batch, num_anchors, 10]
-        let kps_shape: Vec<usize> = kps_view.shape().to_vec();
-        let kps: Vec<Vec<f32>> = if kps_shape.len() == 3 {
-            let _batch_size = kps_shape[0];
-            let num = kps_shape[1];
-            let dim = kps_shape[2];
-            let mut result = Vec::with_capacity(num);
-            for i in 0..num {
-                let mut row = Vec::with_capacity(dim);
-                for j in 0..dim {
-                    row.push(kps_view[[0, i, j]]);
-                }
-                result.push(row);
-            }
-            result
-        } else {
-            let num = kps_shape[0];
-            let dim = kps_shape[1];
-            let mut result = Vec::with_capacity(num);
-            for i in 0..num {
-                let mut row = Vec::with_capacity(dim);
-                for j in 0..dim {
-                    row.push(kps_view[[i, j]]);
-                }
-                result.push(row);
-            }
-            result
-        };
+              stride, actual_num_anchors, min_score, max_score, threshold, num_above_thresh);
 
         // 计算每个 anchor 的中心点
         let num_cells_per_row = input_size / stride;
         let num_anchors_per_pos = 2u32; // SCRFD 默认每个位置 2 个 anchor
         let mut faces = Vec::new();
 
-        for i in 0..num_anchors {
+        for i in 0..actual_num_anchors {
             let score = scores[i];
             if score < threshold {
                 continue;
             }
 
-            // bbox: [4] - distance to left/top/right/bottom
-            let row = &bboxes[i];
-            if row.len() < 4 {
-                continue;
-            }
+            // bbox: [4] - distance to left/top/right/bottom (从展平数组读取)
+            let bbox_base = i *4;
+            if bbox_base +4 > bboxes_flat.len() { continue; } // 安全检查避免越界
+
+            let dx1 = bboxes_flat[bbox_base];
+            let dy1 = bboxes_flat[bbox_base+1];
+            let dx2 = bboxes_flat[bbox_base+2];
+            let dy2 = bboxes_flat[bbox_base+3];
+
             // 每个 cell 有 num_anchors_per_pos 个 anchor，所以 cell_idx = i / num_anchors_per_pos
             let cell_idx = i as u32 / num_anchors_per_pos;
-            let cx = (cell_idx % num_cells_per_row) as f32 * stride as f32 + stride as f32 / 2.0;
-            let cy = (cell_idx / num_cells_per_row) as f32 * stride as f32 + stride as f32 / 2.0;
+            // 官方实现：anchor_centers = cell_idx * stride（不加 stride/2）
+            let cx = (cell_idx % num_cells_per_row) as f32 * stride as f32;
+            let cy = (cell_idx / num_cells_per_row) as f32 * stride as f32;
 
             // 解码 bbox（距离 → 绝对坐标）
-            let x1 = cx - row[0] * stride as f32;
-            let y1 = cy - row[1] * stride as f32;
-            let x2 = cx + row[2] * stride as f32;
-            let y2 = cy + row[3] * stride as f32;
+            let x1 = cx - dx1 * stride as f32;
+            let y1 = cy - dy1 * stride as f32;
+            let x2 = cx + dx2 * stride as f32;
+            let y2 = cy + dy2 * stride as f32;
 
             // 反 letterbox：减去 pad，除以 scale
-            let x1 = ((x1 - pad_w as f32) / scale).clamp(0.0, orig_w as f32);
-            let y1 = ((y1 - pad_h as f32) / scale).clamp(0.0, orig_h as f32);
-            let x2 = ((x2 - pad_w as f32) / scale).clamp(0.0, orig_w as f32);
-            let y2 = ((y2 - pad_h as f32) / scale).clamp(0.0, orig_h as f32);
+            let orig_x1 = (x1 - pad_w as f32) / scale;
+            let orig_y1 = (y1 - pad_h as f32) / scale;
+            let orig_x2 = (x2 - pad_w as f32) / scale;
+            let orig_y2 = (y2 - pad_h as f32) / scale;
+            info!(
+                "解码 bbox: scaled=[{:.2},{:.2},{:.2},{:.2}], orig=[{:.2},{:.2},{:.2},{:.2}]",
+                x1, y1, x2, y2, orig_x1, orig_y1, orig_x2, orig_y2
+            );
+            let x1 = orig_x1.clamp(0.0, orig_w as f32);
+            let y1 = orig_y1.clamp(0.0, orig_h as f32);
+            let x2 = orig_x2.clamp(0.0, orig_w as f32);
+            let y2 = orig_y2.clamp(0.0, orig_h as f32);
 
-            // 解码 landmarks（10 个值：5 个点 x,y）
-            let mut landmarks = [0.0f32; 10];
-            if kps[i].len() >= 10 {
+            // 解码 landmarks（10 个值：5 个点 x,y）（从展平数组读取）
+            let mut landmarks = [0.0f32;10];
+            let kps_base = i*10;
+            if kps_base +10 <= kps_flat.len() {
                 for j in 0..5 {
-                    let lx = cx + kps[i][j * 2] * stride as f32;
-                    let ly = cy + kps[i][j * 2 + 1] * stride as f32;
-                    landmarks[j * 2] = ((lx - pad_w as f32) / scale).clamp(0.0, orig_w as f32);
-                    landmarks[j * 2 + 1] = ((ly - pad_h as f32) / scale).clamp(0.0, orig_h as f32);
+                    let lx = cx + kps_flat[kps_base + j*2] * stride as f32;
+                    let ly = cy + kps_flat[kps_base + j*2 +1] * stride as f32;
+                    landmarks[j*2] = ((lx - pad_w as f32)/scale).clamp(0.0, orig_w as f32);
+                    landmarks[j*2 +1] = ((ly - pad_h as f32)/scale).clamp(0.0, orig_h as f32);
                 }
             }
 
@@ -611,6 +655,28 @@ impl ScrfdModel {
         }
 
         Ok(faces)
+    }
+}
+
+/// 计算两个 bbox 的 IOU
+fn compute_iou(bbox1: &[f32; 4], bbox2: &[f32; 4]) -> f32 {
+    let x1 = bbox1[0].max(bbox2[0]);
+    let y1 = bbox1[1].max(bbox2[1]);
+    let x2 = bbox1[2].min(bbox2[2]);
+    let y2 = bbox1[3].min(bbox2[3]);
+
+    let w = (x2 - x1).max(0.0);
+    let h = (y2 - y1).max(0.0);
+    let inter = w * h;
+
+    let area1 = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1]);
+    let area2 = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1]);
+    let union = area1 + area2 - inter;
+
+    if union > 0.0 {
+        inter / union
+    } else {
+        0.0
     }
 }
 
@@ -707,46 +773,77 @@ struct DetectedFaceInfo {
     landmarks: [f32; 10],
 }
 
-/// 基于检测到的人脸 bbox 裁剪人脸并调整大小到 112x112
+/// 基于检测到的人脸 bbox 和关键点裁剪人脸并调整大小到 112x112
+///
+/// 使用关键点（5 个：左眼、右眼、鼻子、左嘴角、右嘴角）来精确定位人脸中心，
+/// 比单纯依赖 bbox 中心更准确，尤其对大幅面图片中的小脸更鲁棒。
 fn align_face(
     img: &image::DynamicImage,
     bbox: &[f32; 4], // [x1, y1, x2, y2]
+    landmarks: &[f32; 10], // 5 个关键点 [x,y] 对
 ) -> Result<image::DynamicImage, Status> {
-    info!("使用人脸 bbox 裁剪方案");
-    crop_face_from_bbox(img, bbox)
+    // 确保 bbox 坐标正序（x1 <= x2, y1 <= y2）
+    let mut x1 = bbox[0];
+    let mut y1 = bbox[1];
+    let mut x2 = bbox[2];
+    let mut y2 = bbox[3];
+    if x1 > x2 { std::mem::swap(&mut x1, &mut x2); }
+    if y1 > y2 { std::mem::swap(&mut y1, &mut y2); }
+
+    // 只用 bbox 中心，不使用 landmarks
+    let face_cx = (x1 + x2) / 2.0;
+    let face_cy = (y1 + y2) / 2.0;
+
+    info!("使用 bbox 中心定位人脸: ({:.1},{:.1})", face_cx, face_cy);
+
+    // 传递归一化后的 bbox
+    let normalized_bbox = [x1, y1, x2, y2];
+    crop_face_centered(img, &normalized_bbox, face_cx, face_cy)
 }
 
-/// 基于人脸 bbox 裁剪并适当扩展为正方形
-fn crop_face_from_bbox(
+/// 以指定人脸中心点裁剪并扩展为正方形，然后 resize 到 112x112
+fn crop_face_centered(
     img: &image::DynamicImage,
     bbox: &[f32; 4],
+    face_cx: f32,
+    face_cy: f32,
 ) -> Result<image::DynamicImage, Status> {
     let rgba = img.to_rgba8();
     let (img_w, img_h) = rgba.dimensions();
 
-    let x1 = bbox[0];
-    let y1 = bbox[1];
-    let x2 = bbox[2];
-    let y2 = bbox[3];
-
+    let (x1, y1, x2, y2) = (bbox[0], bbox[1], bbox[2], bbox[3]);
     let width = x2 - x1;
     let height = y2 - y1;
 
-    // 计算正方形裁剪区域
-    let center_x = (x1 + x2) / 2.0;
-    let center_y = (y1 + y2) / 2.0;
-
-    // 扩展：向上多扩展一些，包含额头
-    let size = width.max(height) * 1.8; // 1.8倍
+    // 稍微扩展一点，包含额头和下巴
+    let size = width.max(height) * 1.2; // 1.2倍
     let half_size = size / 2.0;
 
-    // 调整中心点，向上移动一些
-    let adjusted_center_y = center_y - size * 0.15; // 向上移动 15%
+    // 不向上移，直接用 face_cy
+    let adjusted_cy = face_cy;
 
-    let crop_x = (center_x - half_size).max(0.0) as u32;
-    let crop_y = (adjusted_center_y - half_size).max(0.0) as u32;
-    let crop_w = (center_x + half_size - crop_x as f32).min(img_w as f32 - crop_x as f32) as u32;
-    let crop_h = (adjusted_center_y + half_size - crop_y as f32).min(img_h as f32 - crop_y as f32) as u32;
+    // 正确计算裁剪区域，避免 crop_w/crop_h 为 0
+    let crop_x1 = (face_cx - half_size).max(0.0);
+    let crop_y1 = (adjusted_cy - half_size).max(0.0);
+    let crop_x2 = (face_cx + half_size).min(img_w as f32);
+    let crop_y2 = (adjusted_cy + half_size).min(img_h as f32);
+    
+    let crop_x = crop_x1 as u32;
+    let crop_y = crop_y1 as u32;
+    let crop_w = (crop_x2 - crop_x1) as u32;
+    let crop_h = (crop_y2 - crop_y1) as u32;
+
+    // 边界检查：如果 crop_w 或 crop_h 太小 (<16)，直接用 bbox 作为后备
+    let (crop_x, crop_y, crop_w, crop_h) = if crop_w < 16 || crop_h <16 {
+        info!("裁剪区域过小，回退到 bbox");
+        let fallback_crop_x = x1.max(0.0) as u32;
+        let fallback_crop_y = y1.max(0.0) as u32;
+        let fallback_crop_w = (x2 -x1).max(1.0) as u32;
+        let fallback_crop_h = (y2 -y1).max(1.0) as u32;
+        (fallback_crop_x, fallback_crop_y, fallback_crop_w, fallback_crop_h)
+    } else {
+        (crop_x, crop_y, crop_w, crop_h)
+    };
 
     info!("人脸 bbox: ({:.1},{:.1})-({:.1},{:.1})", x1, y1, x2, y2);
     info!("裁剪人脸: x={}, y={}, w={}, h={} (原图: {}x{})", crop_x, crop_y, crop_w, crop_h, img_w, img_h);
@@ -775,6 +872,8 @@ fn crop_face_from_bbox(
     Ok(image::DynamicImage::ImageRgba8(resized))
 }
 
+
+
 // ── gRPC 服务实现 ────────────────────────────────────────────────
 
 #[tonic::async_trait]
@@ -784,7 +883,7 @@ impl FaceService for FaceServiceImpl {
         request: Request<DetectFacesRequest>,
     ) -> Result<TonicResponse<DetectFacesResponse>, Status> {
         let req = request.into_inner();
-        let threshold = if req.det_threshold > 0.0 {
+        let threshold = if req.det_threshold >= 0.3 {
             req.det_threshold
         } else {
             self.config.det_threshold
@@ -833,15 +932,19 @@ impl FaceService for FaceServiceImpl {
         request: Request<ExtractFaceFeaturesRequest>,
     ) -> Result<TonicResponse<ExtractFaceFeaturesResponse>, Status> {
         let req = request.into_inner();
-        let threshold = if req.det_threshold > 0.0 {
+        // 强制最小阈值 0.3，避免客户端传入过低的阈值导致大量假阳性
+        let threshold = if req.det_threshold >= 0.3 {
             req.det_threshold
         } else {
             self.config.det_threshold
         };
+        // 限制最大人脸数：客户端未指定时用配置值，配置为 0 时最多处理 20 张（避免假阳性导致超时）
         let max_faces = if req.max_faces > 0 {
             req.max_faces
-        } else {
+        } else if self.config.max_faces > 0 {
             self.config.max_faces
+        } else {
+            20
         };
 
         // 解码图片
@@ -874,7 +977,7 @@ impl FaceService for FaceServiceImpl {
             let mut results = Vec::with_capacity(detected.len());
             for face_info in &detected {
                 // 2. 使用 bbox 裁剪并调整到 112x112
-                let aligned = align_face(&img, &face_info.bbox)?;
+                let aligned = align_face(&img, &face_info.bbox, &face_info.landmarks)?;
                 // 3. 提取 512 维特征并 L2 归一化
                 let embedding = arcface.extract(&aligned)?;
                 results.push((face_info.clone(), aligned, embedding));

@@ -33,7 +33,7 @@ embedding_index:
       max_elements: 1000000
       distance_metric: Cosine
     - name: face
-      dim: 1024
+      dim: 512
       m: 16
       ef_construction: 200
       ef_search: 50
@@ -57,13 +57,13 @@ image_service:
   enabled: true
   default_bucket: images
 
-# 人脸服务配置（SCRFD 检测 + ArcFace 特征提取，基于 candle-onnx，支持 CUDA）
+# 人脸服务配置（SCRFD 检测 + ArcFace 特征提取，基于 ort (ONNX Runtime)，支持 CUDA）
 face_service:
   enabled: true
   model_dir: /workspace/rust_space/laoflchDB-rust/laoflch_db_model
   scrfd_model_file: scrfd_10g.onnx
   arcface_model_file: arcface_w600k_r50.onnx
-  det_threshold: 0.1
+  det_threshold: 0.5
   max_faces: 0
 
 # Log configuration
