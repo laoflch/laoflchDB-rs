@@ -245,7 +245,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     let help_text = match app.current_tab {
         Tab::Image => "F1上传 F2列出 :bucket/:key设置 ↑↓选路径 Enter确认 Esc取消 | ",
         Tab::Face => "F1检测 F3列表 F6导出 ↑↓选中人脸 Enter保存并索引 Esc取消 | ",
-        Tab::Vector => "F1刷新列表 F2/Enter查看详情 F3列出条目 F4清空 F5一致性 F6重建 Tab展开菜单 ↑↓条目导航 Enter操作 Esc关闭 | ",
+        Tab::Vector => "F2/Enter查看详情 F3列出条目 F4清空 F5一致性 F6重建 Tab展开菜单 ↑↓条目导航 Enter操作 Esc关闭 | ",
         Tab::Sql => "F1列表Schema F2列表表 F3描述表 F4版本 F5执行 Ctrl+L清空 | ",
         Tab::Index => "F1列表索引 F2查看详情 F3统计 F4搜索 Enter查看详情 | ",
     };
@@ -686,7 +686,7 @@ fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
 
     // ── 顶部：索引名称输入框 ─────────────────────
     let input_area = chunks[0];
-    let hint = "索引名称（F1 刷新列表，F2/Enter 查看详情，F3 列出条目，F4 清空，F5 一致性，F6 重建）";
+    let hint = "索引名称（F2/Enter 查看详情，F3 列出条目，F4 清空，F5 一致性，F6 重建）";
     draw_input_box(f, input_area, hint, &app.vector_tab.index_name, true);
 
     // ── 中部：左右分栏 ── 左：索引信息详情 | 右：状态检查框 ─────
@@ -750,7 +750,7 @@ fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
         ]));
     } else {
         let hint = if app.vector_tab.all_indices.is_empty() {
-            "按 F1 获取所有索引列表，或在输入框输入索引名称后按 Enter/F2 查看详情"
+            "在输入框输入索引名称后按 Enter/F2 查看详情"
         } else {
             "按 ↓/Tab 展开下拉菜单选择索引，或输入索引名称后按 Enter/F2 查看详情"
         };

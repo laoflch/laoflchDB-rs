@@ -65,6 +65,8 @@ pub async fn handle_event(app: &mut App, event: KeyEvent) -> bool {
         KeyCode::Char('3') if event.modifiers.contains(KeyModifiers::ALT) => {
             app.clear_image_tab_popups();
             app.current_tab = Tab::Vector;
+            // 切到向量 Tab 时自动刷新索引列表
+            app.vector_tab.auto_refreshed = false;
             return true;
         }
         KeyCode::Char('4') if event.modifiers.contains(KeyModifiers::ALT) => {
@@ -1088,17 +1090,13 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
         }
     }
 
-    // F1: 刷新所有索引信息
+    // F1: 已移除（进入 Tab 时自动刷新）
     // F2: 获取当前索引名的详细信息
     // F3: 列出当前索引的所有向量条目
     // F4: 清空当前索引的所有向量
     // F5: 一致性分析
     // F6: 从 RocksDB 重建索引
     match event.code {
-        KeyCode::F(1) => {
-            let _ = crate::tab_vector::get_all_indices(app).await;
-            return true;
-        }
         KeyCode::F(2) => {
             let _ = crate::tab_vector::get_index_info(app).await;
             return true;
@@ -1245,16 +1243,6 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
                 app.vector_tab.show_dropdown = false;
                 return true;
             }
-        }
-        // F3: 列出当前索引的所有向量条目
-        KeyCode::F(3) => {
-            let _ = crate::tab_vector::list_embeddings(app).await;
-            return true;
-        }
-        // F4: 清空当前索引的所有向量
-        KeyCode::F(4) => {
-            let _ = crate::tab_vector::clear_embeddings(app).await;
-            return true;
         }
         // Enter on entries list → open action popup
         KeyCode::Char('\n') | KeyCode::Char('\r') => {
