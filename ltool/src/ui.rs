@@ -5,7 +5,7 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, ImageFocus, PathPopup, Tab};
@@ -101,6 +101,19 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_download_confirm_dialog(f, app);
     }
 
+    // ── 人脸 Tab 已保存人脸列表弹窗 ──
+    if app.current_tab == Tab::Face && app.face_tab.show_saved {
+        draw_face_saved_list(f, app);
+    }
+    // 人脸 Tab 操作弹窗
+    if app.face_tab.saved_action_open {
+        draw_face_saved_action_popup(f, app);
+    }
+    // 人脸 Tab 删除确认
+    if let Some(ref key) = app.face_tab.saved_delete_key {
+        draw_face_delete_confirm_dialog(f, key);
+    }
+
     // 向量索引导航下拉菜单（浮在最顶层）
     if app.vector_tab.show_dropdown && !app.vector_tab.all_indices.is_empty() {
         if let Some(anchor) = vector_input_anchor {
@@ -177,7 +190,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     // 当前 Tab 的快捷键提示
     let help_text = match app.current_tab {
         Tab::Image => "F1上传 F2列出 :bucket/:key设置 ↑↓选路径 Enter确认 Esc取消 | ",
-        Tab::Face => "F1提取 F2比较 F4保存 F5索引 F6导出 ↑↓选路径 Enter确认 Esc取消  ",
+        Tab::Face => "F1提取 F3列表 F4保存 F5索引 F6导出 ↑↓选路径 Enter确认 Esc取消  ",
         Tab::Vector => "F1刷新列表 F2/Enter查看详情 ↓/Tab展开菜单 ↑↓导航 Esc关闭 | ",
         Tab::Sql => "F5执行 Ctrl+L清空 | ",
     };
@@ -320,56 +333,47 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     use crate::app::FaceFocus;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(12), Constraint::Min(5)])
+        .constraints([Constraint::Length(9), Constraint::Min(5)])
         .split(area);
 
-    // 输入区：分三行
-    let row1 = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(40), Constraint::Length(15), Constraint::Length(15)])
-        .split(chunks[0]);
-
-    let path_area = row1[0];
+    // 第一行：本地图片路径（独占一行，全宽）
+    let path_area = Rect { x: chunks[0].x, y: chunks[0].y, width: chunks[0].width, height: 3 };
     draw_input_box(f, path_area, "本地图片路径", &app.face_tab.file_path, app.face_tab.focus == FaceFocus::FilePath);
-    draw_input_box(f, row1[1], "det_threshold", &app.face_tab.det_threshold, app.face_tab.focus == FaceFocus::DetThreshold);
-    draw_input_box(f, row1[2], "max_faces", &app.face_tab.max_faces, app.face_tab.focus == FaceFocus::MaxFaces);
 
-    // 第二行：bucket + 复选框提示
+    // 第二行：参数（det_threshold, max_faces, bucket, 复选框）共用一行
     let row2 = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(30), Constraint::Length(20), Constraint::Length(20)])
-        .split({
-            let r = Rect { x: chunks[0].x, y: chunks[0].y + 3, width: chunks[0].width, height: 3 };
-            r
+        .constraints([
+            Constraint::Length(15),
+            Constraint::Length(15),
+            Constraint::Length(20),
+            Constraint::Length(20),
+            Constraint::Length(20),
+        ])
+        .split(Rect {
+            x: chunks[0].x,
+            y: chunks[0].y + 3,
+            width: chunks[0].width,
+            height: 3,
         });
 
-    draw_input_box(f, row2[0], "bucket", &app.face_tab.bucket, app.face_tab.focus == FaceFocus::Bucket);
+    draw_input_box(f, row2[0], "det_threshold", &app.face_tab.det_threshold, app.face_tab.focus == FaceFocus::DetThreshold);
+    draw_input_box(f, row2[1], "max_faces", &app.face_tab.max_faces, app.face_tab.focus == FaceFocus::MaxFaces);
+    draw_input_box(f, row2[2], "bucket", &app.face_tab.bucket, app.face_tab.focus == FaceFocus::Bucket);
 
     let save_str = if app.face_tab.save_aligned_images { "[x]" } else { "[ ]" };
-    let p1 = Paragraph::new(format!("{} save_aligned (F4 切换)", save_str))
+    let p1 = Paragraph::new(format!("{} save_aligned (F4)", save_str))
         .block(Block::default().borders(Borders::ALL));
-    f.render_widget(p1, row2[1]);
+    f.render_widget(p1, row2[3]);
 
     let idx_str = if app.face_tab.index_embedding { "[x]" } else { "[ ]" };
-    let p2 = Paragraph::new(format!("{} index_embedding (F5 切换)", idx_str))
+    let p2 = Paragraph::new(format!("{} index_embedding (F5)", idx_str))
         .block(Block::default().borders(Borders::ALL));
-    f.render_widget(p2, row2[2]);
+    f.render_widget(p2, row2[4]);
 
-    // 第三行：导出路径 + 提示
-    let row3 = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(50), Constraint::Length(25)])
-        .split({
-            let r = Rect { x: chunks[0].x, y: chunks[0].y + 6, width: chunks[0].width, height: 3 };
-            r
-        });
-
-    draw_input_box(f, row3[0], "导出路径", &app.face_tab.export_path, app.face_tab.focus == FaceFocus::ExportPath);
-
-    let p3 = Paragraph::new("F6 导出人脸图片")
-        .block(Block::default().borders(Borders::ALL))
-        .alignment(Alignment::Center);
-    f.render_widget(p3, row3[1]);
+    // 第三行：导出路径（独占一行，全宽，和本地路径一致）
+    let row3 = Rect { x: chunks[0].x, y: chunks[0].y + 6, width: chunks[0].width, height: 3 };
+    draw_input_box(f, row3, "导出路径", &app.face_tab.export_path, app.face_tab.focus == FaceFocus::ExportPath);
 
     // 结果区
     let rows: Vec<Row> = app
@@ -421,6 +425,157 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     f.render_widget(table, chunks[1]);
 
     Some(path_area)
+}
+
+/// 绘制已保存人脸列表（F3 弹窗）
+fn draw_face_saved_list(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = area.width.saturating_sub(4).min(80);
+    let height = (area.height.saturating_sub(4)).min(30);
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let count = app.face_tab.saved_faces.len();
+    let title = format!("已保存人脸列表 (共 {} 张)  ↑↓导航 Enter菜单 Esc关闭", count);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let header = Row::new(vec![
+        Cell::from("key"),
+        Cell::from("size"),
+        Cell::from("WxH"),
+        Cell::from("format"),
+        Cell::from("上传时间"),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
+
+    let rows: Vec<Row> = app
+        .face_tab
+        .saved_faces
+        .iter()
+        .skip(app.face_tab.saved_scroll)
+        .take(50)
+        .enumerate()
+        .map(|(i, meta)| {
+            let abs_idx = i + app.face_tab.saved_scroll;
+            let selected = app.face_tab.saved_selected == Some(abs_idx);
+            let cells = vec![
+                Cell::from(meta.key.clone()),
+                Cell::from(meta.content_length.to_string()),
+                Cell::from(format!("{}x{}", meta.width, meta.height)),
+                Cell::from(meta.format.clone()),
+                Cell::from(format_timestamp(&meta.last_modified)),
+            ];
+            if selected {
+                Row::new(cells).style(Style::default().bg(Color::Green).fg(Color::Black))
+            } else {
+                Row::new(cells)
+            }
+        })
+        .collect();
+
+    let table = Table::new(
+        rows,
+        [
+            Constraint::Length(30),
+            Constraint::Length(10),
+            Constraint::Length(12),
+            Constraint::Length(10),
+            Constraint::Length(20),
+        ],
+    )
+    .header(header);
+
+    f.render_widget(table, inner);
+}
+
+/// 已保存人脸操作弹窗
+fn draw_face_saved_action_popup(f: &mut Frame, app: &mut App) {
+    const FACE_ACTION_OPTIONS: &[&str] = &["导出人脸", "删除人脸"];
+    let area = f.size();
+    let width = 30;
+    let height = FACE_ACTION_OPTIONS.len() as u16 + 3;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("人脸操作")
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    for (i, opt) in FACE_ACTION_OPTIONS.iter().enumerate() {
+        let selected = i == app.face_tab.saved_action_selected;
+        let style = if selected {
+            Style::default().bg(Color::Green).fg(Color::Black)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let prefix = if selected { "▶ " } else { "  " };
+        let line = Paragraph::new(Line::from(Span::styled(
+            format!("{}{}", prefix, opt),
+            style,
+        )));
+        f.render_widget(line, Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        });
+    }
+}
+
+/// 已保存人脸删除确认弹窗
+fn draw_face_delete_confirm_dialog(f: &mut Frame, key: &str) {
+    let area = f.size();
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = 5;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("确认删除")
+        .style(Style::default().bg(Color::Black).fg(Color::Red));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let msg = Paragraph::new(format!("确认删除人脸 {} ?\nEnter 确认  Esc 取消", key))
+        .wrap(Wrap { trim: false });
+    f.render_widget(msg, inner);
 }
 
 // ── 向量 Tab ──────────────────────────────────────

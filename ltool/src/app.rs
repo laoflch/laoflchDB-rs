@@ -300,6 +300,20 @@ pub struct FaceTabState {
     pub list_scroll: usize,
     /// 本地路径输入框的补全下拉菜单
     pub path_popup: PathPopup,
+    /// ── F3: 已保存人脸列表 ──
+    /// 是否显示已保存人脸列表（F3 切换）
+    pub show_saved: bool,
+    /// 已保存的人脸图片元数据列表（来自 image_service faces bucket）
+    pub saved_faces: Vec<laoflchdb_image_service_proto::proto::ImageMetadata>,
+    /// 已保存人脸列表滚动位置
+    pub saved_scroll: usize,
+    /// 已保存人脸列表选中行
+    pub saved_selected: Option<usize>,
+    /// 已保存人脸操作弹窗
+    pub saved_action_open: bool,
+    pub saved_action_selected: usize,
+    /// 已保存人脸删除确认
+    pub saved_delete_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -335,6 +349,13 @@ impl Default for FaceTabState {
             ),
             list_scroll: 0,
             path_popup: PathPopup::default(),
+            show_saved: false,
+            saved_faces: Vec::new(),
+            saved_scroll: 0,
+            saved_selected: None,
+            saved_action_open: false,
+            saved_action_selected: 0,
+            saved_delete_key: None,
         }
     }
 }

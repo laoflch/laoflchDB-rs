@@ -679,17 +679,90 @@ fn auto_scroll_image(tab: &mut crate::app::ImageTabState) {
     }
 }
 
+fn auto_scroll_face_saved(tab: &mut crate::app::FaceTabState) {
+    let Some(idx) = tab.saved_selected else { return };
+    let visible: usize = 50;
+    if idx < tab.saved_scroll {
+        tab.saved_scroll = idx;
+    } else if idx >= tab.saved_scroll + visible {
+        tab.saved_scroll = idx - visible + 1;
+    }
+}
+
 /// 处理人脸 Tab 的事件
 async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
+    // ── 已保存人脸操作弹窗 ──
+    if app.face_tab.saved_action_open {
+        const FACE_ACTION_OPTIONS: &[&str] = &["导出人脸", "删除人脸"];
+        match event.code {
+            KeyCode::Up => {
+                if app.face_tab.saved_action_selected > 0 {
+                    app.face_tab.saved_action_selected -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = FACE_ACTION_OPTIONS.len().saturating_sub(1);
+                if app.face_tab.saved_action_selected < max {
+                    app.face_tab.saved_action_selected += 1;
+                }
+                return true;
+            }
+            KeyCode::Enter => {
+                let idx = app.face_tab.saved_action_selected;
+                app.face_tab.saved_action_open = false;
+                if idx == 0 {
+                    // 导出人脸
+                    if let Some(si) = app.face_tab.saved_selected {
+                        if si < app.face_tab.saved_faces.len() {
+                            let key = app.face_tab.saved_faces[si].key.clone();
+                            let _ = crate::tab_face::export_saved_face(app, &key).await;
+                        }
+                    }
+                } else if idx == 1 {
+                    // 删除人脸
+                    if let Some(si) = app.face_tab.saved_selected {
+                        if si < app.face_tab.saved_faces.len() {
+                            let key = app.face_tab.saved_faces[si].key.clone();
+                            app.face_tab.saved_delete_key = Some(key);
+                        }
+                    }
+                }
+                return true;
+            }
+            KeyCode::Esc => {
+                app.face_tab.saved_action_open = false;
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // ── 已保存人脸删除确认弹窗 ──
+    if app.face_tab.saved_delete_key.is_some() {
+        match event.code {
+            KeyCode::Enter => {
+                let _ = crate::tab_face::delete_saved_face(app).await;
+                return true;
+            }
+            KeyCode::Esc => {
+                app.face_tab.saved_delete_key = None;
+                app.set_status("已取消删除");
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     // 快捷键用 F1-F6，避免与输入框字符冲突
-    // F1=提取特征, F2=比较特征, F3=清空结果(预留), F4=切换save_aligned, F5=切换index_embedding, F6=导出人脸
+    // F1=提取特征, F3=列出已保存人脸, F4=切换save_aligned, F5=切换index_embedding, F6=导出人脸
     match event.code {
         KeyCode::F(1) => {
             let _ = crate::tab_face::extract_features(app).await;
             return true;
         }
-        KeyCode::F(2) => {
-            let _ = crate::tab_face::compare_features(app).await;
+        KeyCode::F(3) => {
+            let _ = crate::tab_face::list_saved_faces(app).await;
             return true;
         }
         KeyCode::F(4) => {
@@ -714,6 +787,57 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
             return true;
         }
         _ => {}
+    }
+
+    // ── 已保存人脸列表导航 ──
+    if app.face_tab.show_saved {
+        match event.code {
+            KeyCode::Up => {
+                let cur = app.face_tab.saved_selected.unwrap_or(0);
+                if cur > 0 {
+                    app.face_tab.saved_selected = Some(cur - 1);
+                    auto_scroll_face_saved(&mut app.face_tab);
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = app.face_tab.saved_faces.len().saturating_sub(1);
+                let cur = app.face_tab.saved_selected.unwrap_or(0);
+                if cur < max {
+                    app.face_tab.saved_selected = Some(cur + 1);
+                    auto_scroll_face_saved(&mut app.face_tab);
+                }
+                return true;
+            }
+            KeyCode::PageUp => {
+                let cur = app.face_tab.saved_selected.unwrap_or(0);
+                app.face_tab.saved_selected = Some(cur.saturating_sub(10));
+                auto_scroll_face_saved(&mut app.face_tab);
+                return true;
+            }
+            KeyCode::PageDown => {
+                let max = app.face_tab.saved_faces.len().saturating_sub(1);
+                let cur = app.face_tab.saved_selected.unwrap_or(0);
+                app.face_tab.saved_selected = Some((cur + 10).min(max));
+                auto_scroll_face_saved(&mut app.face_tab);
+                return true;
+            }
+            KeyCode::Enter => {
+                if app.face_tab.saved_selected.is_some() && !app.face_tab.saved_faces.is_empty() {
+                    app.face_tab.saved_action_open = true;
+                    app.face_tab.saved_action_selected = 0;
+                }
+                return true;
+            }
+            KeyCode::Esc => {
+                if !app.face_tab.saved_action_open && app.face_tab.saved_delete_key.is_none() {
+                    app.face_tab.show_saved = false;
+                    app.set_status("已关闭已保存人脸列表");
+                }
+                return true;
+            }
+            _ => {}
+        }
     }
 
     // 当焦点在路径输入框且弹窗激活时，Up/Down/Enter/Esc 优先交给弹窗
