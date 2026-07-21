@@ -114,6 +114,25 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_face_delete_confirm_dialog(f, key);
     }
 
+    // ── SQL Tab 弹窗 ──
+    if app.current_tab == Tab::Sql {
+        if app.sql_tab.show_schema_list {
+            draw_sql_schema_list_popup(f, app);
+        }
+        if app.sql_tab.show_table_list {
+            draw_sql_table_list_popup(f, app);
+        }
+        if app.sql_tab.show_table_desc {
+            draw_sql_table_desc_popup(f, app);
+        }
+        if app.sql_tab.show_version {
+            draw_sql_version_popup(f, app);
+        }
+        if app.sql_tab.desc_input_active {
+            draw_sql_desc_input_popup(f, app);
+        }
+    }
+
     // 向量索引导航下拉菜单（浮在最顶层）
     if app.vector_tab.show_dropdown && !app.vector_tab.all_indices.is_empty() {
         if let Some(anchor) = vector_input_anchor {
@@ -192,7 +211,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Image => "F1上传 F2列出 :bucket/:key设置 ↑↓选路径 Enter确认 Esc取消 | ",
         Tab::Face => "F1提取 F3列表 F4保存 F5索引 F6导出 ↑↓选路径 Enter确认 Esc取消  ",
         Tab::Vector => "F1刷新列表 F2/Enter查看详情 ↓/Tab展开菜单 ↑↓导航 Esc关闭 | ",
-        Tab::Sql => "F5执行 Ctrl+L清空 | ",
+        Tab::Sql => "F1列表Schema F2列表表 F3描述表 F4版本 F5执行 Ctrl+L清空 | ",
     };
     let help_span = Span::styled(help_text, Style::default().fg(Color::Gray));
 
@@ -729,6 +748,274 @@ fn draw_sql_tab(f: &mut Frame, app: &mut App, area: Rect) {
         .block(Block::default().borders(Borders::ALL).title(format!("查询结果（{} 行）", app.sql_tab.rows.len())));
 
     f.render_widget(table, chunks[2]);
+}
+
+// ── SQL Tab 弹窗 ──────────────────────────────────
+
+/// 绘制 Schema 列表弹出窗
+fn draw_sql_schema_list_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 40.min(area.width.saturating_sub(4));
+    let count = app.sql_tab.schemas.len();
+    let height = (count as u16).min(20).max(5) + 3;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let title = format!("Schema 列表 (共 {} 个)  ↑↓导航 Enter选择 Esc关闭", count);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let visible = inner.height as usize;
+    let start = app.sql_tab.schema_list_scroll;
+    for i in 0..visible.min(count.saturating_sub(start)) {
+        let idx = start + i;
+        if idx >= count {
+            break;
+        }
+        let schema = &app.sql_tab.schemas[idx];
+        let is_selected = idx == app.sql_tab.schema_list_scroll;
+        let style = if is_selected {
+            Style::default().bg(Color::Green).fg(Color::Black)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let prefix = if is_selected { "▶ " } else { "  " };
+        let line = Paragraph::new(Line::from(Span::styled(
+            format!("{}{}", prefix, schema),
+            style,
+        )));
+        f.render_widget(line, Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        });
+    }
+}
+
+/// 绘制表列表弹出窗
+fn draw_sql_table_list_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 50.min(area.width.saturating_sub(4));
+    let count = app.sql_tab.tables.len();
+    let height = (count as u16).min(20).max(5) + 3;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let schema = &app.sql_tab.schema.value;
+    let title = format!("Schema '{}' 表列表 (共 {} 张)  ↑↓导航 Enter查看 Esc关闭", schema, count);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let visible = inner.height as usize;
+    let start = app.sql_tab.table_list_scroll;
+    for i in 0..visible.min(count.saturating_sub(start)) {
+        let idx = start + i;
+        if idx >= count {
+            break;
+        }
+        let table = &app.sql_tab.tables[idx];
+        let is_selected = idx == app.sql_tab.table_list_scroll;
+        let style = if is_selected {
+            Style::default().bg(Color::Green).fg(Color::Black)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let prefix = if is_selected { "▶ " } else { "  " };
+        let line = Paragraph::new(Line::from(Span::styled(
+            format!("{}{}", prefix, table),
+            style,
+        )));
+        f.render_widget(line, Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        });
+    }
+}
+
+/// 绘制表结构描述弹出窗
+fn draw_sql_table_desc_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 60.min(area.width.saturating_sub(4));
+    let count = app.sql_tab.table_columns.len();
+    let height = (count as u16 + 3).min(25).max(8) + 3;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let title = format!(
+        "表结构 (共 {} 列)  ↑↓导航 Esc关闭",
+        count
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    // 表头
+    let header = Row::new(vec![
+        Cell::from("列ID"),
+        Cell::from("列名"),
+        Cell::from("类型"),
+        Cell::from("注释"),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
+
+    let visible = inner.height.saturating_sub(2) as usize; // 预留表头+分隔
+    let start = app.sql_tab.desc_scroll;
+    let rows: Vec<Row> = app.sql_tab.table_columns
+        .iter()
+        .skip(start)
+        .take(visible)
+        .map(|c| {
+            Row::new(vec![
+                Cell::from(c.column_id.to_string()),
+                Cell::from(c.column_name.clone()),
+                Cell::from(c.column_type.clone()),
+                Cell::from(if c.comment.is_empty() { "-".to_string() } else { c.comment.clone() }),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(rows, [
+        Constraint::Length(8),
+        Constraint::Length(18),
+        Constraint::Length(12),
+        Constraint::Min(10),
+    ])
+    .header(header);
+
+    f.render_widget(table, inner);
+}
+
+/// 绘制版本信息弹出窗
+fn draw_sql_version_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = 8;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("版本信息")
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("laoflchdb 版本: ", Style::default().fg(Color::Cyan)),
+            Span::raw(&app.sql_tab.server_version),
+        ]),
+        Line::from(vec![
+            Span::styled("构建信息: ", Style::default().fg(Color::Cyan)),
+            Span::raw(&app.sql_tab.server_build_info),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("lsql 客户端: ", Style::default().fg(Color::Cyan)),
+            Span::raw(env!("CARGO_PKG_VERSION")),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::raw("关闭"),
+        ]),
+    ];
+
+    let p = Paragraph::new(lines).alignment(Alignment::Left);
+    f.render_widget(p, inner);
+}
+
+/// 绘制描述表名输入弹窗
+fn draw_sql_desc_input_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = 5;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("描述表结构")
+        .style(Style::default().bg(Color::Black).fg(Color::Yellow));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let input = &app.sql_tab.desc_input;
+    let p = Paragraph::new(input.value.clone())
+        .block(Block::default().borders(Borders::ALL).title("表名"))
+        .alignment(Alignment::Left);
+    f.render_widget(p, Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 3,
+    });
+
+    // 光标
+    let cursor_x = inner.x + 1 + input.value.chars().take(input.cursor).map(|c| c.len_utf8()).count() as u16;
+    let cursor_y = inner.y + 1;
+    if cursor_x < inner.x + inner.width {
+        f.set_cursor(cursor_x, cursor_y);
+    }
 }
 
 // ── 通用辅助 ──────────────────────────────────────

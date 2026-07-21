@@ -401,6 +401,15 @@ impl Default for VectorTabState {
     }
 }
 
+/// 表列信息
+#[derive(Debug, Clone)]
+pub struct TableColumnInfo {
+    pub column_id: u64,
+    pub column_name: String,
+    pub column_type: String,
+    pub comment: String,
+}
+
 /// SQL Tab 状态
 #[derive(Debug, Clone)]
 pub struct SqlTabState {
@@ -410,6 +419,23 @@ pub struct SqlTabState {
     pub rows: Vec<Vec<String>>,
     pub list_scroll: usize,
     pub focus_sql: bool,
+    // 元数据查询
+    pub schemas: Vec<String>,
+    pub tables: Vec<String>,
+    pub table_columns: Vec<TableColumnInfo>,
+    pub server_version: String,
+    pub server_build_info: String,
+    // 弹窗显示
+    pub show_schema_list: bool,
+    pub show_table_list: bool,
+    pub show_table_desc: bool,
+    pub show_version: bool,
+    pub schema_list_scroll: usize,
+    pub table_list_scroll: usize,
+    pub desc_scroll: usize,
+    // 描述表名的输入弹窗
+    pub desc_input_active: bool,
+    pub desc_input: InputState,
 }
 
 /// 路径补全下拉菜单状态
@@ -514,6 +540,20 @@ impl Default for SqlTabState {
             rows: Vec::new(),
             list_scroll: 0,
             focus_sql: true,
+            schemas: Vec::new(),
+            tables: Vec::new(),
+            table_columns: Vec::new(),
+            server_version: String::new(),
+            server_build_info: String::new(),
+            show_schema_list: false,
+            show_table_list: false,
+            show_table_desc: false,
+            show_version: false,
+            schema_list_scroll: 0,
+            table_list_scroll: 0,
+            desc_scroll: 0,
+            desc_input_active: false,
+            desc_input: InputState::new(),
         }
     }
 }

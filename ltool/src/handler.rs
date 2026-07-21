@@ -1056,9 +1056,185 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
 
 /// 处理 SQL Tab 的事件
 async fn handle_sql_tab(app: &mut App, event: KeyEvent) -> bool {
+    // ── 弹窗优先处理 ──
+
+    // Schema 列表弹窗
+    if app.sql_tab.show_schema_list {
+        match event.code {
+            KeyCode::Esc => {
+                app.sql_tab.show_schema_list = false;
+                return true;
+            }
+            KeyCode::Enter => {
+                // 选中 schema 后自动填入 schema 输入框
+                if let Some(schema) = app.sql_tab.schemas.get(app.sql_tab.schema_list_scroll) {
+                    app.sql_tab.schema.set_value(schema);
+                }
+                app.sql_tab.show_schema_list = false;
+                app.set_status(format!("已切换到 Schema '{}'", app.sql_tab.schema.value));
+                return true;
+            }
+            KeyCode::Up => {
+                if app.sql_tab.schema_list_scroll > 0 {
+                    app.sql_tab.schema_list_scroll -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = app.sql_tab.schemas.len().saturating_sub(1);
+                if app.sql_tab.schema_list_scroll < max {
+                    app.sql_tab.schema_list_scroll += 1;
+                }
+                return true;
+            }
+            KeyCode::PageUp => {
+                app.sql_tab.schema_list_scroll = app.sql_tab.schema_list_scroll.saturating_sub(10);
+                return true;
+            }
+            KeyCode::PageDown => {
+                let max = app.sql_tab.schemas.len().saturating_sub(1);
+                app.sql_tab.schema_list_scroll = (app.sql_tab.schema_list_scroll + 10).min(max);
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 表列表弹窗
+    if app.sql_tab.show_table_list {
+        match event.code {
+            KeyCode::Esc => {
+                app.sql_tab.show_table_list = false;
+                return true;
+            }
+            KeyCode::Enter => {
+                if let Some(table) = app.sql_tab.tables.get(app.sql_tab.table_list_scroll) {
+                    let table_name = table.clone();
+                    // 关闭表列表并打开表描述
+                    app.sql_tab.show_table_list = false;
+                    app.sql_tab.desc_input_active = true;
+                    app.sql_tab.desc_input.set_value(&table_name);
+                    let _ = crate::tab_sql::describe_table(app, &table_name).await;
+                }
+                return true;
+            }
+            KeyCode::Up => {
+                if app.sql_tab.table_list_scroll > 0 {
+                    app.sql_tab.table_list_scroll -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = app.sql_tab.tables.len().saturating_sub(1);
+                if app.sql_tab.table_list_scroll < max {
+                    app.sql_tab.table_list_scroll += 1;
+                }
+                return true;
+            }
+            KeyCode::PageUp => {
+                app.sql_tab.table_list_scroll = app.sql_tab.table_list_scroll.saturating_sub(10);
+                return true;
+            }
+            KeyCode::PageDown => {
+                let max = app.sql_tab.tables.len().saturating_sub(1);
+                app.sql_tab.table_list_scroll = (app.sql_tab.table_list_scroll + 10).min(max);
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 表结构描述弹窗
+    if app.sql_tab.show_table_desc {
+        match event.code {
+            KeyCode::Esc => {
+                app.sql_tab.show_table_desc = false;
+                return true;
+            }
+            KeyCode::Up => {
+                if app.sql_tab.desc_scroll > 0 {
+                    app.sql_tab.desc_scroll -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = app.sql_tab.table_columns.len().saturating_sub(1);
+                if app.sql_tab.desc_scroll < max {
+                    app.sql_tab.desc_scroll += 1;
+                }
+                return true;
+            }
+            KeyCode::PageUp => {
+                app.sql_tab.desc_scroll = app.sql_tab.desc_scroll.saturating_sub(10);
+                return true;
+            }
+            KeyCode::PageDown => {
+                let max = app.sql_tab.table_columns.len().saturating_sub(1);
+                app.sql_tab.desc_scroll = (app.sql_tab.desc_scroll + 10).min(max);
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 版本信息弹窗
+    if app.sql_tab.show_version {
+        match event.code {
+            KeyCode::Esc => {
+                app.sql_tab.show_version = false;
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 描述表名输入弹窗
+    if app.sql_tab.desc_input_active {
+        match event.code {
+            KeyCode::Esc => {
+                app.sql_tab.desc_input_active = false;
+                return true;
+            }
+            KeyCode::Enter => {
+                let table_name = app.sql_tab.desc_input.value.trim().to_string();
+                app.sql_tab.desc_input_active = false;
+                if !table_name.is_empty() {
+                    let _ = crate::tab_sql::describe_table(app, &table_name).await;
+                }
+                return true;
+            }
+            _ => {
+                return handle_input_event(&mut app.sql_tab.desc_input, event);
+            }
+        }
+    }
+
+    // ── 普通快捷键 ──
     // Ctrl+L 清空
     if event.code == KeyCode::Char('l') && event.modifiers.contains(KeyModifiers::CONTROL) {
         crate::tab_sql::clear_sql(app);
+        return true;
+    }
+    // F1: 列出 Schema
+    if event.code == KeyCode::F(1) {
+        let _ = crate::tab_sql::list_schemas(app).await;
+        return true;
+    }
+    // F2: 列出表
+    if event.code == KeyCode::F(2) {
+        let _ = crate::tab_sql::list_tables(app).await;
+        return true;
+    }
+    // F3: 描述表结构（打开输入弹窗）
+    if event.code == KeyCode::F(3) {
+        app.sql_tab.desc_input_active = true;
+        app.sql_tab.desc_input = crate::app::InputState::new();
+        app.set_status("请输入表名后按 Enter");
+        return true;
+    }
+    // F4: 版本信息
+    if event.code == KeyCode::F(4) {
+        let _ = crate::tab_sql::get_version(app).await;
         return true;
     }
     // F5 或 Enter 执行
