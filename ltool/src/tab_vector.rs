@@ -280,3 +280,85 @@ pub async fn clear_embeddings(app: &mut App) -> Result<()> {
     app.set_status(format!("已清空索引 {} 的全部 {} 条向量", index_name, total));
     Ok(())
 }
+
+/// 分析当前索引的 RocksDB 和 HNSW 一致性
+pub async fn analyze_consistency(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+    let index_name = app.vector_tab.index_name.value.clone();
+    if index_name.is_empty() {
+        app.set_error("请先输入索引名称");
+        return Ok(());
+    }
+
+    use laoflchdb_embedding_service_proto::proto::AnalyzeConsistencyRequest;
+    let req = AnalyzeConsistencyRequest { index_name: index_name.clone() };
+    app.set_status(format!("正在分析索引 {} 一致性...", index_name));
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(req);
+        clients.embedding.analyze_consistency(auth_req)
+            .await
+            .map_err(|e| anyhow!("一致性分析失败: {}", e))?
+            .into_inner()
+    };
+    if !resp.success {
+        app.set_error(format!("一致性分析失败: {}", resp.message));
+        return Ok(());
+    }
+
+    let mut lines = Vec::new();
+    lines.push(format!("HNSW 元素数: {}", resp.hnsw_count));
+    lines.push(format!("RocksDB 元素数: {}", resp.rocksdb_count));
+    if resp.only_in_hnsw.is_empty() && resp.only_in_rocksdb.is_empty() {
+        lines.push("状态: 完全一致".to_string());
+    } else {
+        if !resp.only_in_hnsw.is_empty() {
+            lines.push(format!("仅在 HNSW: {:?}", resp.only_in_hnsw));
+        }
+        if !resp.only_in_rocksdb.is_empty() {
+            lines.push(format!("仅在 RocksDB: {:?}", resp.only_in_rocksdb));
+        }
+        lines.push("状态: 不一致".to_string());
+    }
+    app.vector_tab.consistency_text = lines;
+    app.set_status(format!("索引 {} 一致性分析完成", index_name));
+    Ok(())
+}
+
+/// 从 RocksDB 重建当前索引的 HNSW 索引
+pub async fn rebuild_index(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+    let index_name = app.vector_tab.index_name.value.clone();
+    if index_name.is_empty() {
+        app.set_error("请先输入索引名称");
+        return Ok(());
+    }
+
+    use laoflchdb_embedding_service_proto::proto::RebuildIndexFromRocksDbRequest;
+    let req = RebuildIndexFromRocksDbRequest { index_name: index_name.clone() };
+    app.set_status(format!("正在重建索引 {}...", index_name));
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(req);
+        clients.embedding.rebuild_index_from_rocks_db(auth_req)
+            .await
+            .map_err(|e| anyhow!("重建索引失败: {}", e))?
+            .into_inner()
+    };
+    if !resp.success {
+        app.set_error(format!("重建索引失败: {}", resp.message));
+        return Ok(());
+    }
+
+    let mut lines = Vec::new();
+    lines.push(format!("重建完成: {} 条向量", resp.rebuilt_count));
+    app.vector_tab.rebuild_text = lines;
+    // 重建后刷新索引信息
+    let _ = get_index_info(app).await;
+    app.set_status(format!("索引 {} 重建成功，共 {} 条", index_name, resp.rebuilt_count));
+    Ok(())
+}

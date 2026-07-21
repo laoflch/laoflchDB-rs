@@ -414,6 +414,11 @@ pub struct VectorTabState {
     pub vector_detail_scroll: usize,
     /// 当前查看的向量数据
     pub vector_detail_embedding: Vec<f32>,
+    /// ── 索引一致性/重建结果 ──
+    /// 一致性分析结果文本
+    pub consistency_text: Vec<String>,
+    /// 重建结果文本
+    pub rebuild_text: Vec<String>,
 }
 
 impl Default for VectorTabState {
@@ -432,6 +437,8 @@ impl Default for VectorTabState {
             show_vector_detail: false,
             vector_detail_scroll: 0,
             vector_detail_embedding: Vec::new(),
+            consistency_text: Vec::new(),
+            rebuild_text: Vec::new(),
         }
     }
 }

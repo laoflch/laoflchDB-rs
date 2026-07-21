@@ -1092,6 +1092,8 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
     // F2: 获取当前索引名的详细信息
     // F3: 列出当前索引的所有向量条目
     // F4: 清空当前索引的所有向量
+    // F5: 一致性分析
+    // F6: 从 RocksDB 重建索引
     match event.code {
         KeyCode::F(1) => {
             let _ = crate::tab_vector::get_all_indices(app).await;
@@ -1099,6 +1101,22 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
         }
         KeyCode::F(2) => {
             let _ = crate::tab_vector::get_index_info(app).await;
+            return true;
+        }
+        KeyCode::F(3) => {
+            let _ = crate::tab_vector::list_embeddings(app).await;
+            return true;
+        }
+        KeyCode::F(4) => {
+            let _ = crate::tab_vector::clear_embeddings(app).await;
+            return true;
+        }
+        KeyCode::F(5) => {
+            let _ = crate::tab_vector::analyze_consistency(app).await;
+            return true;
+        }
+        KeyCode::F(6) => {
+            let _ = crate::tab_vector::rebuild_index(app).await;
             return true;
         }
         // Enter: 下拉菜单选中 / 条目操作弹窗 / 查询索引信息

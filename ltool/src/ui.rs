@@ -245,7 +245,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     let help_text = match app.current_tab {
         Tab::Image => "F1上传 F2列出 :bucket/:key设置 ↑↓选路径 Enter确认 Esc取消 | ",
         Tab::Face => "F1检测 F3列表 F6导出 ↑↓选中人脸 Enter保存并索引 Esc取消 | ",
-        Tab::Vector => "F1刷新列表 F2/Enter查看详情 F3列出条目 F4清空 Tab展开菜单 ↑↓条目导航 Enter操作 Esc关闭 | ",
+        Tab::Vector => "F1刷新列表 F2/Enter查看详情 F3列出条目 F4清空 F5一致性 F6重建 Tab展开菜单 ↑↓条目导航 Enter操作 Esc关闭 | ",
         Tab::Sql => "F1列表Schema F2列表表 F3描述表 F4版本 F5执行 Ctrl+L清空 | ",
         Tab::Index => "F1列表索引 F2查看详情 F3统计 F4搜索 Enter查看详情 | ",
     };
@@ -686,10 +686,16 @@ fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
 
     // ── 顶部：索引名称输入框 ─────────────────────
     let input_area = chunks[0];
-    let hint = "索引名称（F1 刷新列表，F2/Enter 查看详情，F3 列出条目，F4 清空）";
+    let hint = "索引名称（F1 刷新列表，F2/Enter 查看详情，F3 列出条目，F4 清空，F5 一致性，F6 重建）";
     draw_input_box(f, input_area, hint, &app.vector_tab.index_name, true);
 
-    // ── 中部：索引信息详情 ─────────────────────
+    // ── 中部：左右分栏 ── 左：索引信息详情 | 右：状态检查框 ─────
+    let mid_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(vec![Constraint::Ratio(1, 2), Constraint::Ratio(1, 2)])
+        .split(chunks[1]);
+
+    // ── 左：索引信息详情 ──────────────────────────
     let info = if !app.vector_tab.index_name.value.is_empty() {
         app.vector_tab.all_indices.iter().find(|i| i.name == app.vector_tab.index_name.value)
     } else {
@@ -758,7 +764,54 @@ fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
         .header(header)
         .block(Block::default().borders(Borders::ALL).title("索引信息"));
 
-    f.render_widget(table, chunks[1]);
+    f.render_widget(table, mid_chunks[0]);
+
+    // ── 右：索引状态检查框 ────────────────────────
+    let mut status_rows: Vec<Row> = Vec::new();
+
+    // 一致性结果
+    if !app.vector_tab.consistency_text.is_empty() {
+        status_rows.push(
+            Row::new(vec![Cell::from("一致性分析")])
+                .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)),
+        );
+        for line in &app.vector_tab.consistency_text {
+            let style = if line.starts_with("状态: 完全一致") {
+                Style::default().fg(Color::Green)
+            } else if line.starts_with("状态: 不一致") {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default()
+            };
+            status_rows.push(Row::new(vec![Cell::from(line.as_str())]).style(style));
+        }
+    }
+
+    // 重建结果
+    if !app.vector_tab.rebuild_text.is_empty() {
+        if !app.vector_tab.consistency_text.is_empty() {
+            status_rows.push(Row::new(vec![Cell::from("")])); // 分隔空行
+        }
+        status_rows.push(
+            Row::new(vec![Cell::from("重建结果")])
+                .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan)),
+        );
+        for line in &app.vector_tab.rebuild_text {
+            status_rows.push(Row::new(vec![Cell::from(line.as_str())]).style(Style::default().fg(Color::Yellow)));
+        }
+    }
+
+    // 空状态提示
+    if status_rows.is_empty() {
+        status_rows.push(Row::new(vec![
+            Cell::from("按 F5 进行一致性分析\n按 F6 从 RocksDB 重建索引"),
+        ]));
+    }
+
+    let status_table = Table::new(status_rows, [Constraint::Min(30)])
+        .block(Block::default().borders(Borders::ALL).title("索引状态"));
+
+    f.render_widget(status_table, mid_chunks[1]);
 
     // ── 下部：向量条目列表（始终存在） ─────────────
     let entries_area = chunks[2];
