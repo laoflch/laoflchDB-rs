@@ -3,21 +3,12 @@
 //! 提取人脸特征（Detect + Align + Embed）。
 //! F1 仅检测人脸不保存/索引，用户可在检测结果中选择人脸后通过菜单保存和索引。
 
-use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use anyhow::{anyhow, Result};
 use log::warn;
 
-use laoflchdb_face_service_proto::proto::{
-    ExtractFaceFeaturesRequest,
-};
-use laoflchdb_image_service_proto::proto::{
-    ListImagesRequest, UploadImageRequest, DeleteImageRequest,
-};
-use laoflchdb_embedding_service_proto::proto::{
-    DeleteEmbeddingRequest, InsertEmbeddingRequest,
-};
+use laoflchdb_face_service_proto::proto::ExtractFaceFeaturesRequest;
+use laoflchdb_image_service_proto::proto::{DeleteImageRequest, ListImagesRequest};
+use laoflchdb_embedding_service_proto::proto::DeleteEmbeddingRequest;
 
 use crate::app::App;
 
@@ -116,6 +107,9 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
 /// 插入前先搜索 face 索引，如果存在相同向量（cosine distance < 0.01），
 /// 则跳过保存/索引，显示已存在的 key 和 vector_id。
 /// 更新检测结果列表中的 saved_key 和 vector_id。
+///
+/// 改为调用 FaceService.ExtractFaceFeatures（save_aligned_images=true, index_embedding=true），
+/// 由服务端生成 face_ 前缀的 Snowflake ID 并保存图片和向量，确保 key 和 vector_id 一致。
 pub async fn save_and_index_face(app: &mut App) -> Result<()> {
     if !app.require_login() {
         return Ok(());
@@ -134,19 +128,12 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         return Ok(());
     }
 
-    let aligned_image = app.face_tab.aligned_images[face_idx].clone();
-    if aligned_image.is_empty() {
-        app.set_error("该人脸没有对齐图片数据，无法保存");
-        return Ok(());
-    }
-
     let embedding = app.face_tab.embeddings.get(face_idx).cloned().unwrap_or_default();
     if embedding.is_empty() {
         app.set_error("该人脸没有 embedding 数据，无法索引");
         return Ok(());
     }
 
-    let bucket = app.face_tab.bucket.value.clone();
     let face_num = face_idx + 1;
 
     // ── 1. 先搜索 face 索引，检查是否已存在相同向量 ──
@@ -186,78 +173,61 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         }
     }
 
-    // ── 2. 上传对齐图片到 image_service ──
+    // ── 2. 重新读取原始图片，调用 ExtractFaceFeatures 保存并索引 ──
+    let file_path = app.face_tab.file_path.value.clone();
+    if file_path.is_empty() {
+        app.set_error("原始图片路径丢失，请重新检测人脸");
+        return Ok(());
+    }
+
+    let image_data = std::fs::read(&file_path).map_err(|e| anyhow!("读取原始图片失败: {}", e))?;
+    let det_threshold: f32 = app.face_tab.det_threshold.value.parse().unwrap_or(0.5);
+    let max_faces: i32 = app.face_tab.max_faces.value.parse().unwrap_or(0);
+    let image_bucket = app.face_tab.bucket.value.clone();
+
     app.set_status(format!("正在保存并索引人脸 #{}...", face_num));
 
-    let upload_req = UploadImageRequest {
-        bucket: bucket.clone(),
-        key: String::new(), // 自动生成 key
-        data: aligned_image,
-        content_type: "image/jpeg".to_string(),
-        metadata: HashMap::new(),
-        name: String::new(),
+    let extract_req = ExtractFaceFeaturesRequest {
+        image_data,
+        det_threshold,
+        max_faces,
+        save_aligned_images: true,
+        image_bucket,
+        return_aligned_images: false,
+        index_embedding: true,
     };
 
-    let upload_resp = {
+    let extract_resp = {
         let clients = app.clients.as_mut().unwrap();
-        let auth_req = clients.auth_request(upload_req);
+        let auth_req = clients.auth_request(extract_req);
         clients
-            .image
-            .upload_image(auth_req)
+            .face
+            .extract_face_features(auth_req)
             .await
-            .map_err(|e| anyhow!("上传人脸图片失败: {}", e))?
+            .map_err(|e| anyhow!("保存并索引人脸失败: {}", e))?
             .into_inner()
     };
 
-    if !upload_resp.success {
-        app.set_error(format!("上传人脸图片失败: {}", upload_resp.message));
+    if !extract_resp.success {
+        app.set_error(format!("保存并索引人脸失败: {}", extract_resp.message));
         return Ok(());
     }
 
-    let saved_key = upload_resp.key.clone();
-
-    // ── 3. 插入 embedding 到 embedding_service ──
-    let vector_id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let insert_req = InsertEmbeddingRequest {
-        index_name: "face".to_string(),
-        id: vector_id,
-        embedding,
-    };
-
-    let insert_resp = {
-        let clients = app.clients.as_mut().unwrap();
-        let auth_req = clients.auth_request(insert_req);
-        clients
-            .embedding
-            .insert_embedding(auth_req)
-            .await
-            .map_err(|e| anyhow!("插入向量失败: {}", e))?
-            .into_inner()
-    };
-
-    if !insert_resp.success {
-        app.set_error(format!("插入向量失败: {}", insert_resp.message));
-        // 尝试清理已上传的图片
-        let del_req = DeleteImageRequest {
-            bucket: bucket.clone(),
-            key: saved_key.clone(),
-        };
-        if let Ok(del_resp) = {
-            let clients = app.clients.as_mut().unwrap();
-            let auth_req = clients.auth_request(del_req);
-            clients.image.delete_image(auth_req).await
-        } {
-            if !del_resp.into_inner().success {
-                warn!("清理已上传图片失败: {}", saved_key);
-            }
-        }
+    // 提取对应人脸的 saved_key 和 vector_id
+    if face_idx >= extract_resp.faces.len() {
+        app.set_error(format!("服务端返回的人脸数量不足（期望第 {} 张，实际 {} 张）", face_num, extract_resp.faces.len()));
         return Ok(());
     }
 
-    // ── 4. 更新检测结果列表中的 saved_key 和 vector_id ──
+    let saved_key = extract_resp.faces[face_idx].saved_image_key.clone();
+    let vector_id = extract_resp.faces[face_idx].indexed_vector_id;
+
+    if saved_key.is_empty() {
+        app.set_error("保存人脸图片失败：服务端未返回 saved_image_key");
+        return Ok(());
+    }
+
+    // ── 3. 更新检测结果列表中的 saved_key 和 vector_id ──
     app.face_tab.faces[face_idx].3 = saved_key.clone();
     app.face_tab.faces[face_idx].4 = vector_id;
 

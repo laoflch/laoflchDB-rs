@@ -926,46 +926,130 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             Status::not_found(format!("索引不存在: {}", index_name))
         })?;
 
-        // 1. 清空 HNSW（重建新索引）
-        let new_index = HnswIndex::new(index_name.to_string(), Some(state.config.hnsw_config()?));
+        // 1. 创建新索引（空索引）
+        let new_index = Arc::new(HnswIndex::new(
+            index_name.to_string(),
+            Some(state.config.hnsw_config()?),
+        ));
 
-        // 2. 从 RocksDB 读取所有向量并插入新索引
+        // 2. 从 RocksDB 读取所有向量
         let table_name = format!("hnsw_{}", index_name);
         let start_key = b"v:".to_vec();
         let end_key = b"v:\xff".to_vec();
 
         let storage = self.storage.lock().await;
-        let all_entries = storage.scan_range(&table_name, &start_key, &end_key, None).map_err(|e| {
-            Status::internal(format!("扫描 RocksDB 失败: {}", e))
-        })?;
+        let all_entries = storage
+            .scan_range(&table_name, &start_key, &end_key, None)
+            .map_err(|e| Status::internal(format!("扫描 RocksDB 失败: {}", e)))?;
         drop(storage);
 
-        let mut rebuilt_count = 0u64;
-        for (key, value) in all_entries {
-            // 解析 id
-            let id_str = String::from_utf8_lossy(&key);
-            let id: u64 = id_str.strip_prefix("v:").and_then(|s| s.parse().ok()).unwrap_or(0);
+        let entry_count = all_entries.len();
+        log::info!("重建索引 [{}]: 从 RocksDB 读取了 {} 条向量", index_name, entry_count);
 
-            // 解析 embedding: f32 bytes -> bf16 vector
-            let embedding: Vec<f32> = value
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
-            let bf16_vec: Vec<anda_db_hnsw::half::bf16> = embedding.iter().map(|&v| anda_db_hnsw::half::bf16::from_f32(v)).collect();
+        // 3. 在 blocking 线程池中执行 CPU 密集的 vector 插入操作
+        let index_dim = state.config.dim;
+        let index_name_clone = index_name.to_string();
+        let new_index_clone = new_index.clone();
+        let total_entries = all_entries.len();
+        let rebuilt_count = tokio::task::spawn_blocking(move || {
+            let mut count = 0u64;
+            let mut last_log_ts = SystemTime::now();
+            
+            for (i, (key, value)) in all_entries.into_iter().enumerate() {
+                // 每 1000 条或每 5 秒输出一次进度日志
+                let now = SystemTime::now();
+                if i % 1000 == 0 || now.duration_since(last_log_ts).map(|d| d.as_secs() > 5).unwrap_or(true) {
+                    log::info!("重建索引 [{}]: 正在处理第 {}/{} 条向量", index_name_clone, i + 1, total_entries);
+                    last_log_ts = now;
+                }
 
-            // 插入到新索引
-            let ts = Self::unix_ms();
-            new_index.insert(id, bf16_vec, ts).map_err(|e| {
-                Status::internal(format!("插入 HNSW 失败 id={}: {}", id, e))
-            })?;
-            rebuilt_count += 1;
-        }
+                let id_str = String::from_utf8_lossy(&key);
+                let id: u64 = match id_str.strip_prefix("v:").and_then(|s| s.parse().ok()) {
+                    Some(parsed_id) => parsed_id,
+                    None => {
+                        log::warn!("重建索引: 跳过无效的 key: {:?}", key);
+                        continue;
+                    }
+                };
 
-        // 3. 替换旧索引
+                // 验证 value 长度是 4 的倍数（f32 的字节数）
+                if value.len() % 4 != 0 {
+                    log::warn!(
+                        "重建索引: 跳过无效的 value, id={}, value_len={} (不是 4 的倍数)",
+                        id,
+                        value.len()
+                    );
+                    continue;
+                }
+
+                let embedding: Vec<f32> = value
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+
+                // 验证维度
+                if embedding.len() != index_dim {
+                    log::warn!(
+                        "重建索引: 跳过维度不匹配的向量 id={}, expected={}, got={}",
+                        id,
+                        index_dim,
+                        embedding.len()
+                    );
+                    continue;
+                }
+
+                // 检查向量是否包含 NaN 或 Inf
+                if embedding.iter().any(|&v| !v.is_finite()) {
+                    log::warn!("重建索引: 跳过包含无效值的向量 id={}", id);
+                    continue;
+                }
+
+                let bf16_vec: Vec<anda_db_hnsw::half::bf16> = embedding
+                    .iter()
+                    .map(|&v| anda_db_hnsw::half::bf16::from_f32(v))
+                    .collect();
+
+                let ts = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                
+                match new_index_clone.insert(id, bf16_vec, ts) {
+                    Ok(_) => {
+                        count += 1;
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "重建索引: 插入失败 id={}, key_len={}, value_len={}, embedding_dim={}",
+                            id,
+                            key.len(),
+                            value.len(),
+                            embedding.len()
+                        );
+                        return Err(format!("插入 HNSW 失败 id={}: {}", id, e));
+                    }
+                }
+            }
+            log::info!("重建索引 [{}]: 完成处理所有 {} 条向量", index_name_clone, count);
+            Ok::<u64, String>(count)
+        })
+        .await
+        .map_err(|e| Status::internal(format!("重建线程异常: {}", e)))?
+        .map_err(|e| Status::internal(e))?;
+
+        log::info!("重建索引 [{}]: 插入完成，共 {} 条", index_name, rebuilt_count);
+
+        // 4. 替换旧索引（Arc 应只有一处引用，可直接 unwrap）
+        let new_index = Arc::try_unwrap(new_index).unwrap_or_else(|_| {
+            // 兜底：clone 一份
+            HnswIndex::new(index_name.to_string(), state.config.hnsw_config().ok())
+        });
         *state.index.write().await = new_index;
 
-        // 4. 保存快照
+        // 5. 保存快照
         let _ = self.save_snapshot_internal().await;
+
+        log::info!("重建索引 [{}] 完成", index_name);
 
         Ok(Response::new(RebuildIndexFromRocksDbResponse {
             success: true,

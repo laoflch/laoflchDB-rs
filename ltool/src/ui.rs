@@ -821,6 +821,7 @@ fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
 
     let entries_header = Row::new(vec![
         Cell::from("vector_id"),
+        Cell::from("维度"),
         Cell::from("向量值（前 10 维）"),
     ])
     .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
@@ -853,6 +854,7 @@ fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
             };
             Row::new(vec![
                 Cell::from(id.to_string()),
+                Cell::from(emb.len().to_string()),
                 Cell::from(preview),
             ])
             .style(style)
@@ -865,7 +867,7 @@ fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
         "向量条目（按 F3 列出当前索引的向量）".to_string()
     };
 
-    let entries_table = Table::new(entry_rows, [Constraint::Length(20), Constraint::Min(30)])
+    let entries_table = Table::new(entry_rows, [Constraint::Length(20), Constraint::Length(6), Constraint::Min(30)])
         .header(entries_header)
         .block(Block::default().borders(Borders::ALL).title(title));
 

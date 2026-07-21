@@ -340,14 +340,20 @@ pub async fn rebuild_index(app: &mut App) -> Result<()> {
 
     use laoflchdb_embedding_service_proto::proto::RebuildIndexFromRocksDbRequest;
     let req = RebuildIndexFromRocksDbRequest { index_name: index_name.clone() };
-    app.set_status(format!("正在重建索引 {}...", index_name));
+    app.set_status(format!("正在重建索引 {}...（可能较慢，请耐心等待）", index_name));
+
+    // 重建可能耗时较长，使用 5 分钟超时
     let resp = {
         let clients = app.clients.as_mut().unwrap();
-        let auth_req = clients.auth_request(req);
-        clients.embedding.rebuild_index_from_rocks_db(auth_req)
-            .await
-            .map_err(|e| anyhow!("重建索引失败: {}", e))?
-            .into_inner()
+        let mut auth_req = clients.auth_request(req);
+        auth_req.set_timeout(std::time::Duration::from_secs(300));
+        match clients.embedding.rebuild_index_from_rocks_db(auth_req).await {
+            Ok(resp) => resp.into_inner(),
+            Err(e) => {
+                app.set_error(format!("重建索引失败: {}", e));
+                return Ok(());
+            }
+        }
     };
     if !resp.success {
         app.set_error(format!("重建索引失败: {}", resp.message));
