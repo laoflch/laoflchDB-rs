@@ -1,6 +1,6 @@
 //! App 全局状态管理
 //!
-//! 包含 4 个 Tab 的状态、gRPC 客户端、登录状态、命令模式输入等。
+//! 包含 5 个 Tab 的状态、gRPC 客户端、登录状态、命令模式输入等。
 
 use crate::grpc_client::GrpcClients;
 
@@ -11,6 +11,7 @@ pub enum Tab {
     Face,
     Vector,
     Sql,
+    Index,
 }
 
 impl Tab {
@@ -21,26 +22,29 @@ impl Tab {
             Tab::Face => "2:人脸",
             Tab::Vector => "3:向量",
             Tab::Sql => "4:SQL",
+            Tab::Index => "5:索引",
         }
     }
 
-    /// Tab 在栏中的索引（0..4）
+    /// Tab 在栏中的索引（0..5）
     pub fn index(self) -> usize {
         match self {
             Tab::Image => 0,
             Tab::Face => 1,
             Tab::Vector => 2,
             Tab::Sql => 3,
+            Tab::Index => 4,
         }
     }
 
-    /// 按数字键 1..=4 切换 Tab
+    /// 按数字键 1..=5 切换 Tab
     pub fn from_index(i: usize) -> Option<Self> {
         match i {
             0 => Some(Tab::Image),
             1 => Some(Tab::Face),
             2 => Some(Tab::Vector),
             3 => Some(Tab::Sql),
+            4 => Some(Tab::Index),
             _ => None,
         }
     }
@@ -558,6 +562,103 @@ impl Default for SqlTabState {
     }
 }
 
+/// 索引 Tab 状态
+///
+/// 用于访问和管理全文索引服务（Tantivy）。
+#[derive(Debug, Clone)]
+pub struct IndexTabState {
+    /// 索引名称输入框
+    pub index_name: InputState,
+    /// 所有索引的列表
+    pub all_indices: Vec<String>,
+    /// 当前索引的元数据
+    pub index_meta: Option<FullTextIndexMeta>,
+    /// 当前索引的字段列表
+    pub index_fields: Vec<FullTextFieldInfo>,
+    /// 索引统计信息
+    pub index_stats: Option<FullTextIndexStats>,
+    /// 搜索结果
+    pub search_results: Vec<FullTextSearchResult>,
+    /// 显示索引列表弹窗
+    pub show_index_list: bool,
+    /// 显示索引详情弹窗
+    pub show_index_detail: bool,
+    /// 显示索引统计弹窗
+    pub show_index_stats: bool,
+    /// 显示搜索结果弹窗
+    pub show_search_results: bool,
+    /// 搜索查询输入弹窗
+    pub search_input_active: bool,
+    /// 搜索查询输入
+    pub search_input: InputState,
+    /// 搜索限制
+    pub search_limit: InputState,
+    /// 索引列表滚动
+    pub list_scroll: usize,
+    /// 详情滚动
+    pub detail_scroll: usize,
+    /// 搜索结果滚动
+    pub search_scroll: usize,
+    /// 搜索结果选中
+    pub search_selected: Option<usize>,
+}
+
+/// 全文索引元数据
+#[derive(Debug, Clone)]
+pub struct FullTextIndexMeta {
+    pub index_id: u64,
+    pub index_name: String,
+    pub column_count: u64,
+    pub comment: String,
+}
+
+/// 全文索引字段信息
+#[derive(Debug, Clone)]
+pub struct FullTextFieldInfo {
+    pub column_id: u64,
+    pub column_name: String,
+    pub column_type: String,
+    pub comment: String,
+}
+
+/// 全文索引统计信息
+#[derive(Debug, Clone)]
+pub struct FullTextIndexStats {
+    pub total_indices: u64,
+    pub index_names: Vec<String>,
+}
+
+/// 全文索引搜索结果
+#[derive(Debug, Clone)]
+pub struct FullTextSearchResult {
+    pub doc_id: String,
+    pub score: f64,
+}
+
+impl Default for IndexTabState {
+    fn default() -> Self {
+        Self {
+            index_name: InputState::new(),
+            all_indices: Vec::new(),
+            index_meta: None,
+            index_fields: Vec::new(),
+            index_stats: None,
+            search_results: Vec::new(),
+            show_index_list: false,
+            show_index_detail: false,
+            show_index_stats: false,
+            show_search_results: false,
+            search_input_active: false,
+            search_input: InputState::new(),
+            search_limit: InputState::with_value("10"),
+            list_scroll: 0,
+            detail_scroll: 0,
+            search_scroll: 0,
+            search_selected: None,
+        }
+    }
+}
+
 /// 命令模式状态
 #[derive(Debug, Clone)]
 pub struct CommandMode {
@@ -589,6 +690,7 @@ pub struct App {
     pub face_tab: FaceTabState,
     pub vector_tab: VectorTabState,
     pub sql_tab: SqlTabState,
+    pub index_tab: IndexTabState,
     pub command_mode: CommandMode,
 }
 
@@ -601,13 +703,14 @@ impl App {
             username,
             password,
             logged_in: false,
-            status_message: "ltool - LaoflchDB TUI 客户端，Alt+1~4 切换 Tab，Ctrl+Q 退出".to_string(),
+            status_message: "ltool - LaoflchDB TUI 客户端，Alt+1~5 切换 Tab，Ctrl+Q 退出".to_string(),
             status_is_error: false,
             should_quit: false,
             image_tab: ImageTabState::default(),
             face_tab: FaceTabState::default(),
             vector_tab: VectorTabState::default(),
             sql_tab: SqlTabState::default(),
+            index_tab: IndexTabState::default(),
             command_mode: CommandMode::default(),
         }
     }
@@ -631,7 +734,8 @@ impl App {
             Tab::Image => Tab::Face,
             Tab::Face => Tab::Vector,
             Tab::Vector => Tab::Sql,
-            Tab::Sql => Tab::Image,
+            Tab::Sql => Tab::Index,
+            Tab::Index => Tab::Image,
         };
     }
 
@@ -639,10 +743,11 @@ impl App {
     pub fn prev_tab(&mut self) {
         self.clear_image_tab_popups();
         self.current_tab = match self.current_tab {
-            Tab::Image => Tab::Sql,
+            Tab::Image => Tab::Index,
             Tab::Face => Tab::Image,
             Tab::Vector => Tab::Face,
             Tab::Sql => Tab::Vector,
+            Tab::Index => Tab::Sql,
         };
     }
 

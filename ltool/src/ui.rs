@@ -27,25 +27,36 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let image_path_anchor: Option<Rect>;
     let face_path_anchor: Option<Rect>;
     let vector_input_anchor: Option<Rect>;
+    let index_input_anchor: Option<Rect>;
 
     match app.current_tab {
         Tab::Image => {
             image_path_anchor = draw_image_tab(f, app, chunks[1]);
             face_path_anchor = None;
             vector_input_anchor = None;
+            index_input_anchor = None;
         }
         Tab::Face => {
             face_path_anchor = draw_face_tab(f, app, chunks[1]);
             image_path_anchor = None;
             vector_input_anchor = None;
+            index_input_anchor = None;
         }
         Tab::Vector => {
             vector_input_anchor = Some(draw_vector_tab(f, app, chunks[1]));
             image_path_anchor = None;
             face_path_anchor = None;
+            index_input_anchor = None;
         }
         Tab::Sql => {
             draw_sql_tab(f, app, chunks[1]);
+            image_path_anchor = None;
+            face_path_anchor = None;
+            vector_input_anchor = None;
+            index_input_anchor = None;
+        }
+        Tab::Index => {
+            index_input_anchor = Some(draw_index_tab(f, app, chunks[1]));
             image_path_anchor = None;
             face_path_anchor = None;
             vector_input_anchor = None;
@@ -133,6 +144,25 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         }
     }
 
+    // ── 索引 Tab 弹窗 ──
+    if app.current_tab == Tab::Index {
+        if app.index_tab.show_index_list {
+            draw_index_list_popup(f, app);
+        }
+        if app.index_tab.show_index_detail {
+            draw_index_detail_popup(f, app);
+        }
+        if app.index_tab.show_index_stats {
+            draw_index_stats_popup(f, app);
+        }
+        if app.index_tab.show_search_results {
+            draw_index_search_results_popup(f, app);
+        }
+        if app.index_tab.search_input_active {
+            draw_index_search_input_popup(f, app);
+        }
+    }
+
     // 向量索引导航下拉菜单（浮在最顶层）
     if app.vector_tab.show_dropdown && !app.vector_tab.all_indices.is_empty() {
         if let Some(anchor) = vector_input_anchor {
@@ -143,7 +173,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 /// 绘制顶部 Tab 栏
 fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
-    let titles = vec!["1:图片", "2:人脸", "3:向量", "4:SQL"];
+    let titles = vec!["1:图片", "2:人脸", "3:向量", "4:SQL", "5:索引"];
     let selected = app.current_tab.index();
 
     let spans: Vec<Span> = titles
@@ -212,6 +242,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Face => "F1提取 F3列表 F4保存 F5索引 F6导出 ↑↓选路径 Enter确认 Esc取消  ",
         Tab::Vector => "F1刷新列表 F2/Enter查看详情 ↓/Tab展开菜单 ↑↓导航 Esc关闭 | ",
         Tab::Sql => "F1列表Schema F2列表表 F3描述表 F4版本 F5执行 Ctrl+L清空 | ",
+        Tab::Index => "F1列表索引 F2查看详情 F3统计 F4搜索 Enter查看详情 | ",
     };
     let help_span = Span::styled(help_text, Style::default().fg(Color::Gray));
 
@@ -751,6 +782,447 @@ fn draw_sql_tab(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 // ── SQL Tab 弹窗 ──────────────────────────────────
+
+/// 绘制 Index Tab
+fn draw_index_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .split(area);
+
+    // ── 顶部：索引名称输入框 ─────────────────────
+    let input_area = chunks[0];
+    draw_input_box(f, input_area, "索引名称（F1 列表 F2 详情 F3 统计 F4 搜索）", &app.index_tab.index_name, true);
+
+    // ── 下部：索引信息详情 ─────────────────────
+    let header = Row::new(vec![
+        Cell::from("属性"),
+        Cell::from("值"),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
+
+    let mut rows = Vec::new();
+
+    // 显示当前索引的元数据（如果有）
+    let index_name = app.index_tab.index_name.value.trim();
+    let meta = if !index_name.is_empty() {
+        app.index_tab.index_meta.as_ref()
+    } else {
+        None
+    };
+
+    if let Some(m) = meta {
+        rows.push(Row::new(vec![
+            Cell::from("索引ID"),
+            Cell::from(m.index_id.to_string()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("索引名称"),
+            Cell::from(m.index_name.clone()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("字段数"),
+            Cell::from(m.column_count.to_string()),
+        ]));
+        rows.push(Row::new(vec![
+            Cell::from("注释"),
+            Cell::from(if m.comment.is_empty() { "-".to_string() } else { m.comment.clone() }),
+        ]));
+    } else {
+        let hint = if app.index_tab.all_indices.is_empty() {
+            "按 F1 获取所有索引列表，或输入索引名称后按 Enter/F2 查看详情"
+        } else {
+            "按 F1 查看索引列表，或输入索引名称后按 Enter/F2 查看详情"
+        };
+        rows.push(Row::new(vec![
+            Cell::from(hint),
+            Cell::from(""),
+        ]));
+    }
+
+    let table = Table::new(rows, [Constraint::Length(16), Constraint::Min(20)])
+        .header(header)
+        .block(Block::default().borders(Borders::ALL).title("索引信息"));
+
+    f.render_widget(table, chunks[1]);
+
+    input_area
+}
+
+/// 绘制索引列表弹出窗
+fn draw_index_list_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 40.min(area.width.saturating_sub(4));
+    let count = app.index_tab.all_indices.len();
+    let height = (count as u16).min(20).max(5) + 3;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let title = format!("索引列表 (共 {} 个)  ↑↓导航 Enter查看详情 Esc关闭", count);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let visible = inner.height as usize;
+    let start = app.index_tab.list_scroll;
+    for i in 0..visible.min(count.saturating_sub(start)) {
+        let idx = start + i;
+        if idx >= count {
+            break;
+        }
+        let name = &app.index_tab.all_indices[idx];
+        let is_selected = idx == app.index_tab.list_scroll;
+        let style = if is_selected {
+            Style::default().bg(Color::Green).fg(Color::Black)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let prefix = if is_selected { "▶ " } else { "  " };
+        let line = Paragraph::new(Line::from(Span::styled(
+            format!("{}{}", prefix, name),
+            style,
+        )));
+        f.render_widget(line, Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        });
+    }
+}
+
+/// 绘制索引详情弹出窗（元数据 + 字段列表）
+fn draw_index_detail_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 60.min(area.width.saturating_sub(4));
+    let count = app.index_tab.index_fields.len();
+    let height = (count as u16 + 3).min(25).max(8) + 3;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let title = format!(
+        "索引字段列表 (共 {} 个)  ↑↓导航 Esc关闭",
+        count
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    // 表头
+    let header = Row::new(vec![
+        Cell::from("列ID"),
+        Cell::from("列名"),
+        Cell::from("类型"),
+        Cell::from("注释"),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
+
+    let visible = inner.height.saturating_sub(2) as usize;
+    let start = app.index_tab.detail_scroll;
+    let rows: Vec<Row> = app.index_tab.index_fields
+        .iter()
+        .skip(start)
+        .take(visible)
+        .map(|c| {
+            Row::new(vec![
+                Cell::from(c.column_id.to_string()),
+                Cell::from(c.column_name.clone()),
+                Cell::from(c.column_type.clone()),
+                Cell::from(if c.comment.is_empty() { "-".to_string() } else { c.comment.clone() }),
+            ])
+        })
+        .collect();
+
+    let table = Table::new(rows, [
+        Constraint::Length(8),
+        Constraint::Length(18),
+        Constraint::Length(12),
+        Constraint::Min(10),
+    ])
+    .header(header);
+
+    f.render_widget(table, inner);
+}
+
+/// 绘制索引统计弹出窗
+fn draw_index_stats_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = 8;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("索引统计")
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let stats = &app.index_tab.index_stats;
+    let lines = if let Some(s) = stats {
+        let names = if s.index_names.is_empty() {
+            "无".to_string()
+        } else {
+            s.index_names.join(", ")
+        };
+        vec![
+            Line::from(vec![
+                Span::styled("索引总数: ", Style::default().fg(Color::Cyan)),
+                Span::raw(s.total_indices.to_string()),
+            ]),
+            Line::from(vec![
+                Span::styled("索引列表: ", Style::default().fg(Color::Cyan)),
+                Span::raw(names),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Span::raw("关闭"),
+            ]),
+        ]
+    } else {
+        vec![
+            Line::from("无统计数据"),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Span::raw("关闭"),
+            ]),
+        ]
+    };
+
+    let p = Paragraph::new(lines).alignment(Alignment::Left);
+    f.render_widget(p, inner);
+}
+
+/// 绘制搜索查询输入弹窗
+fn draw_index_search_input_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = 5;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("搜索索引")
+        .style(Style::default().bg(Color::Black).fg(Color::Yellow));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let input = &app.index_tab.search_input;
+    let p = Paragraph::new(input.value.clone())
+        .block(Block::default().borders(Borders::ALL).title("查询"))
+        .alignment(Alignment::Left);
+    f.render_widget(p, Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 3,
+    });
+
+    // 光标
+    let cursor_x = inner.x + 1 + input.value.chars().take(input.cursor).map(|c| c.len_utf8()).count() as u16;
+    let cursor_y = inner.y + 1;
+    if cursor_x < inner.x + inner.width {
+        f.set_cursor(cursor_x, cursor_y);
+    }
+}
+
+/// 绘制搜索结果弹出窗
+fn draw_index_search_results_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let results = &app.index_tab.search_results;
+    let total = results.len();
+    if total == 0 {
+        return;
+    }
+
+    const VISIBLE_RESULTS: usize = 5;
+    let result_rows = VISIBLE_RESULTS;
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = result_rows as u16 + 5;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let title = format!("搜索结果 ({}/{})", total, total);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(truncate_str(&title, dialog_area.width as usize - 2))
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let content_width = inner.width.saturating_sub(1);
+    let content_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: content_width,
+        height: inner.height,
+    };
+    let scrollbar_area = Rect {
+        x: inner.x + content_width,
+        y: inner.y,
+        width: 1,
+        height: inner.height,
+    };
+
+    // 表头
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled(" 文档ID", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled("分数", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    ]));
+    f.render_widget(header, Rect {
+        x: content_area.x,
+        y: content_area.y,
+        width: content_area.width,
+        height: 1,
+    });
+
+    // 分隔线
+    let sep = Paragraph::new(Line::from(Span::raw("─".repeat(content_area.width as usize))))
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(sep, Rect {
+        x: content_area.x,
+        y: content_area.y + 1,
+        width: content_area.width,
+        height: 1,
+    });
+
+    let result_area_y = content_area.y + 2;
+    let result_area_h = content_area.height.saturating_sub(3);
+    let visible = result_area_h as usize;
+
+    if let Some(sel) = app.index_tab.search_selected {
+        if sel < app.index_tab.search_scroll {
+            app.index_tab.search_scroll = sel;
+        } else if sel >= app.index_tab.search_scroll + visible {
+            app.index_tab.search_scroll = sel - visible + 1;
+        }
+    }
+    if visible >= total {
+        app.index_tab.search_scroll = 0;
+    } else if app.index_tab.search_scroll + visible > total {
+        app.index_tab.search_scroll = total.saturating_sub(visible);
+    }
+
+    let start = app.index_tab.search_scroll;
+    let end = (start + visible).min(total);
+
+    for (i, idx) in (start..end).enumerate() {
+        let result = &results[idx];
+        let row_y = result_area_y + i as u16;
+        if row_y >= content_area.y + content_area.height - 1 {
+            break;
+        }
+        let is_selected = app.index_tab.search_selected == Some(idx);
+        let row_style = if is_selected {
+            Style::default().bg(Color::Green).fg(Color::Black)
+        } else {
+            Style::default()
+        };
+        let row = Paragraph::new(Line::from(vec![
+            Span::raw(format!(" {}", result.doc_id)),
+            Span::raw("  "),
+            Span::styled(
+                format!("{:.4}", result.score),
+                if is_selected {
+                    Style::default().fg(Color::Black)
+                } else {
+                    Style::default().fg(Color::Yellow)
+                },
+            ),
+        ]))
+        .style(row_style);
+        f.render_widget(row, Rect {
+            x: content_area.x,
+            y: row_y,
+            width: content_area.width,
+            height: 1,
+        });
+    }
+
+    if total > visible {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .thumb_symbol("█")
+            .track_symbol(Some("░"))
+            .style(Style::default().fg(Color::DarkGray));
+        let mut state = ScrollbarState::new(total - visible + 1).position(app.index_tab.search_scroll);
+        f.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
+    }
+
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("↑/↓ ", Style::default().fg(Color::Cyan)),
+        Span::raw("选择  "),
+        Span::styled("PgUp/PgDn ", Style::default().fg(Color::Cyan)),
+        Span::raw("翻页  "),
+        Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw("关闭"),
+    ]))
+    .alignment(Alignment::Center);
+    let hint_y = content_area.y + content_area.height - 1;
+    f.render_widget(hint, Rect {
+        x: content_area.x,
+        y: hint_y,
+        width: content_area.width,
+        height: 1,
+    });
+}
 
 /// 绘制 Schema 列表弹出窗
 fn draw_sql_schema_list_popup(f: &mut Frame, app: &mut App) {

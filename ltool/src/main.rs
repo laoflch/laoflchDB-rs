@@ -1,6 +1,6 @@
 //! ltool - LaoflchDB TUI 客户端入口
 //!
-//! 基于 ratatui + crossterm，提供图片 / 人脸 / 向量 / SQL 四个 Tab。
+//! 基于 ratatui + crossterm，提供图片 / 人脸 / 向量 / SQL / 索引 五个 Tab。
 //! 通过 gRPC 连接 laoflchdb 服务（默认 127.0.0.1:19777）。
 
 mod app;
@@ -9,6 +9,7 @@ mod handler;
 mod path_complete;
 mod tab_face;
 mod tab_image;
+mod tab_index;
 mod tab_sql;
 mod tab_vector;
 mod ui;
@@ -18,7 +19,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use crossterm::event::{self, Event, MouseEventKind};
+use crossterm::event::{self, Event};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,

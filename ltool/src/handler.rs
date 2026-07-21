@@ -43,12 +43,13 @@ pub async fn handle_event(app: &mut App, event: KeyEvent) -> bool {
         Tab::Face => handle_face_tab(app, event).await,
         Tab::Vector => handle_vector_tab(app, event).await,
         Tab::Sql => handle_sql_tab(app, event).await,
+        Tab::Index => handle_index_tab(app, event).await,
     };
     if handled {
         return true;
     }
 
-    // 无弹窗激活时的全局快捷键：Alt+1~4 切换主 Tab
+    // 无弹窗激活时的全局快捷键：Alt+1~5 切换主 Tab
     // Tab 键留给各 Tab 内部做字段/焦点切换，不在这里做全局切换
     match event.code {
         KeyCode::Char('1') if event.modifiers.contains(KeyModifiers::ALT) => {
@@ -69,6 +70,11 @@ pub async fn handle_event(app: &mut App, event: KeyEvent) -> bool {
         KeyCode::Char('4') if event.modifiers.contains(KeyModifiers::ALT) => {
             app.clear_image_tab_popups();
             app.current_tab = Tab::Sql;
+            return true;
+        }
+        KeyCode::Char('5') if event.modifiers.contains(KeyModifiers::ALT) => {
+            app.clear_image_tab_popups();
+            app.current_tab = Tab::Index;
             return true;
         }
         _ => {}
@@ -1281,6 +1287,194 @@ async fn handle_sql_tab(app: &mut App, event: KeyEvent) -> bool {
         input.insert_char('\n');
         return true;
     }
+    handle_input_event(input, event)
+}
+
+/// 处理索引 Tab 的事件
+async fn handle_index_tab(app: &mut App, event: KeyEvent) -> bool {
+    // ── 弹窗优先处理 ──
+
+    // 索引列表弹窗
+    if app.index_tab.show_index_list {
+        match event.code {
+            KeyCode::Esc => {
+                app.index_tab.show_index_list = false;
+                return true;
+            }
+            KeyCode::Enter => {
+                if let Some(idx_name) = app.index_tab.all_indices.get(app.index_tab.list_scroll) {
+                    let name = idx_name.clone();
+                    app.index_tab.show_index_list = false;
+                    app.index_tab.index_name.set_value(&name);
+                    let _ = crate::tab_index::get_index_detail(app).await;
+                }
+                return true;
+            }
+            KeyCode::Up => {
+                if app.index_tab.list_scroll > 0 {
+                    app.index_tab.list_scroll -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = app.index_tab.all_indices.len().saturating_sub(1);
+                if app.index_tab.list_scroll < max {
+                    app.index_tab.list_scroll += 1;
+                }
+                return true;
+            }
+            KeyCode::PageUp => {
+                app.index_tab.list_scroll = app.index_tab.list_scroll.saturating_sub(10);
+                return true;
+            }
+            KeyCode::PageDown => {
+                let max = app.index_tab.all_indices.len().saturating_sub(1);
+                app.index_tab.list_scroll = (app.index_tab.list_scroll + 10).min(max);
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 索引详情弹窗
+    if app.index_tab.show_index_detail {
+        match event.code {
+            KeyCode::Esc => {
+                app.index_tab.show_index_detail = false;
+                return true;
+            }
+            KeyCode::Up => {
+                if app.index_tab.detail_scroll > 0 {
+                    app.index_tab.detail_scroll -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = app.index_tab.index_fields.len().saturating_sub(1);
+                if app.index_tab.detail_scroll < max {
+                    app.index_tab.detail_scroll += 1;
+                }
+                return true;
+            }
+            KeyCode::PageUp => {
+                app.index_tab.detail_scroll = app.index_tab.detail_scroll.saturating_sub(10);
+                return true;
+            }
+            KeyCode::PageDown => {
+                let max = app.index_tab.index_fields.len().saturating_sub(1);
+                app.index_tab.detail_scroll = (app.index_tab.detail_scroll + 10).min(max);
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 索引统计弹窗
+    if app.index_tab.show_index_stats {
+        match event.code {
+            KeyCode::Esc => {
+                app.index_tab.show_index_stats = false;
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 搜索结果弹窗
+    if app.index_tab.show_search_results {
+        let n = app.index_tab.search_results.len();
+        match event.code {
+            KeyCode::Esc => {
+                app.index_tab.show_search_results = false;
+                app.index_tab.search_results.clear();
+                app.index_tab.search_scroll = 0;
+                app.index_tab.search_selected = None;
+                return true;
+            }
+            KeyCode::Up => {
+                if n > 0 {
+                    let cur = app.index_tab.search_selected.unwrap_or(0);
+                    app.index_tab.search_selected = Some(if cur == 0 { n - 1 } else { cur - 1 });
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                if n > 0 {
+                    let cur = app.index_tab.search_selected.unwrap_or(0);
+                    app.index_tab.search_selected = Some(if cur >= n - 1 { 0 } else { cur + 1 });
+                }
+                return true;
+            }
+            KeyCode::PageUp => {
+                if n > 0 {
+                    let cur = app.index_tab.search_selected.unwrap_or(0);
+                    app.index_tab.search_selected = Some(cur.saturating_sub(10));
+                }
+                return true;
+            }
+            KeyCode::PageDown => {
+                if n > 0 {
+                    let cur = app.index_tab.search_selected.unwrap_or(0);
+                    app.index_tab.search_selected = Some((cur + 10).min(n - 1));
+                }
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 搜索查询输入弹窗
+    if app.index_tab.search_input_active {
+        match event.code {
+            KeyCode::Esc => {
+                app.index_tab.search_input_active = false;
+                return true;
+            }
+            KeyCode::Enter => {
+                let query = app.index_tab.search_input.value.trim().to_string();
+                app.index_tab.search_input_active = false;
+                if !query.is_empty() {
+                    let _ = crate::tab_index::search_index(app, &query).await;
+                }
+                return true;
+            }
+            _ => {
+                return handle_input_event(&mut app.index_tab.search_input, event);
+            }
+        }
+    }
+
+    // ── 普通快捷键 ──
+    // F1: 列出所有索引
+    if event.code == KeyCode::F(1) {
+        let _ = crate::tab_index::list_indices(app).await;
+        return true;
+    }
+    // F2: 查看索引详情
+    if event.code == KeyCode::F(2) {
+        let _ = crate::tab_index::get_index_detail(app).await;
+        return true;
+    }
+    // F3: 查看索引统计
+    if event.code == KeyCode::F(3) {
+        let _ = crate::tab_index::get_index_stats(app).await;
+        return true;
+    }
+    // F4: 搜索索引
+    if event.code == KeyCode::F(4) {
+        app.index_tab.search_input_active = true;
+        app.index_tab.search_input = crate::app::InputState::new();
+        app.set_status("请输入搜索查询后按 Enter");
+        return true;
+    }
+    // Enter 在输入框非空时获取索引详情
+    if event.code == KeyCode::Enter && !app.index_tab.index_name.value.is_empty() {
+        let _ = crate::tab_index::get_index_detail(app).await;
+        return true;
+    }
+
+    // 字符输入进入 index_name 输入框
+    let input = &mut app.index_tab.index_name;
     handle_input_event(input, event)
 }
 
