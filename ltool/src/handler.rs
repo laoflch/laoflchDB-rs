@@ -697,6 +697,40 @@ fn auto_scroll_face_saved(tab: &mut crate::app::FaceTabState) {
 
 /// 处理人脸 Tab 的事件
 async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
+    // ── 检测结果操作弹窗 ──
+    if app.face_tab.detection_action_open {
+        const DETECTION_ACTION_OPTIONS: &[&str] = &["保存人脸并索引"];
+        match event.code {
+            KeyCode::Up => {
+                if app.face_tab.detection_action_selected > 0 {
+                    app.face_tab.detection_action_selected -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = DETECTION_ACTION_OPTIONS.len().saturating_sub(1);
+                if app.face_tab.detection_action_selected < max {
+                    app.face_tab.detection_action_selected += 1;
+                }
+                return true;
+            }
+            KeyCode::Enter => {
+                let idx = app.face_tab.detection_action_selected;
+                app.face_tab.detection_action_open = false;
+                if idx == 0 {
+                    // 保存人脸并索引
+                    let _ = crate::tab_face::save_and_index_face(app).await;
+                }
+                return true;
+            }
+            KeyCode::Esc => {
+                app.face_tab.detection_action_open = false;
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     // ── 已保存人脸操作弹窗 ──
     if app.face_tab.saved_action_open {
         const FACE_ACTION_OPTIONS: &[&str] = &["导出人脸", "删除人脸"];
@@ -760,39 +794,61 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         }
     }
 
-    // 快捷键用 F1-F6，避免与输入框字符冲突
-    // F1=提取特征, F3=列出已保存人脸, F4=切换save_aligned, F5=切换index_embedding, F6=导出人脸
+    // 快捷键
     match event.code {
         KeyCode::F(1) => {
+            // F1: 检测人脸（仅检测，不保存/索引）
             let _ = crate::tab_face::extract_features(app).await;
             return true;
         }
         KeyCode::F(3) => {
+            // F3: 列出已保存人脸
             let _ = crate::tab_face::list_saved_faces(app).await;
             return true;
         }
-        KeyCode::F(4) => {
-            app.face_tab.save_aligned_images = !app.face_tab.save_aligned_images;
-            app.set_status(format!(
-                "save_aligned 已{}",
-                if app.face_tab.save_aligned_images { "开启" } else { "关闭" }
-            ));
-            return true;
-        }
-        KeyCode::F(5) => {
-            app.face_tab.index_embedding = !app.face_tab.index_embedding;
-            app.set_status(format!(
-                "index_embedding 已{}",
-                if app.face_tab.index_embedding { "开启" } else { "关闭" }
-            ));
-            return true;
-        }
         KeyCode::F(6) => {
+            // F6: 导出所有检测到的人脸
             let export_path = app.face_tab.export_path.value.clone();
             let _ = crate::tab_face::export_faces(app, &export_path).await;
             return true;
         }
         _ => {}
+    }
+
+    // ── 检测结果列表导航 ──
+    // 仅在未显示已保存人脸列表时启用，避免与 F3 弹窗导航冲突
+    if !app.face_tab.show_saved && !app.face_tab.faces.is_empty() {
+        match event.code {
+            KeyCode::Up => {
+                let cur = app.face_tab.selected_face_num.unwrap_or(0);
+                if cur > 0 {
+                    app.face_tab.selected_face_num = Some(cur - 1);
+                    if cur - 1 < app.face_tab.list_scroll {
+                        app.face_tab.list_scroll = cur - 1;
+                    }
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = app.face_tab.faces.len().saturating_sub(1);
+                let cur = app.face_tab.selected_face_num.unwrap_or(0);
+                if cur < max {
+                    app.face_tab.selected_face_num = Some(cur + 1);
+                    if cur + 1 >= app.face_tab.list_scroll + 10 {
+                        app.face_tab.list_scroll = cur + 1 - 9;
+                    }
+                }
+                return true;
+            }
+            KeyCode::Enter => {
+                if app.face_tab.selected_face_num.is_some() && !app.face_tab.faces.is_empty() {
+                    app.face_tab.detection_action_open = true;
+                    app.face_tab.detection_action_selected = 0;
+                }
+                return true;
+            }
+            _ => {}
+        }
     }
 
     // ── 已保存人脸列表导航 ──
@@ -958,8 +1014,84 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
         let _ = crate::tab_vector::get_all_indices(app).await;
     }
 
+    // ── 向量详情弹窗优先 ──
+    if app.vector_tab.show_vector_detail {
+        match event.code {
+            KeyCode::Up => {
+                if app.vector_tab.vector_detail_scroll > 0 {
+                    app.vector_tab.vector_detail_scroll -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                app.vector_tab.vector_detail_scroll += 1;
+                return true;
+            }
+            KeyCode::PageUp => {
+                app.vector_tab.vector_detail_scroll = app.vector_tab.vector_detail_scroll.saturating_sub(10);
+                return true;
+            }
+            KeyCode::PageDown => {
+                app.vector_tab.vector_detail_scroll += 10;
+                return true;
+            }
+            KeyCode::Esc => {
+                app.vector_tab.show_vector_detail = false;
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // ── 条目操作弹窗 ──
+    if app.vector_tab.entries_action_open {
+        const VEC_ACTION_OPTIONS: &[&str] = &["查看向量", "删除向量"];
+        match event.code {
+            KeyCode::Up => {
+                if app.vector_tab.entries_action_selected > 0 {
+                    app.vector_tab.entries_action_selected -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = VEC_ACTION_OPTIONS.len().saturating_sub(1);
+                if app.vector_tab.entries_action_selected < max {
+                    app.vector_tab.entries_action_selected += 1;
+                }
+                return true;
+            }
+            KeyCode::Enter => {
+                let idx = app.vector_tab.entries_action_selected;
+                let sel = app.vector_tab.entries_selected;
+                app.vector_tab.entries_action_open = false;
+                if let Some(entry_idx) = sel {
+                    if let Some((id, emb)) = app.vector_tab.entries.get(entry_idx) {
+                        if idx == 0 {
+                            // 查看向量
+                            app.vector_tab.vector_detail_embedding = emb.clone();
+                            app.vector_tab.vector_detail_scroll = 0;
+                            app.vector_tab.show_vector_detail = true;
+                        } else if idx == 1 {
+                            // 删除向量
+                            let del_id = *id;
+                            let _ = crate::tab_vector::delete_single_embedding(app, del_id).await;
+                        }
+                    }
+                }
+                return true;
+            }
+            KeyCode::Esc => {
+                app.vector_tab.entries_action_open = false;
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     // F1: 刷新所有索引信息
     // F2: 获取当前索引名的详细信息
+    // F3: 列出当前索引的所有向量条目
+    // F4: 清空当前索引的所有向量
     match event.code {
         KeyCode::F(1) => {
             let _ = crate::tab_vector::get_all_indices(app).await;
@@ -969,7 +1101,7 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
             let _ = crate::tab_vector::get_index_info(app).await;
             return true;
         }
-        // Enter 在输入框中触发获取指定索引信息
+        // Enter: 下拉菜单选中 / 条目操作弹窗 / 查询索引信息
         KeyCode::Enter => {
             if app.vector_tab.show_dropdown {
                 // 从下拉菜单选中索引
@@ -978,13 +1110,17 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
                 }
                 app.vector_tab.show_dropdown = false;
                 let _ = crate::tab_vector::get_index_info(app).await;
+            } else if app.vector_tab.entries_selected.is_some() && !app.vector_tab.entries.is_empty() {
+                // 条目操作弹窗
+                app.vector_tab.entries_action_open = true;
+                app.vector_tab.entries_action_selected = 0;
             } else if !app.vector_tab.index_name.value.is_empty() {
                 let _ = crate::tab_vector::get_index_info(app).await;
             }
             return true;
         }
-        // Tab/Down 切换下拉菜单展开/收起
-        KeyCode::Tab | KeyCode::Down => {
+        // Tab: 切换下拉菜单展开/收起
+        KeyCode::Tab => {
             if app.vector_tab.show_dropdown {
                 // 下拉菜单内部导航
                 let max = app.vector_tab.all_indices.len().saturating_sub(1);
@@ -1007,6 +1143,31 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
             }
             return true;
         }
+        // Down: 下拉菜单打开时导航菜单，否则导航条目列表
+        KeyCode::Down => {
+            if app.vector_tab.show_dropdown {
+                let max = app.vector_tab.all_indices.len().saturating_sub(1);
+                if app.vector_tab.selected_dropdown < max {
+                    app.vector_tab.selected_dropdown += 1;
+                    if let Some(info) = app.vector_tab.all_indices.get(app.vector_tab.selected_dropdown) {
+                        app.vector_tab.index_name.set_value(info.name.clone());
+                    }
+                }
+            } else if !app.vector_tab.entries.is_empty() {
+                // 条目列表导航
+                let cur = app.vector_tab.entries_selected.unwrap_or(0);
+                let max = app.vector_tab.entries.len().saturating_sub(1);
+                if cur < max {
+                    app.vector_tab.entries_selected = Some(cur + 1);
+                    if cur + 1 >= app.vector_tab.entries_scroll + 10 {
+                        app.vector_tab.entries_scroll = cur + 1 - 9;
+                    }
+                } else {
+                    app.vector_tab.entries_selected = Some(0);
+                }
+            }
+            return true;
+        }
         KeyCode::Up => {
             if app.vector_tab.show_dropdown {
                 if app.vector_tab.selected_dropdown > 0 {
@@ -1016,8 +1177,17 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
                         app.vector_tab.index_name.set_value(info.name.clone());
                     }
                 }
-            } else {
-                return true;
+            } else if !app.vector_tab.entries.is_empty() {
+                // 条目列表导航
+                let cur = app.vector_tab.entries_selected.unwrap_or(0);
+                if cur > 0 {
+                    app.vector_tab.entries_selected = Some(cur - 1);
+                    if cur - 1 < app.vector_tab.entries_scroll {
+                        app.vector_tab.entries_scroll = cur - 1;
+                    }
+                } else {
+                    app.vector_tab.entries_selected = Some(0);
+                }
             }
             return true;
         }
@@ -1027,6 +1197,11 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
                 if let Some(info) = app.vector_tab.all_indices.get(app.vector_tab.selected_dropdown) {
                     app.vector_tab.index_name.set_value(info.name.clone());
                 }
+            } else if !app.vector_tab.entries.is_empty() {
+                let cur = app.vector_tab.entries_selected.unwrap_or(0);
+                let new_scroll = app.vector_tab.entries_scroll.saturating_sub(10);
+                app.vector_tab.entries_scroll = new_scroll;
+                app.vector_tab.entries_selected = Some(cur.saturating_sub(10));
             }
             return true;
         }
@@ -1037,6 +1212,12 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
                 if let Some(info) = app.vector_tab.all_indices.get(app.vector_tab.selected_dropdown) {
                     app.vector_tab.index_name.set_value(info.name.clone());
                 }
+            } else if !app.vector_tab.entries.is_empty() {
+                let cur = app.vector_tab.entries_selected.unwrap_or(0);
+                let max = app.vector_tab.entries.len().saturating_sub(1);
+                let new_sel = (cur + 10).min(max);
+                app.vector_tab.entries_selected = Some(new_sel);
+                app.vector_tab.entries_scroll = app.vector_tab.entries_scroll.saturating_add(10);
             }
             return true;
         }
@@ -1044,6 +1225,27 @@ async fn handle_vector_tab(app: &mut App, event: KeyEvent) -> bool {
         KeyCode::Esc => {
             if app.vector_tab.show_dropdown {
                 app.vector_tab.show_dropdown = false;
+                return true;
+            }
+        }
+        // F3: 列出当前索引的所有向量条目
+        KeyCode::F(3) => {
+            let _ = crate::tab_vector::list_embeddings(app).await;
+            return true;
+        }
+        // F4: 清空当前索引的所有向量
+        KeyCode::F(4) => {
+            let _ = crate::tab_vector::clear_embeddings(app).await;
+            return true;
+        }
+        // Enter on entries list → open action popup
+        KeyCode::Char('\n') | KeyCode::Char('\r') => {
+            if !app.vector_tab.show_dropdown
+                && !app.vector_tab.entries.is_empty()
+                && app.vector_tab.entries_selected.is_some()
+            {
+                app.vector_tab.entries_action_open = true;
+                app.vector_tab.entries_action_selected = 0;
                 return true;
             }
         }
@@ -1518,6 +1720,22 @@ pub async fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                     // 点击在路径输入框区域（y=3..8）→ 清除选中
                     app.image_tab.selected_index = None;
                     app.image_tab.action_popup_open = false;
+                }
+            } else if app.current_tab == Tab::Vector && !app.vector_tab.entries.is_empty() {
+                // 布局：Tab栏(3) + 输入框(3) + 索引信息(18) + 条目表格边框(1) + 表头(1) → 数据行起始 y
+                let data_start_y = 3 + 3 + 18 + 2; // = 26
+                if event.row >= data_start_y {
+                    let row = (event.row - data_start_y) as usize + app.vector_tab.entries_scroll;
+                    if row < app.vector_tab.entries.len() {
+                        app.vector_tab.entries_selected = Some(row);
+                        // 调整滚动使选中行可见
+                        let visible = 10usize;
+                        if row < app.vector_tab.entries_scroll {
+                            app.vector_tab.entries_scroll = row;
+                        } else if row >= app.vector_tab.entries_scroll + visible {
+                            app.vector_tab.entries_scroll = row - visible + 1;
+                        }
+                    }
                 }
             }
         }

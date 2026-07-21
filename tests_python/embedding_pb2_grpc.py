@@ -68,6 +68,21 @@ class EmbeddingIndexServiceStub(object):
                 request_serializer=embedding__pb2.LoadSnapshotRequest.SerializeToString,
                 response_deserializer=embedding__pb2.LoadSnapshotResponse.FromString,
                 _registered_method=True)
+        self.ListEmbeddings = channel.unary_unary(
+                '/laoflchdb.embedding.EmbeddingIndexService/ListEmbeddings',
+                request_serializer=embedding__pb2.ListEmbeddingsRequest.SerializeToString,
+                response_deserializer=embedding__pb2.ListEmbeddingsResponse.FromString,
+                _registered_method=True)
+        self.AnalyzeConsistency = channel.unary_unary(
+                '/laoflchdb.embedding.EmbeddingIndexService/AnalyzeConsistency',
+                request_serializer=embedding__pb2.AnalyzeConsistencyRequest.SerializeToString,
+                response_deserializer=embedding__pb2.AnalyzeConsistencyResponse.FromString,
+                _registered_method=True)
+        self.RebuildIndexFromRocksDB = channel.unary_unary(
+                '/laoflchdb.embedding.EmbeddingIndexService/RebuildIndexFromRocksDB',
+                request_serializer=embedding__pb2.RebuildIndexFromRocksDBRequest.SerializeToString,
+                response_deserializer=embedding__pb2.RebuildIndexFromRocksDBResponse.FromString,
+                _registered_method=True)
 
 
 class EmbeddingIndexServiceServicer(object):
@@ -119,6 +134,27 @@ class EmbeddingIndexServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def ListEmbeddings(self, request, context):
+        """列出索引中的所有向量
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def AnalyzeConsistency(self, request, context):
+        """分析 RocksDB 和 HNSW 一致性
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RebuildIndexFromRocksDB(self, request, context):
+        """从 RocksDB 重建 HNSW 索引
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_EmbeddingIndexServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -151,6 +187,21 @@ def add_EmbeddingIndexServiceServicer_to_server(servicer, server):
                     servicer.LoadSnapshot,
                     request_deserializer=embedding__pb2.LoadSnapshotRequest.FromString,
                     response_serializer=embedding__pb2.LoadSnapshotResponse.SerializeToString,
+            ),
+            'ListEmbeddings': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListEmbeddings,
+                    request_deserializer=embedding__pb2.ListEmbeddingsRequest.FromString,
+                    response_serializer=embedding__pb2.ListEmbeddingsResponse.SerializeToString,
+            ),
+            'AnalyzeConsistency': grpc.unary_unary_rpc_method_handler(
+                    servicer.AnalyzeConsistency,
+                    request_deserializer=embedding__pb2.AnalyzeConsistencyRequest.FromString,
+                    response_serializer=embedding__pb2.AnalyzeConsistencyResponse.SerializeToString,
+            ),
+            'RebuildIndexFromRocksDB': grpc.unary_unary_rpc_method_handler(
+                    servicer.RebuildIndexFromRocksDB,
+                    request_deserializer=embedding__pb2.RebuildIndexFromRocksDBRequest.FromString,
+                    response_serializer=embedding__pb2.RebuildIndexFromRocksDBResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -319,6 +370,87 @@ class EmbeddingIndexService(object):
             '/laoflchdb.embedding.EmbeddingIndexService/LoadSnapshot',
             embedding__pb2.LoadSnapshotRequest.SerializeToString,
             embedding__pb2.LoadSnapshotResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ListEmbeddings(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/laoflchdb.embedding.EmbeddingIndexService/ListEmbeddings',
+            embedding__pb2.ListEmbeddingsRequest.SerializeToString,
+            embedding__pb2.ListEmbeddingsResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AnalyzeConsistency(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/laoflchdb.embedding.EmbeddingIndexService/AnalyzeConsistency',
+            embedding__pb2.AnalyzeConsistencyRequest.SerializeToString,
+            embedding__pb2.AnalyzeConsistencyResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RebuildIndexFromRocksDB(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/laoflchdb.embedding.EmbeddingIndexService/RebuildIndexFromRocksDB',
+            embedding__pb2.RebuildIndexFromRocksDBRequest.SerializeToString,
+            embedding__pb2.RebuildIndexFromRocksDBResponse.FromString,
             options,
             channel_credentials,
             insecure,

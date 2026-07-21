@@ -647,6 +647,159 @@ def test_stress_insert():
         return False
 
 
+def test_analyze_consistency():
+    """测试一致性分析"""
+    print("[测试] 一致性分析...")
+    try:
+        req = embedding_pb2.AnalyzeConsistencyRequest(index_name="default")
+        resp = embedding_stub.AnalyzeConsistency(req, metadata=get_metadata())
+        assert resp.success, f"一致性分析失败: {resp.message}"
+        print(f"    ✓ 一致性分析结果:")
+        print(f"        HNSW 元素:   {resp.hnsw_count}")
+        print(f"        RocksDB 元素: {resp.rocksdb_count}")
+        print(f"        仅在 HNSW:  {list(resp.only_in_hnsw)}")
+        print(f"        仅在 RocksDB: {list(resp.only_in_rocksdb)}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 一致性分析失败: {e}")
+        return False
+
+
+def test_analyze_consistency_new_index():
+    """测试新索引的一致性分析"""
+    print("[测试] 新索引一致性分析...")
+    try:
+        req = embedding_pb2.AnalyzeConsistencyRequest(index_name="non_existent")
+        resp = embedding_stub.AnalyzeConsistency(req, metadata=get_metadata())
+        if resp.success:
+            print(f"    ✓ 新索引分析返回一致")
+            return True
+        print(f"    ✓ 不存在索引分析被拒绝: {resp.message}")
+        return True
+    except Exception as e:
+        print(f"    ✓ 异常: {str(e)[:60]}")
+        return True
+
+
+def test_rebuild_index_from_rocksdb():
+    """测试从 RocksDB 重建 HNSW 索引"""
+    print("[测试] 从 RocksDB 重建索引...")
+    try:
+        # 先插入一些向量确保数据存在
+        test_ids = []
+        for _ in range(5):
+            eid = _next_id()
+            test_ids.append(eid)
+            emb = _make_random_embedding()
+            embedding_stub.InsertEmbedding(embedding_pb2.InsertEmbeddingRequest(
+                id=eid, index_name="rebuild_test", embedding=emb,
+            ), metadata=get_metadata())
+
+        # 执行重建
+        req = embedding_pb2.RebuildIndexFromRocksDBRequest(index_name="rebuild_test")
+        resp = embedding_stub.RebuildIndexFromRocksDB(req, metadata=get_metadata())
+        assert resp.success, f"重建失败: {resp.message}"
+        assert resp.rebuilt_count > 0, f"重建数量应为正数: {resp.rebuilt_count}"
+        print(f"    ✓ 索引重建成功: {resp.rebuilt_count} 条")
+        return True
+    except Exception as e:
+        print(f"    ✗ 重建失败: {e}")
+        return False
+
+
+def test_rebuild_index_from_rocksdb_non_existent():
+    """测试重建不存在的索引"""
+    print("[测试] 重建不存在的索引...")
+    try:
+        req = embedding_pb2.RebuildIndexFromRocksDBRequest(index_name="ghost_rebuild")
+        resp = embedding_stub.RebuildIndexFromRocksDB(req, metadata=get_metadata())
+        if resp.success:
+            print(f"    - 不存在索引重建被接受")
+            return True
+        print(f"    ✓ 不存在索引重建被拒绝: {resp.message}")
+        return True
+    except Exception as e:
+        print(f"    ✓ 异常: {str(e)[:60]}")
+        return True
+
+
+def test_rebuild_then_search():
+    """测试重建后搜索正常"""
+    print("[测试] 重建后搜索验证...")
+    try:
+        # 插入向量
+        target_id = _next_id()
+        target_emb = _make_random_embedding()
+        embedding_stub.InsertEmbedding(embedding_pb2.InsertEmbeddingRequest(
+            id=target_id, index_name="rebuild_search_test", embedding=target_emb,
+        ), metadata=get_metadata())
+
+        # 重建
+        embedding_stub.RebuildIndexFromRocksDB(embedding_pb2.RebuildIndexFromRocksDBRequest(
+            index_name="rebuild_search_test",
+        ), metadata=get_metadata())
+
+        # 搜索验证
+        search_resp = embedding_stub.SearchEmbedding(embedding_pb2.SearchEmbeddingRequest(
+            query_embedding=target_emb, top_k=5, index_name="rebuild_search_test",
+        ), metadata=get_metadata())
+        assert search_resp.success
+        ids = [r.id for r in search_resp.results]
+        assert target_id in ids, f"重建后应能找到目标 id={target_id}: {ids}"
+        print(f"    ✓ 重建后搜索正常，返回 {len(search_resp.results)} 条")
+        return True
+    except Exception as e:
+        print(f"    ✗ 重建后搜索验证失败: {e}")
+        return False
+
+
+def test_analyze_before_after_rebuild():
+    """测试重建前后一致性分析对比"""
+    print("[测试] 重建前后一致性分析对比...")
+    try:
+        import uuid
+        index_name = f"consistency_{uuid.uuid4().hex[:8]}"
+
+        # 插入向量
+        test_ids = []
+        for _ in range(3):
+            eid = _next_id()
+            test_ids.append(eid)
+            emb = _make_random_embedding()
+            embedding_stub.InsertEmbedding(embedding_pb2.InsertEmbeddingRequest(
+                id=eid, index_name=index_name, embedding=emb,
+            ), metadata=get_metadata())
+
+        # 重建前分析
+        before = embedding_stub.AnalyzeConsistency(embedding_pb2.AnalyzeConsistencyRequest(
+            index_name=index_name,
+        ), metadata=get_metadata())
+        assert before.success
+
+        # 重建
+        rebuild = embedding_stub.RebuildIndexFromRocksDB(embedding_pb2.RebuildIndexFromRocksDBRequest(
+            index_name=index_name,
+        ), metadata=get_metadata())
+        assert rebuild.success
+        assert rebuild.rebuilt_count == 3, f"应重建 3 条: {rebuild.rebuilt_count}"
+
+        # 重建后分析
+        after = embedding_stub.AnalyzeConsistency(embedding_pb2.AnalyzeConsistencyRequest(
+            index_name=index_name,
+        ), metadata=get_metadata())
+        assert after.success
+
+        print(f"    ✓ 重建前: HNSW={before.hnsw_count} RocksDB={before.rocksdb_count}")
+        print(f"    ✓ 重建后: HNSW={after.hnsw_count} RocksDB={after.rocksdb_count}, 重建了 {rebuild.rebuilt_count} 条")
+        assert after.hnsw_count == after.rocksdb_count, f"重建后应一致: HNSW={after.hnsw_count} != RocksDB={after.rocksdb_count}"
+        assert len(after.only_in_hnsw) == 0 and len(after.only_in_rocksdb) == 0, "重建后不应有不一致"
+        print(f"    ✓ 重建前后一致性分析对比通过")
+        return True
+    except Exception as e:
+        print(f"    ✗ 一致性分析对比失败: {e}")
+        return False
+
+
 def run_all_tests():
     tests = [
         ("用户登录", test_login),
@@ -672,6 +825,12 @@ def run_all_tests():
         ("多索引隔离", test_multiple_indices),
         ("索引完整生命周期", test_index_lifecycle),
         ("压力测试", test_stress_insert),
+        ("一致性分析", test_analyze_consistency),
+        ("新索引一致性分析", test_analyze_consistency_new_index),
+        ("从 RocksDB 重建索引", test_rebuild_index_from_rocksdb),
+        ("重建不存在的索引", test_rebuild_index_from_rocksdb_non_existent),
+        ("重建后搜索验证", test_rebuild_then_search),
+        ("重建前后一致性分析对比", test_analyze_before_after_rebuild),
     ]
 
     passed = 0

@@ -764,7 +764,7 @@ async fn upload_image_handler(
         data: body.to_vec(),
         content_type,
         metadata: HashMap::new(),
-        name: String::new(),
+        name: query.name,
     });
 
     match service.upload_image(req).await {
@@ -819,6 +819,8 @@ struct UploadImageQuery {
     bucket: String,
     #[serde(default)]
     key: String,
+    #[serde(default)]
+    name: String,
 }
 
 async fn get_image_handler(

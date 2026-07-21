@@ -5,7 +5,7 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, Wrap};
+use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table, Wrap};
 use ratatui::Frame;
 
 use crate::app::{App, ImageFocus, PathPopup, Tab};
@@ -110,6 +110,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // 下载确认弹窗
     if app.image_tab.download_confirm.is_some() {
         draw_download_confirm_dialog(f, app);
+    }
+
+    // ── 人脸 Tab 检测结果操作弹窗 ──
+    if app.current_tab == Tab::Face && app.face_tab.detection_action_open {
+        draw_face_detection_action_popup(f, app);
     }
 
     // ── 人脸 Tab 已保存人脸列表弹窗 ──
@@ -239,8 +244,8 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     // 当前 Tab 的快捷键提示
     let help_text = match app.current_tab {
         Tab::Image => "F1上传 F2列出 :bucket/:key设置 ↑↓选路径 Enter确认 Esc取消 | ",
-        Tab::Face => "F1提取 F3列表 F4保存 F5索引 F6导出 ↑↓选路径 Enter确认 Esc取消  ",
-        Tab::Vector => "F1刷新列表 F2/Enter查看详情 ↓/Tab展开菜单 ↑↓导航 Esc关闭 | ",
+        Tab::Face => "F1检测 F3列表 F6导出 ↑↓选中人脸 Enter保存并索引 Esc取消 | ",
+        Tab::Vector => "F1刷新列表 F2/Enter查看详情 F3列出条目 F4清空 Tab展开菜单 ↑↓条目导航 Enter操作 Esc关闭 | ",
         Tab::Sql => "F1列表Schema F2列表表 F3描述表 F4版本 F5执行 Ctrl+L清空 | ",
         Tab::Index => "F1列表索引 F2查看详情 F3统计 F4搜索 Enter查看详情 | ",
     };
@@ -390,15 +395,14 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     let path_area = Rect { x: chunks[0].x, y: chunks[0].y, width: chunks[0].width, height: 3 };
     draw_input_box(f, path_area, "本地图片路径", &app.face_tab.file_path, app.face_tab.focus == FaceFocus::FilePath);
 
-    // 第二行：参数（det_threshold, max_faces, bucket, 复选框）共用一行
+    // 第二行：参数（det_threshold, max_faces, bucket）共用一行
     let row2 = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Length(15),
             Constraint::Length(15),
             Constraint::Length(20),
-            Constraint::Length(20),
-            Constraint::Length(20),
+            Constraint::Min(0),
         ])
         .split(Rect {
             x: chunks[0].x,
@@ -411,16 +415,6 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     draw_input_box(f, row2[1], "max_faces", &app.face_tab.max_faces, app.face_tab.focus == FaceFocus::MaxFaces);
     draw_input_box(f, row2[2], "bucket", &app.face_tab.bucket, app.face_tab.focus == FaceFocus::Bucket);
 
-    let save_str = if app.face_tab.save_aligned_images { "[x]" } else { "[ ]" };
-    let p1 = Paragraph::new(format!("{} save_aligned (F4)", save_str))
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(p1, row2[3]);
-
-    let idx_str = if app.face_tab.index_embedding { "[x]" } else { "[ ]" };
-    let p2 = Paragraph::new(format!("{} index_embedding (F5)", idx_str))
-        .block(Block::default().borders(Borders::ALL));
-    f.render_widget(p2, row2[4]);
-
     // 第三行：导出路径（独占一行，全宽，和本地路径一致）
     let row3 = Rect { x: chunks[0].x, y: chunks[0].y + 6, width: chunks[0].width, height: 3 };
     draw_input_box(f, row3, "导出路径", &app.face_tab.export_path, app.face_tab.focus == FaceFocus::ExportPath);
@@ -432,19 +426,27 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
         .iter()
         .skip(app.face_tab.list_scroll)
         .take(50)
-        .map(|(i, score, bbox, key, vid)| {
+        .enumerate()
+        .map(|(idx, (i, score, bbox, key, vid))| {
+            let abs_idx = idx + app.face_tab.list_scroll;
+            let selected = app.face_tab.selected_face_num == Some(abs_idx);
             let bbox_str = if bbox.len() >= 4 {
                 format!("[{:.0},{:.0},{:.0},{:.0}]", bbox[0], bbox[1], bbox[2], bbox[3])
             } else {
                 "-".to_string()
             };
-            Row::new(vec![
+            let cells = vec![
                 Cell::from(i.to_string()),
                 Cell::from(format!("{:.4}", score)),
                 Cell::from(bbox_str),
                 Cell::from(key.clone()),
                 Cell::from(if *vid == 0 { "-".to_string() } else { vid.to_string() }),
-            ])
+            ];
+            if selected {
+                Row::new(cells).style(Style::default().bg(Color::Green).fg(Color::Black))
+            } else {
+                Row::new(cells)
+            }
         })
         .collect();
 
@@ -475,6 +477,52 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     f.render_widget(table, chunks[1]);
 
     Some(path_area)
+}
+
+/// 绘制检测结果操作弹窗
+fn draw_face_detection_action_popup(f: &mut Frame, app: &mut App) {
+    const OPTIONS: &[&str] = &["保存人脸并索引"];
+    let area = f.size();
+    let width = 30;
+    let height = OPTIONS.len() as u16 + 3;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("人脸操作")
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    for (i, opt) in OPTIONS.iter().enumerate() {
+        let selected = i == app.face_tab.detection_action_selected;
+        let style = if selected {
+            Style::default().bg(Color::Green).fg(Color::Black)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let prefix = if selected { "▶ " } else { "  " };
+        let line = Paragraph::new(Line::from(Span::styled(
+            format!("{}{}", prefix, opt),
+            style,
+        )));
+        f.render_widget(line, Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        });
+    }
 }
 
 /// 绘制已保存人脸列表（F3 弹窗）
@@ -633,14 +681,15 @@ fn draw_face_delete_confirm_dialog(f: &mut Frame, key: &str) {
 fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .constraints(vec![Constraint::Length(3), Constraint::Length(18), Constraint::Min(5)])
         .split(area);
 
     // ── 顶部：索引名称输入框 ─────────────────────
     let input_area = chunks[0];
-    draw_input_box(f, input_area, "索引名称（F1 刷新列表，F2/Enter 查看详情）", &app.vector_tab.index_name, true);
+    let hint = "索引名称（F1 刷新列表，F2/Enter 查看详情，F3 列出条目，F4 清空）";
+    draw_input_box(f, input_area, hint, &app.vector_tab.index_name, true);
 
-    // ── 下部：索引信息详情 ─────────────────────
+    // ── 中部：索引信息详情 ─────────────────────
     let info = if !app.vector_tab.index_name.value.is_empty() {
         app.vector_tab.all_indices.iter().find(|i| i.name == app.vector_tab.index_name.value)
     } else {
@@ -710,6 +759,158 @@ fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
         .block(Block::default().borders(Borders::ALL).title("索引信息"));
 
     f.render_widget(table, chunks[1]);
+
+    // ── 下部：向量条目列表（始终存在） ─────────────
+    let entries_area = chunks[2];
+    let total = app.vector_tab.entries.len();
+    let visible = (entries_area.height.saturating_sub(2) as usize).max(1);
+    let scroll = app.vector_tab.entries_scroll.min(total.saturating_sub(visible).max(0));
+
+    let entries_header = Row::new(vec![
+        Cell::from("vector_id"),
+        Cell::from("向量值（前 10 维）"),
+    ])
+    .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
+
+    let selected_idx = app.vector_tab.entries_selected;
+    let entry_rows: Vec<Row> = app
+        .vector_tab
+        .entries
+        .iter()
+        .enumerate()
+        .skip(scroll)
+        .take(visible)
+        .map(|(i, (id, emb))| {
+            let preview: String = emb
+                .iter()
+                .take(10)
+                .map(|v| format!("{:.4}", v))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let preview = if emb.len() > 10 {
+                format!("{}, ...", preview)
+            } else {
+                preview
+            };
+            let is_selected = selected_idx == Some(i);
+            let style = if is_selected {
+                Style::default().bg(Color::Green).fg(Color::Black)
+            } else {
+                Style::default()
+            };
+            Row::new(vec![
+                Cell::from(id.to_string()),
+                Cell::from(preview),
+            ])
+            .style(style)
+        })
+        .collect();
+
+    let title = if total > 0 {
+        format!("向量条目（共 {} 条，F3 刷新，↑↓ 选中，Enter 操作）", total)
+    } else {
+        "向量条目（按 F3 列出当前索引的向量）".to_string()
+    };
+
+    let entries_table = Table::new(entry_rows, [Constraint::Length(20), Constraint::Min(30)])
+        .header(entries_header)
+        .block(Block::default().borders(Borders::ALL).title(title));
+
+    f.render_widget(entries_table, entries_area);
+
+    // ── 条目操作弹窗 ──
+    if app.vector_tab.entries_action_open {
+        let sel = app.vector_tab.entries_selected;
+        let action_label = if let Some(idx) = sel {
+            if let Some((id, _)) = app.vector_tab.entries.get(idx) {
+                format!("向量 #{} 操作", id)
+            } else {
+                "向量操作".to_string()
+            }
+        } else {
+            "向量操作".to_string()
+        };
+
+        const VEC_ACTION_OPTIONS: &[&str] = &["查看向量", "删除向量"];
+        let area = f.size();
+        let width = 30;
+        let height = VEC_ACTION_OPTIONS.len() as u16 + 3;
+        let x = (area.width.saturating_sub(width)) / 2;
+        let y = (area.height.saturating_sub(height)) / 2;
+        let dialog_area = Rect { x, y, width, height };
+
+        f.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(action_label)
+            .style(Style::default().bg(Color::Black).fg(Color::White));
+        f.render_widget(block, dialog_area);
+
+        let inner = Rect {
+            x: dialog_area.x + 1,
+            y: dialog_area.y + 1,
+            width: dialog_area.width.saturating_sub(2),
+            height: dialog_area.height.saturating_sub(2),
+        };
+
+        for (i, label) in VEC_ACTION_OPTIONS.iter().enumerate() {
+            let selected = i == app.vector_tab.entries_action_selected;
+            let style = if selected {
+                Style::default().bg(Color::Green).fg(Color::Black)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let prefix = if selected { "▶ " } else { "  " };
+            let line = Paragraph::new(Line::from(Span::styled(
+                format!("{}{}", prefix, label),
+                style,
+            )));
+            f.render_widget(line, Rect {
+                x: inner.x,
+                y: inner.y + i as u16,
+                width: inner.width,
+                height: 1,
+            });
+        }
+    }
+
+    // ── 向量详情弹窗 ──
+    if app.vector_tab.show_vector_detail {
+        let emb = &app.vector_tab.vector_detail_embedding;
+        let dim = emb.len();
+        let scroll = app.vector_tab.vector_detail_scroll;
+        let visible_lines = 20usize;
+        let lines: Vec<Line> = emb
+            .iter()
+            .enumerate()
+            .skip(scroll)
+            .take(visible_lines)
+            .map(|(i, v)| {
+                Line::from(format!("[{}]  {:.6}", i, v))
+            })
+            .collect();
+
+        let area = f.size();
+        let width = 60;
+        let height = visible_lines as u16 + 3;
+        let x = (area.width.saturating_sub(width)) / 2;
+        let y = (area.height.saturating_sub(height)) / 2;
+        let dialog_area = Rect { x, y, width, height };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(
+                "向量详情（{} 维，Scroll: {}-{}/{}，↑↓ 滚动，Esc 关闭）",
+                dim,
+                scroll,
+                (scroll + visible_lines).min(dim),
+                dim
+            ));
+        let list = List::new(lines).block(block);
+        f.render_widget(Clear, dialog_area);
+        f.render_widget(list, dialog_area);
+    }
 
     input_area
 }

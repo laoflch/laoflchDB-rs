@@ -4,9 +4,12 @@ pub mod proto {
 
 use proto::embedding_index_service_server::EmbeddingIndexService;
 use proto::{
-    DeleteEmbeddingRequest, DeleteEmbeddingResponse, GetIndexInfoRequest, GetIndexInfoResponse,
-    IndexStats, InsertEmbeddingRequest, InsertEmbeddingResponse, SaveSnapshotRequest,
-    SaveSnapshotResponse, LoadSnapshotRequest, LoadSnapshotResponse,
+    DeleteEmbeddingRequest, DeleteEmbeddingResponse, EmbeddingEntry, GetIndexInfoRequest,
+    GetIndexInfoResponse, IndexStats, InsertEmbeddingRequest, InsertEmbeddingResponse,
+    ListEmbeddingsRequest, ListEmbeddingsResponse, SaveSnapshotRequest, SaveSnapshotResponse,
+    LoadSnapshotRequest, LoadSnapshotResponse,
+    AnalyzeConsistencyRequest, AnalyzeConsistencyResponse, RebuildIndexFromRocksDbRequest,
+    RebuildIndexFromRocksDbResponse,
     SearchResult, SearchEmbeddingRequest, SearchEmbeddingResponse,
 };
 use anda_db_hnsw::{BoxError, DistanceMetric, HnswConfig, HnswIndex, SelectNeighborsStrategy};
@@ -47,6 +50,20 @@ impl IndexConfig {
             "dot" | "dotproduct" => DistanceMetric::InnerProduct,
             _ => DistanceMetric::Cosine,
         }
+    }
+
+    /// 转换为 HnswConfig
+    pub fn hnsw_config(&self) -> Result<HnswConfig, Status> {
+        Ok(HnswConfig {
+            dimension: self.dim,
+            max_layers: 16u8,
+            max_connections: self.m as u8,
+            ef_construction: self.ef_construction,
+            ef_search: self.ef_search,
+            distance_metric: self.distance_metric,
+            scale_factor: None,
+            select_neighbors_strategy: SelectNeighborsStrategy::Heuristic,
+        })
     }
 }
 
@@ -485,6 +502,27 @@ impl proto::embedding_index_service_server::EmbeddingIndexService
     ) -> std::result::Result<tonic::Response<LoadSnapshotResponse>, tonic::Status> {
         self.as_ref().load_snapshot(request).await
     }
+
+    async fn list_embeddings(
+        &self,
+        request: tonic::Request<ListEmbeddingsRequest>,
+    ) -> std::result::Result<tonic::Response<ListEmbeddingsResponse>, tonic::Status> {
+        self.as_ref().list_embeddings(request).await
+    }
+
+    async fn analyze_consistency(
+        &self,
+        request: tonic::Request<AnalyzeConsistencyRequest>,
+    ) -> std::result::Result<tonic::Response<AnalyzeConsistencyResponse>, tonic::Status> {
+        self.as_ref().analyze_consistency(request).await
+    }
+
+    async fn rebuild_index_from_rocks_db(
+        &self,
+        request: tonic::Request<RebuildIndexFromRocksDbRequest>,
+    ) -> std::result::Result<tonic::Response<RebuildIndexFromRocksDbResponse>, tonic::Status> {
+        self.as_ref().rebuild_index_from_rocks_db(request).await
+    }
 }
 
 #[tonic::async_trait]
@@ -633,14 +671,14 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             Status::not_found(format!("索引不存在: {}", index_name))
         })?;
 
-        // 1. 从 HNSW 索引删除
+        // 1. 从 HNSW 索引删除（不管内存有没有，都继续删）
         let ts = Self::unix_ms();
         let removed = {
             let index = state.index.read().await;
             index.remove(req.id, ts)
         };
 
-        // 2. 从 KV RocksDB 删除
+        // 2. 从 KV RocksDB 删除（必须执行，保证两者一致）
         let table_name = format!("hnsw_{}", index_name);
         let key = format!("v:{}", req.id).into_bytes();
         {
@@ -648,18 +686,11 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             let _ = storage.delete(&table_name, &key).await;
         }
 
-        if removed {
-            log::info!("向量删除成功: id={}, index={}", req.id, index_name);
-            Ok(Response::new(DeleteEmbeddingResponse {
-                success: true,
-                message: format!("向量删除成功, id={}, index={}", req.id, index_name),
-            }))
-        } else {
-            Ok(Response::new(DeleteEmbeddingResponse {
-                success: false,
-                message: format!("未找到向量 id={}, index={}", req.id, index_name),
-            }))
-        }
+        log::info!("向量删除处理完成: id={}, index={}, removed_from_hnsw={}", req.id, index_name, removed);
+        Ok(Response::new(DeleteEmbeddingResponse {
+            success: true,
+            message: format!("向量删除处理完成, id={}, index={}", req.id, index_name),
+        }))
     }
 
     /// 获取指定索引的统计信息
@@ -752,6 +783,194 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             success: true,
             message: format!("所有索引快照加载成功: {} 条向量", num_elements),
             num_elements,
+        }))
+    }
+
+    /// 列出索引中的所有向量
+    async fn list_embeddings(
+        &self,
+        request: Request<ListEmbeddingsRequest>,
+    ) -> Result<Response<ListEmbeddingsResponse>, Status> {
+        let req = request.into_inner();
+        let index_name = if req.index_name.is_empty() {
+            "default"
+        } else {
+            &req.index_name
+        };
+
+        // 查找索引
+        let _state = self.indices.get(index_name).ok_or_else(|| {
+            Status::not_found(format!("索引不存在: {}", index_name))
+        })?;
+
+        let table_name = format!("hnsw_{}", index_name);
+        self.ensure_table(index_name).await?;
+
+        let limit = if req.limit > 0 { Some(req.limit as usize) } else { None };
+        let offset = req.offset.max(0) as usize;
+
+        let start_key = b"v:".to_vec();
+        let end_key = b"v:\xff".to_vec();
+
+        let storage = self.storage.lock().await;
+        let all_entries = storage.scan_range(&table_name, &start_key, &end_key, None).map_err(|e| {
+            Status::internal(format!("扫描存储失败: {}", e))
+        })?;
+        drop(storage);
+
+        let total = all_entries.len() as u64;
+
+        // 应用 offset 和 limit
+        let paginated: Vec<_> = all_entries.into_iter()
+            .skip(offset)
+            .take(limit.unwrap_or(usize::MAX))
+            .collect();
+
+        let mut entries = Vec::with_capacity(paginated.len());
+        for (key, value) in paginated {
+            // key format: "v:{id}" → parse id
+            let id_str = String::from_utf8_lossy(&key);
+            let id: u64 = id_str.strip_prefix("v:").and_then(|s| s.parse().ok()).unwrap_or(0);
+
+            // value: f32 little-endian bytes
+            let embedding: Vec<f32> = value
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+
+            entries.push(EmbeddingEntry {
+                id,
+                embedding,
+            });
+        }
+
+        Ok(Response::new(ListEmbeddingsResponse {
+            success: true,
+            message: format!("获取到 {} 条向量", entries.len()),
+            entries,
+            total,
+        }))
+    }
+
+    /// 分析 RocksDB 和 HNSW 索引的一致性
+    async fn analyze_consistency(
+        &self,
+        request: Request<AnalyzeConsistencyRequest>,
+    ) -> Result<Response<AnalyzeConsistencyResponse>, Status> {
+        let req = request.into_inner();
+        let index_name = if req.index_name.is_empty() {
+            "default"
+        } else {
+            &req.index_name
+        };
+
+        let state = self.indices.get(index_name).ok_or_else(|| {
+            Status::not_found(format!("索引不存在: {}", index_name))
+        })?;
+
+        // 1. 获取 HNSW 里的所有 ID
+        let hnsw_ids: Vec<u64> = {
+            let index = state.index.read().await;
+            index.node_ids()
+        };
+
+        // 2. 获取 RocksDB 里的所有 ID
+        let table_name = format!("hnsw_{}", index_name);
+        let start_key = b"v:".to_vec();
+        let end_key = b"v:\xff".to_vec();
+
+        let storage = self.storage.lock().await;
+        let all_entries = storage.scan_range(&table_name, &start_key, &end_key, None).map_err(|e| {
+            Status::internal(format!("扫描 RocksDB 失败: {}", e))
+        })?;
+        drop(storage);
+
+        let mut rocksdb_ids: Vec<u64> = Vec::new();
+        for (key, _) in all_entries {
+            let id_str = String::from_utf8_lossy(&key);
+            if let Some(id) = id_str.strip_prefix("v:").and_then(|s| s.parse().ok()) {
+                rocksdb_ids.push(id);
+            }
+        }
+
+        // 3. 比较差异
+        let hnsw_set: std::collections::HashSet<u64> = hnsw_ids.iter().cloned().collect();
+        let rocksdb_set: std::collections::HashSet<u64> = rocksdb_ids.iter().cloned().collect();
+
+        let only_in_hnsw: Vec<u64> = hnsw_set.difference(&rocksdb_set).cloned().collect();
+        let only_in_rocksdb: Vec<u64> = rocksdb_set.difference(&hnsw_set).cloned().collect();
+
+        Ok(Response::new(AnalyzeConsistencyResponse {
+            success: true,
+            message: format!("一致性分析完成, 不一致: HNSW({}) RocksDB({})", only_in_hnsw.len(), only_in_rocksdb.len()),
+            hnsw_count: hnsw_ids.len() as u64,
+            rocksdb_count: rocksdb_ids.len() as u64,
+            only_in_hnsw,
+            only_in_rocksdb,
+        }))
+    }
+
+    /// 从 RocksDB 重建 HNSW 索引
+    async fn rebuild_index_from_rocks_db(
+        &self,
+        request: Request<RebuildIndexFromRocksDbRequest>,
+    ) -> Result<Response<RebuildIndexFromRocksDbResponse>, Status> {
+        let req = request.into_inner();
+        let index_name = if req.index_name.is_empty() {
+            "default"
+        } else {
+            &req.index_name
+        };
+
+        let state = self.indices.get(index_name).ok_or_else(|| {
+            Status::not_found(format!("索引不存在: {}", index_name))
+        })?;
+
+        // 1. 清空 HNSW（重建新索引）
+        let new_index = HnswIndex::new(index_name.to_string(), Some(state.config.hnsw_config()?));
+
+        // 2. 从 RocksDB 读取所有向量并插入新索引
+        let table_name = format!("hnsw_{}", index_name);
+        let start_key = b"v:".to_vec();
+        let end_key = b"v:\xff".to_vec();
+
+        let storage = self.storage.lock().await;
+        let all_entries = storage.scan_range(&table_name, &start_key, &end_key, None).map_err(|e| {
+            Status::internal(format!("扫描 RocksDB 失败: {}", e))
+        })?;
+        drop(storage);
+
+        let mut rebuilt_count = 0u64;
+        for (key, value) in all_entries {
+            // 解析 id
+            let id_str = String::from_utf8_lossy(&key);
+            let id: u64 = id_str.strip_prefix("v:").and_then(|s| s.parse().ok()).unwrap_or(0);
+
+            // 解析 embedding: f32 bytes -> bf16 vector
+            let embedding: Vec<f32> = value
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            let bf16_vec: Vec<anda_db_hnsw::half::bf16> = embedding.iter().map(|&v| anda_db_hnsw::half::bf16::from_f32(v)).collect();
+
+            // 插入到新索引
+            let ts = Self::unix_ms();
+            new_index.insert(id, bf16_vec, ts).map_err(|e| {
+                Status::internal(format!("插入 HNSW 失败 id={}: {}", id, e))
+            })?;
+            rebuilt_count += 1;
+        }
+
+        // 3. 替换旧索引
+        *state.index.write().await = new_index;
+
+        // 4. 保存快照
+        let _ = self.save_snapshot_internal().await;
+
+        Ok(Response::new(RebuildIndexFromRocksDbResponse {
+            success: true,
+            message: format!("索引重建完成, 重建了 {} 条向量", rebuilt_count),
+            rebuilt_count,
         }))
     }
 }

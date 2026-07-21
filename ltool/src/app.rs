@@ -288,12 +288,12 @@ pub struct FaceTabState {
     pub file_path: InputState,
     pub det_threshold: InputState,
     pub max_faces: InputState,
-    pub save_aligned_images: bool,
-    pub index_embedding: bool,
     pub bucket: InputState,
     /// 检测到的人脸列表（编号 / score / bbox / saved_key / vector_id）
     pub faces: Vec<(usize, f32, Vec<f32>, String, u64)>,
-    /// 当前选中的人脸索引，用于显示 embedding 预览
+    /// 所有检测结果的 embedding（与 faces 一一对应）
+    pub embeddings: Vec<Vec<f32>>,
+    /// 当前选中的人脸索引（在 faces 中的索引），用于显示 embedding 预览
     pub selected_face: usize,
     /// 当前选中人脸的 embedding（前 10 个值预览用）
     pub embedding_preview: Vec<f32>,
@@ -302,6 +302,11 @@ pub struct FaceTabState {
     /// 导出路径输入框
     pub export_path: InputState,
     pub list_scroll: usize,
+    /// 检测结果中选中的人脸序号（None 表示无选中）
+    pub selected_face_num: Option<usize>,
+    /// 检测结果操作弹窗
+    pub detection_action_open: bool,
+    pub detection_action_selected: usize,
     /// 本地路径输入框的补全下拉菜单
     pub path_popup: PathPopup,
     /// ── F3: 已保存人脸列表 ──
@@ -341,10 +346,9 @@ impl Default for FaceTabState {
             file_path: InputState::new(),
             det_threshold: InputState::with_value("0.5"),
             max_faces: InputState::with_value("0"),
-            save_aligned_images: false,
-            index_embedding: false,
             bucket: InputState::with_value("faces"),
             faces: Vec::new(),
+            embeddings: Vec::new(),
             selected_face: 0,
             embedding_preview: Vec::new(),
             aligned_images: Vec::new(),
@@ -352,6 +356,9 @@ impl Default for FaceTabState {
                 default_export_dir.to_str().unwrap_or("./faces")
             ),
             list_scroll: 0,
+            selected_face_num: None,
+            detection_action_open: false,
+            detection_action_selected: 0,
             path_popup: PathPopup::default(),
             show_saved: false,
             saved_faces: Vec::new(),
@@ -391,6 +398,22 @@ pub struct VectorTabState {
     pub selected_dropdown: usize,
     /// 是否已自动刷新（首次进入时加载）
     pub auto_refreshed: bool,
+    /// 当前索引的向量条目列表（id + embedding 预览）
+    pub entries: Vec<(u64, Vec<f32>)>,
+    /// 条目列表滚动位置
+    pub entries_scroll: usize,
+    /// 条目列表中当前选中的行索引
+    pub entries_selected: Option<usize>,
+    /// 条目操作弹窗是否打开
+    pub entries_action_open: bool,
+    /// 条目操作弹窗选中项
+    pub entries_action_selected: usize,
+    /// 是否显示向量详情弹窗
+    pub show_vector_detail: bool,
+    /// 向量详情弹窗滚动位置
+    pub vector_detail_scroll: usize,
+    /// 当前查看的向量数据
+    pub vector_detail_embedding: Vec<f32>,
 }
 
 impl Default for VectorTabState {
@@ -401,6 +424,14 @@ impl Default for VectorTabState {
             show_dropdown: false,
             selected_dropdown: 0,
             auto_refreshed: false,
+            entries: Vec::new(),
+            entries_scroll: 0,
+            entries_selected: None,
+            entries_action_open: false,
+            entries_action_selected: 0,
+            show_vector_detail: false,
+            vector_detail_scroll: 0,
+            vector_detail_embedding: Vec::new(),
         }
     }
 }

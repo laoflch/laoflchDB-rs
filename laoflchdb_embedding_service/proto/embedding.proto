@@ -18,6 +18,12 @@ service EmbeddingIndexService {
   rpc SaveSnapshot(SaveSnapshotRequest) returns (SaveSnapshotResponse);
   // 手动加载快照
   rpc LoadSnapshot(LoadSnapshotRequest) returns (LoadSnapshotResponse);
+  // 列出索引中的所有向量
+  rpc ListEmbeddings(ListEmbeddingsRequest) returns (ListEmbeddingsResponse);
+  // 分析 RocksDB 和 HNSW 一致性
+  rpc AnalyzeConsistency(AnalyzeConsistencyRequest) returns (AnalyzeConsistencyResponse);
+  // 从 RocksDB 重建 HNSW 索引
+  rpc RebuildIndexFromRocksDB(RebuildIndexFromRocksDBRequest) returns (RebuildIndexFromRocksDBResponse);
 }
 
 // ── InsertEmbedding ────────────────────────────
@@ -113,4 +119,51 @@ message LoadSnapshotResponse {
   bool success = 1;
   string message = 2;
   uint64 num_elements = 3;
+}
+
+// ── ListEmbeddings ────────────────────────────
+
+message ListEmbeddingsRequest {
+  string index_name = 1;  // 索引名称
+  int32 limit = 2;        // 最大返回数量（0 表示全部）
+  int32 offset = 3;       // 偏移量（用于分页）
+}
+
+message EmbeddingEntry {
+  uint64 id = 1;
+  repeated float embedding = 2;
+}
+
+message ListEmbeddingsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated EmbeddingEntry entries = 3;
+  uint64 total = 4;        // 总条目数
+}
+
+// ── AnalyzeConsistency ────────────────────────────
+
+message AnalyzeConsistencyRequest {
+  string index_name = 1;  // 索引名称
+}
+
+message AnalyzeConsistencyResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 hnsw_count = 3;
+  uint64 rocksdb_count = 4;
+  repeated uint64 only_in_hnsw = 5;  // 只在 HNSW 里的
+  repeated uint64 only_in_rocksdb = 6;  // 只在 RocksDB 里的
+}
+
+// ── RebuildIndexFromRocksDB ────────────────────────────
+
+message RebuildIndexFromRocksDBRequest {
+  string index_name = 1;  // 索引名称
+}
+
+message RebuildIndexFromRocksDBResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 rebuilt_count = 3;  // 重建了多少条
 }

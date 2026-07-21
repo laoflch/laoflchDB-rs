@@ -3,6 +3,7 @@
 //! 提供上传图片（自动向量索引）、列出图片、查看元数据、删除图片、向量搜索等操作。
 
 use anyhow::{anyhow, Result};
+use log::warn;
 use std::path::Path;
 use std::time::SystemTime;
 
@@ -281,7 +282,7 @@ pub async fn delete_image(app: &mut App) -> Result<()> {
     };
     let deleted_key = key.clone();
 
-    let req = DeleteImageRequest { bucket, key };
+    let req = DeleteImageRequest { bucket: bucket.clone(), key };
     app.set_status("正在删除图片...");
     let resp = {
         let clients = app.clients.as_mut().unwrap();
@@ -296,6 +297,22 @@ pub async fn delete_image(app: &mut App) -> Result<()> {
     if !resp.success {
         app.set_error(format!("删除失败: {}", resp.message));
         return Ok(());
+    }
+
+    // 同时删除对应的向量索引（如果 key 包含 vector_id，如 face_{id} 格式）
+    if let Some(vector_id_str) = deleted_key.strip_prefix("face_") {
+        if let Ok(vector_id) = vector_id_str.parse::<u64>() {
+            use laoflchdb_embedding_service_proto::proto::DeleteEmbeddingRequest;
+            let del_vec_req = DeleteEmbeddingRequest {
+                id: vector_id,
+                index_name: "face".to_string(),
+            };
+            let clients = app.clients.as_mut().unwrap();
+            let auth_req = clients.auth_request(del_vec_req);
+            if let Err(e) = clients.embedding.delete_embedding(auth_req).await {
+                warn!("删除向量失败 (id={}): {}", vector_id, e);
+            }
+        }
     }
 
     // 删除后刷新列表

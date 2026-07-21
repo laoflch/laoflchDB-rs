@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0f\x65mbedding.proto\x12\x13laoflchdb.embedding\"K\n\x16InsertEmbeddingRequest\x12\n\n\x02id\x18\x01 \x01(\x04\x12\x12\n\nindex_name\x18\x02 \x01(\t\x12\x11\n\tembedding\x18\x03 \x03(\x02\";\n\x17InsertEmbeddingResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"T\n\x16SearchEmbeddingRequest\x12\x17\n\x0fquery_embedding\x18\x01 \x03(\x02\x12\r\n\x05top_k\x18\x02 \x01(\x05\x12\x12\n\nindex_name\x18\x03 \x01(\t\"?\n\x0cSearchResult\x12\n\n\x02id\x18\x01 \x01(\x04\x12\x10\n\x08\x64istance\x18\x02 \x01(\x02\x12\x11\n\tembedding\x18\x03 \x03(\x02\"o\n\x17SearchEmbeddingResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x32\n\x07results\x18\x03 \x03(\x0b\x32!.laoflchdb.embedding.SearchResult\"8\n\x16\x44\x65leteEmbeddingRequest\x12\n\n\x02id\x18\x01 \x01(\x04\x12\x12\n\nindex_name\x18\x02 \x01(\t\";\n\x17\x44\x65leteEmbeddingResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\")\n\x13GetIndexInfoRequest\x12\x12\n\nindex_name\x18\x01 \x01(\t\"\xce\x01\n\nIndexStats\x12\x14\n\x0cnum_elements\x18\x01 \x01(\x04\x12\x12\n\nmax_layers\x18\x02 \x01(\r\x12\x17\n\x0f\x61vg_connections\x18\x03 \x01(\x02\x12\x14\n\x0csearch_count\x18\x04 \x01(\x04\x12\x14\n\x0cinsert_count\x18\x05 \x01(\x04\x12\x14\n\x0c\x64\x65lete_count\x18\x06 \x01(\x04\x12\x0b\n\x03\x64im\x18\x07 \x01(\r\x12\x17\n\x0f\x64istance_metric\x18\x08 \x01(\t\x12\x15\n\rsnapshot_path\x18\t \x01(\t\"h\n\x14GetIndexInfoResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12.\n\x05stats\x18\x03 \x01(\x0b\x32\x1f.laoflchdb.embedding.IndexStats\")\n\x13SaveSnapshotRequest\x12\x12\n\nindex_name\x18\x01 \x01(\t\"F\n\x14SaveSnapshotResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x0c\n\x04path\x18\x03 \x01(\t\")\n\x13LoadSnapshotRequest\x12\x12\n\nindex_name\x18\x01 \x01(\t\"N\n\x14LoadSnapshotResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x14\n\x0cnum_elements\x18\x03 \x01(\x04\x32\x90\x05\n\x15\x45mbeddingIndexService\x12l\n\x0fInsertEmbedding\x12+.laoflchdb.embedding.InsertEmbeddingRequest\x1a,.laoflchdb.embedding.InsertEmbeddingResponse\x12l\n\x0fSearchEmbedding\x12+.laoflchdb.embedding.SearchEmbeddingRequest\x1a,.laoflchdb.embedding.SearchEmbeddingResponse\x12l\n\x0f\x44\x65leteEmbedding\x12+.laoflchdb.embedding.DeleteEmbeddingRequest\x1a,.laoflchdb.embedding.DeleteEmbeddingResponse\x12\x63\n\x0cGetIndexInfo\x12(.laoflchdb.embedding.GetIndexInfoRequest\x1a).laoflchdb.embedding.GetIndexInfoResponse\x12\x63\n\x0cSaveSnapshot\x12(.laoflchdb.embedding.SaveSnapshotRequest\x1a).laoflchdb.embedding.SaveSnapshotResponse\x12\x63\n\x0cLoadSnapshot\x12(.laoflchdb.embedding.LoadSnapshotRequest\x1a).laoflchdb.embedding.LoadSnapshotResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0f\x65mbedding.proto\x12\x13laoflchdb.embedding\"K\n\x16InsertEmbeddingRequest\x12\n\n\x02id\x18\x01 \x01(\x04\x12\x12\n\nindex_name\x18\x02 \x01(\t\x12\x11\n\tembedding\x18\x03 \x03(\x02\";\n\x17InsertEmbeddingResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\"T\n\x16SearchEmbeddingRequest\x12\x17\n\x0fquery_embedding\x18\x01 \x03(\x02\x12\r\n\x05top_k\x18\x02 \x01(\x05\x12\x12\n\nindex_name\x18\x03 \x01(\t\"?\n\x0cSearchResult\x12\n\n\x02id\x18\x01 \x01(\x04\x12\x10\n\x08\x64istance\x18\x02 \x01(\x02\x12\x11\n\tembedding\x18\x03 \x03(\x02\"o\n\x17SearchEmbeddingResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x32\n\x07results\x18\x03 \x03(\x0b\x32!.laoflchdb.embedding.SearchResult\"8\n\x16\x44\x65leteEmbeddingRequest\x12\n\n\x02id\x18\x01 \x01(\x04\x12\x12\n\nindex_name\x18\x02 \x01(\t\";\n\x17\x44\x65leteEmbeddingResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\")\n\x13GetIndexInfoRequest\x12\x12\n\nindex_name\x18\x01 \x01(\t\"\xdc\x01\n\nIndexStats\x12\x14\n\x0cnum_elements\x18\x01 \x01(\x04\x12\x12\n\nmax_layers\x18\x02 \x01(\r\x12\x17\n\x0f\x61vg_connections\x18\x03 \x01(\x02\x12\x14\n\x0csearch_count\x18\x04 \x01(\x04\x12\x14\n\x0cinsert_count\x18\x05 \x01(\x04\x12\x14\n\x0c\x64\x65lete_count\x18\x06 \x01(\x04\x12\x0b\n\x03\x64im\x18\x07 \x01(\r\x12\x17\n\x0f\x64istance_metric\x18\x08 \x01(\t\x12\x15\n\rsnapshot_path\x18\t \x01(\t\x12\x0c\n\x04name\x18\n \x01(\t\"\x9c\x01\n\x14GetIndexInfoResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12.\n\x05stats\x18\x03 \x01(\x0b\x32\x1f.laoflchdb.embedding.IndexStats\x12\x32\n\tall_stats\x18\x04 \x03(\x0b\x32\x1f.laoflchdb.embedding.IndexStats\")\n\x13SaveSnapshotRequest\x12\x12\n\nindex_name\x18\x01 \x01(\t\"F\n\x14SaveSnapshotResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x0c\n\x04path\x18\x03 \x01(\t\")\n\x13LoadSnapshotRequest\x12\x12\n\nindex_name\x18\x01 \x01(\t\"N\n\x14LoadSnapshotResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x14\n\x0cnum_elements\x18\x03 \x01(\x04\"J\n\x15ListEmbeddingsRequest\x12\x12\n\nindex_name\x18\x01 \x01(\t\x12\r\n\x05limit\x18\x02 \x01(\x05\x12\x0e\n\x06offset\x18\x03 \x01(\x05\"/\n\x0e\x45mbeddingEntry\x12\n\n\x02id\x18\x01 \x01(\x04\x12\x11\n\tembedding\x18\x02 \x03(\x02\"\x7f\n\x16ListEmbeddingsResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x34\n\x07\x65ntries\x18\x03 \x03(\x0b\x32#.laoflchdb.embedding.EmbeddingEntry\x12\r\n\x05total\x18\x04 \x01(\x04\"/\n\x19\x41nalyzeConsistencyRequest\x12\x12\n\nindex_name\x18\x01 \x01(\t\"\x98\x01\n\x1a\x41nalyzeConsistencyResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x12\n\nhnsw_count\x18\x03 \x01(\x04\x12\x15\n\rrocksdb_count\x18\x04 \x01(\x04\x12\x14\n\x0conly_in_hnsw\x18\x05 \x03(\x04\x12\x17\n\x0fonly_in_rocksdb\x18\x06 \x03(\x04\"4\n\x1eRebuildIndexFromRocksDBRequest\x12\x12\n\nindex_name\x18\x01 \x01(\t\"Z\n\x1fRebuildIndexFromRocksDBResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x15\n\rrebuilt_count\x18\x03 \x01(\x04\x32\xf9\x07\n\x15\x45mbeddingIndexService\x12l\n\x0fInsertEmbedding\x12+.laoflchdb.embedding.InsertEmbeddingRequest\x1a,.laoflchdb.embedding.InsertEmbeddingResponse\x12l\n\x0fSearchEmbedding\x12+.laoflchdb.embedding.SearchEmbeddingRequest\x1a,.laoflchdb.embedding.SearchEmbeddingResponse\x12l\n\x0f\x44\x65leteEmbedding\x12+.laoflchdb.embedding.DeleteEmbeddingRequest\x1a,.laoflchdb.embedding.DeleteEmbeddingResponse\x12\x63\n\x0cGetIndexInfo\x12(.laoflchdb.embedding.GetIndexInfoRequest\x1a).laoflchdb.embedding.GetIndexInfoResponse\x12\x63\n\x0cSaveSnapshot\x12(.laoflchdb.embedding.SaveSnapshotRequest\x1a).laoflchdb.embedding.SaveSnapshotResponse\x12\x63\n\x0cLoadSnapshot\x12(.laoflchdb.embedding.LoadSnapshotRequest\x1a).laoflchdb.embedding.LoadSnapshotResponse\x12i\n\x0eListEmbeddings\x12*.laoflchdb.embedding.ListEmbeddingsRequest\x1a+.laoflchdb.embedding.ListEmbeddingsResponse\x12u\n\x12\x41nalyzeConsistency\x12..laoflchdb.embedding.AnalyzeConsistencyRequest\x1a/.laoflchdb.embedding.AnalyzeConsistencyResponse\x12\x84\x01\n\x17RebuildIndexFromRocksDB\x12\x33.laoflchdb.embedding.RebuildIndexFromRocksDBRequest\x1a\x34.laoflchdb.embedding.RebuildIndexFromRocksDBResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -48,17 +48,31 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_GETINDEXINFOREQUEST']._serialized_start=561
   _globals['_GETINDEXINFOREQUEST']._serialized_end=602
   _globals['_INDEXSTATS']._serialized_start=605
-  _globals['_INDEXSTATS']._serialized_end=811
-  _globals['_GETINDEXINFORESPONSE']._serialized_start=813
-  _globals['_GETINDEXINFORESPONSE']._serialized_end=917
-  _globals['_SAVESNAPSHOTREQUEST']._serialized_start=919
-  _globals['_SAVESNAPSHOTREQUEST']._serialized_end=960
-  _globals['_SAVESNAPSHOTRESPONSE']._serialized_start=962
-  _globals['_SAVESNAPSHOTRESPONSE']._serialized_end=1032
-  _globals['_LOADSNAPSHOTREQUEST']._serialized_start=1034
-  _globals['_LOADSNAPSHOTREQUEST']._serialized_end=1075
-  _globals['_LOADSNAPSHOTRESPONSE']._serialized_start=1077
-  _globals['_LOADSNAPSHOTRESPONSE']._serialized_end=1155
-  _globals['_EMBEDDINGINDEXSERVICE']._serialized_start=1158
-  _globals['_EMBEDDINGINDEXSERVICE']._serialized_end=1814
+  _globals['_INDEXSTATS']._serialized_end=825
+  _globals['_GETINDEXINFORESPONSE']._serialized_start=828
+  _globals['_GETINDEXINFORESPONSE']._serialized_end=984
+  _globals['_SAVESNAPSHOTREQUEST']._serialized_start=986
+  _globals['_SAVESNAPSHOTREQUEST']._serialized_end=1027
+  _globals['_SAVESNAPSHOTRESPONSE']._serialized_start=1029
+  _globals['_SAVESNAPSHOTRESPONSE']._serialized_end=1099
+  _globals['_LOADSNAPSHOTREQUEST']._serialized_start=1101
+  _globals['_LOADSNAPSHOTREQUEST']._serialized_end=1142
+  _globals['_LOADSNAPSHOTRESPONSE']._serialized_start=1144
+  _globals['_LOADSNAPSHOTRESPONSE']._serialized_end=1222
+  _globals['_LISTEMBEDDINGSREQUEST']._serialized_start=1224
+  _globals['_LISTEMBEDDINGSREQUEST']._serialized_end=1298
+  _globals['_EMBEDDINGENTRY']._serialized_start=1300
+  _globals['_EMBEDDINGENTRY']._serialized_end=1347
+  _globals['_LISTEMBEDDINGSRESPONSE']._serialized_start=1349
+  _globals['_LISTEMBEDDINGSRESPONSE']._serialized_end=1476
+  _globals['_ANALYZECONSISTENCYREQUEST']._serialized_start=1478
+  _globals['_ANALYZECONSISTENCYREQUEST']._serialized_end=1525
+  _globals['_ANALYZECONSISTENCYRESPONSE']._serialized_start=1528
+  _globals['_ANALYZECONSISTENCYRESPONSE']._serialized_end=1680
+  _globals['_REBUILDINDEXFROMROCKSDBREQUEST']._serialized_start=1682
+  _globals['_REBUILDINDEXFROMROCKSDBREQUEST']._serialized_end=1734
+  _globals['_REBUILDINDEXFROMROCKSDBRESPONSE']._serialized_start=1736
+  _globals['_REBUILDINDEXFROMROCKSDBRESPONSE']._serialized_end=1826
+  _globals['_EMBEDDINGINDEXSERVICE']._serialized_start=1829
+  _globals['_EMBEDDINGINDEXSERVICE']._serialized_end=2846
 # @@protoc_insertion_point(module_scope)
