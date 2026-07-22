@@ -817,6 +817,43 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         _ => {}
     }
 
+    // ── 路径补全弹窗（必须在检测结果列表之前，避免 Enter 被拦截）──
+    if app.face_tab.path_popup.is_active() {
+        match event.code {
+            KeyCode::Up => {
+                app.face_tab.path_popup.prev();
+                return true;
+            }
+            KeyCode::Down => {
+                app.face_tab.path_popup.next();
+                return true;
+            }
+            KeyCode::Enter => {
+                if let Some(c) = app.face_tab.path_popup.current() {
+                    let full = c.full_path.clone();
+                    let is_dir = c.is_dir;
+                    app.face_tab.file_path.set_value(&full);
+                    app.face_tab.path_popup.close();
+                    if is_dir {
+                        let cs = crate::path_complete::list_candidates(&full);
+                        app.face_tab.path_popup.open(cs);
+                    } else {
+                        app.set_status(format!("已选择: {}", full));
+                    }
+                } else {
+                    app.face_tab.path_popup.close();
+                }
+                return true;
+            }
+            KeyCode::Esc => {
+                app.face_tab.path_popup.close();
+                app.set_status("已取消路径补全");
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     // ── 检测结果列表导航 ──
     // 仅在未显示已保存人脸列表时启用，避免与 F3 弹窗导航冲突
     if !app.face_tab.show_saved && !app.face_tab.faces.is_empty() {
@@ -898,43 +935,6 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
                     app.face_tab.show_saved = false;
                     app.set_status("已关闭已保存人脸列表");
                 }
-                return true;
-            }
-            _ => {}
-        }
-    }
-
-    // 当焦点在路径输入框且弹窗激活时，Up/Down/Enter/Esc 优先交给弹窗
-    if app.face_tab.focus == FaceFocus::FilePath && app.face_tab.path_popup.is_active() {
-        match event.code {
-            KeyCode::Up => {
-                app.face_tab.path_popup.prev();
-                return true;
-            }
-            KeyCode::Down => {
-                app.face_tab.path_popup.next();
-                return true;
-            }
-            KeyCode::Enter => {
-                if let Some(c) = app.face_tab.path_popup.current() {
-                    let full = c.full_path.clone();
-                    let is_dir = c.is_dir;
-                    app.face_tab.file_path.set_value(&full);
-                    app.face_tab.path_popup.close();
-                    if is_dir {
-                        let cs = crate::path_complete::list_candidates(&full);
-                        app.face_tab.path_popup.open(cs);
-                    } else {
-                        app.set_status(format!("已选择: {}", full));
-                    }
-                } else {
-                    app.face_tab.path_popup.close();
-                }
-                return true;
-            }
-            KeyCode::Esc => {
-                app.face_tab.path_popup.close();
-                app.set_status("已取消路径补全");
                 return true;
             }
             _ => {}
@@ -1726,6 +1726,22 @@ pub async fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                     // 点击在路径输入框区域（y=3..8）→ 清除选中
                     app.image_tab.selected_index = None;
                     app.image_tab.action_popup_open = false;
+                }
+            } else if app.current_tab == Tab::Face {
+                // 人脸 Tab 的检测结果列表
+                // 布局：Tab栏(3) + 输入区(9) + 表格边框(1) + 表头(1) → 数据行起始 y = 14
+                let data_start_y = 3 + 9 + 2;
+                if !app.face_tab.show_saved && !app.face_tab.faces.is_empty() && event.row >= data_start_y {
+                    let row = (event.row - data_start_y) as usize + app.face_tab.list_scroll;
+                    if row < app.face_tab.faces.len() {
+                        app.face_tab.selected_face_num = Some(row);
+                        // 调整滚动使选中行可见
+                        if row < app.face_tab.list_scroll {
+                            app.face_tab.list_scroll = row;
+                        } else if row >= app.face_tab.list_scroll + 50 {
+                            app.face_tab.list_scroll = row - 50 + 1;
+                        }
+                    }
                 }
             } else if app.current_tab == Tab::Vector && !app.vector_tab.entries.is_empty() {
                 // 布局：Tab栏(3) + 输入框(3) + 索引信息(18) + 条目表格边框(1) + 表头(1) → 数据行起始 y
