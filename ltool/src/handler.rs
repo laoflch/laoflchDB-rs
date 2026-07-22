@@ -814,6 +814,16 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
             let _ = crate::tab_face::export_faces(app, &export_path).await;
             return true;
         }
+        KeyCode::Char('o') if event.modifiers.is_empty() => {
+            // o: 切换保存原图选项
+            app.face_tab.save_original = !app.face_tab.save_original;
+            if app.face_tab.save_original {
+                app.set_status("已开启保存原图：保存人脸前将上传并索引原图");
+            } else {
+                app.set_status("已关闭保存原图");
+            }
+            return true;
+        }
         _ => {}
     }
 
@@ -1729,8 +1739,8 @@ pub async fn handle_mouse_event(app: &mut App, event: MouseEvent) {
                 }
             } else if app.current_tab == Tab::Face {
                 // 人脸 Tab 的检测结果列表
-                // 布局：Tab栏(3) + 输入区(9) + 表格边框(1) + 表头(1) → 数据行起始 y = 14
-                let data_start_y = 3 + 9 + 2;
+                // 布局：Tab栏(3) + 输入区(12) + 表格边框(1) + 表头(1) → 数据行起始 y = 17
+                let data_start_y = 3 + 12 + 2;
                 if !app.face_tab.show_saved && !app.face_tab.faces.is_empty() && event.row >= data_start_y {
                     let row = (event.row - data_start_y) as usize + app.face_tab.list_scroll;
                     if row < app.face_tab.faces.len() {

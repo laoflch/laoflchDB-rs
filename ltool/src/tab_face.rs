@@ -106,6 +106,8 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
 /// 利用 F1 已缓存的 aligned_image 和 embedding，直接上传对齐图片到 image_service
 /// 并插入向量到 embedding_service，避免重复调用 ExtractFaceFeatures 重新处理整张图片。
 /// 使用相同的 Snowflake ID 作为图片 key（face_ 前缀）和向量 ID，确保一致性。
+///
+/// 如果开启了 save_original，先上传原图并索引到 image 索引，原图 key 作为人脸元数据 name。
 pub async fn save_and_index_face(app: &mut App) -> Result<()> {
     if !app.require_login() {
         return Ok(());
@@ -176,7 +178,62 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         }
     }
 
-    // ── 2. 生成 Snowflake ID，同时用于图片 key 和向量 ID ──
+    // ── 2. 如果开启了保存原图，先处理原图上传和索引 ──
+    let mut original_image_key = String::new();
+    if app.face_tab.save_original {
+        let file_path = app.face_tab.file_path.value.clone();
+        if file_path.is_empty() {
+            app.set_error("保存原图时原始图片路径不能为空");
+            return Ok(());
+        }
+
+        // 根据文件扩展名推断 content_type
+        let path = std::path::Path::new(&file_path);
+        let content_type = path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .map(|ext| match ext.to_lowercase().as_str() {
+                "jpg" | "jpeg" => "image/jpeg",
+                "png" => "image/png",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                "bmp" => "image/bmp",
+                _ => "application/octet-stream",
+            })
+            .unwrap_or("application/octet-stream")
+            .to_string();
+
+        // 生成原图 key
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let orig_snowflake = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        let orig_key = format!("image_{}", orig_snowflake);
+
+        // 复用图片上传功能：上传 + 向量化 + 索引
+        app.set_status("正在处理原图...");
+        match crate::tab_image::upload_and_index_file(
+            app,
+            &file_path,
+            "images",
+            &orig_key,
+            &content_type,
+            "",
+        )
+        .await
+        {
+            Ok(key) => {
+                original_image_key = key.clone();
+                app.set_status(format!("原图已上传并索引: key={}", key));
+            }
+            Err(e) => {
+                app.set_warning(format!("原图上传/索引失败（不影响人脸保存）: {}", e));
+            }
+        }
+    }
+
+    // ── 3. 生成 Snowflake ID，同时用于人脸图片 key 和向量 ID ──
     use std::time::{SystemTime, UNIX_EPOCH};
     let snowflake_id = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -186,16 +243,20 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
 
     app.set_status(format!("正在保存并索引人脸 #{}...", face_num));
 
-    // ── 3. 上传对齐图片到 image_service（使用 face_ 前缀的 key）──
+    // ── 4. 上传对齐图片到 image_service（使用 face_ 前缀的 key）──
     use std::collections::HashMap;
     use laoflchdb_image_service_proto::proto::UploadImageRequest;
+    let mut metadata = HashMap::new();
+    if !original_image_key.is_empty() {
+        metadata.insert("name".to_string(), original_image_key.clone());
+    }
     let upload_req = UploadImageRequest {
         bucket: bucket.clone(),
         key: face_key.clone(),
         data: aligned_image,
         content_type: "image/jpeg".to_string(),
-        metadata: HashMap::new(),
-        name: String::new(),
+        metadata,
+        name: original_image_key.clone(),
     };
 
     let upload_resp = {
@@ -214,7 +275,7 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         return Ok(());
     }
 
-    // ── 4. 插入 embedding 到 embedding_service ──
+    // ── 5. 插入 embedding 到 embedding_service ──
     use laoflchdb_embedding_service_proto::proto::InsertEmbeddingRequest;
     let insert_req = InsertEmbeddingRequest {
         index_name: "face".to_string(),
@@ -253,14 +314,18 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         return Ok(());
     }
 
-    // ── 5. 更新检测结果列表中的 saved_key 和 vector_id ──
+    // ── 6. 更新检测结果列表中的 saved_key 和 vector_id ──
     app.face_tab.faces[face_idx].3 = face_key.clone();
     app.face_tab.faces[face_idx].4 = snowflake_id;
 
-    app.set_status(format!(
+    let mut status = format!(
         "人脸 #{} 已保存并索引: key={}, vector_id={}",
         face_num, face_key, snowflake_id
-    ));
+    );
+    if !original_image_key.is_empty() {
+        status.push_str(&format!("，原图 key={}", original_image_key));
+    }
+    app.set_status(&status);
     Ok(())
 }
 

@@ -388,7 +388,7 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     use crate::app::FaceFocus;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(9), Constraint::Min(5)])
+        .constraints([Constraint::Length(12), Constraint::Min(5)])
         .split(area);
 
     // 第一行：本地图片路径（独占一行，全宽）
@@ -418,6 +418,23 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     // 第三行：导出路径（独占一行，全宽，和本地路径一致）
     let row3 = Rect { x: chunks[0].x, y: chunks[0].y + 6, width: chunks[0].width, height: 3 };
     draw_input_box(f, row3, "导出路径", &app.face_tab.export_path, app.face_tab.focus == FaceFocus::ExportPath);
+
+    // 第四行：保存原图复选框
+    let row4 = Rect { x: chunks[0].x, y: chunks[0].y + 9, width: chunks[0].width, height: 3 };
+    let check_label = if app.face_tab.save_original {
+        "[x] 保存原图（保存人脸前先上传原图并索引）"
+    } else {
+        "[ ] 保存原图"
+    };
+    let check_style = if app.face_tab.save_original {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let check_para = Paragraph::new(Line::from(vec![
+        Span::styled(check_label, check_style),
+    ]));
+    f.render_widget(check_para, row4);
 
     // 结果区
     let rows: Vec<Row> = app

@@ -289,6 +289,8 @@ pub struct FaceTabState {
     pub det_threshold: InputState,
     pub max_faces: InputState,
     pub bucket: InputState,
+    /// 是否保存原图（保存人脸前先上传原图并索引，原图 key 作为人脸元数据 name）
+    pub save_original: bool,
     /// 检测到的人脸列表（编号 / score / bbox / saved_key / vector_id）
     pub faces: Vec<(usize, f32, Vec<f32>, String, u64)>,
     /// 所有检测结果的 embedding（与 faces 一一对应）
@@ -347,6 +349,7 @@ impl Default for FaceTabState {
             det_threshold: InputState::with_value("0.5"),
             max_faces: InputState::with_value("0"),
             bucket: InputState::with_value("faces"),
+            save_original: false,
             faces: Vec::new(),
             embeddings: Vec::new(),
             selected_face: 0,
@@ -763,6 +766,12 @@ impl App {
     pub fn set_error(&mut self, msg: impl Into<String>) {
         self.status_message = msg.into();
         self.status_is_error = true;
+    }
+
+    /// 设置警告状态消息（非错误，但以黄色提示）
+    pub fn set_warning(&mut self, msg: impl Into<String>) {
+        self.status_message = msg.into();
+        self.status_is_error = false;
     }
 
     /// 切换到下一个 Tab（Tab 键）

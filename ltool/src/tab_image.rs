@@ -14,93 +14,47 @@ use laoflchdb_image_service_proto::proto::{
 
 use crate::app::App;
 
-/// 上传图片并自动向量索引
+/// 上传图片文件并自动向量索引
 ///
-/// 从 `image_tab.file_path` 读取本地文件，上传到图片服务后，
-/// 自动调用 VectorService 生成向量并插入到 EmbeddingIndexService。
-/// 向量索引失败不影响上传结果。
-pub async fn upload_image(app: &mut App) -> Result<()> {
-    if !app.require_login() {
-        return Ok(());
-    }
-    let file_path = app.image_tab.file_path.value.clone();
-    let bucket = app.image_tab.bucket.value.clone();
-    let key = app.image_tab.key.value.clone();
-
-    if file_path.is_empty() {
-        app.set_error("请输入本地文件路径");
-        return Ok(());
-    }
-
-    let path = Path::new(&file_path);
-    let data = std::fs::read(path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
-
-    // 根据扩展名推断 content_type
-    let content_type = path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| match ext.to_lowercase().as_str() {
-            "jpg" | "jpeg" => "image/jpeg",
-            "png" => "image/png",
-            "gif" => "image/gif",
-            "webp" => "image/webp",
-            "bmp" => "image/bmp",
-            _ => "application/octet-stream",
-        })
-        .unwrap_or("application/octet-stream")
-        .to_string();
+/// 读取指定文件，上传到图片服务后，自动调用 VectorService 生成向量并插入到 EmbeddingIndexService。
+/// 返回上传后的图片 key。
+/// 此函数不依赖 image_tab 状态，可在 face_tab 等地方复用。
+pub async fn upload_and_index_file(
+    app: &mut App,
+    file_path: &str,
+    bucket: &str,
+    key: &str,
+    content_type: &str,
+    name: &str,
+) -> Result<String> {
+    let data = std::fs::read(file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
 
     let req = UploadImageRequest {
-        bucket: bucket.clone(),
-        key: key.clone(),
+        bucket: bucket.to_string(),
+        key: key.to_string(),
         data,
-        content_type,
+        content_type: content_type.to_string(),
         metadata: Default::default(),
-        name: file_path.clone(),
+        name: name.to_string(),
     };
 
-    app.set_status("正在上传图片...");
     let resp = {
         let clients = app.clients.as_mut().unwrap();
         let auth_req = clients.auth_request(req);
         match clients.image.upload_image(auth_req).await {
             Ok(r) => r.into_inner(),
-            Err(e) => {
-                app.set_error(format!("上传请求失败: {}", e));
-                return Ok(());
-            }
+            Err(e) => return Err(anyhow!("上传请求失败: {}", e)),
         }
     };
     if !resp.success {
-        app.set_error(format!("上传失败: {}", resp.message));
-        return Ok(());
+        return Err(anyhow!("上传失败: {}", resp.message));
     }
 
-    let info = if let Some(ref m) = resp.metadata {
-        format!(
-            "key={}, etag={}, size={}x{}, format={}",
-            resp.key, resp.etag, m.width, m.height, m.format
-        )
-    } else {
-        format!("key={}, etag={}", resp.key, resp.etag)
-    };
-    app.image_tab.upload_result = Some(info);
-    app.image_tab.key.set_value("");
-    app.set_status(format!("上传成功: {}", resp.key));
+    // ── 自动向量索引 ──
+    let image_data = std::fs::read(file_path)
+        .map_err(|_| anyhow!("上传成功但重新读取文件失败"))?;
 
-    // ── 自动向量索引 ──────────────────────────────────
-    app.set_status(format!("上传成功: {}, 正在获取索引维度...", resp.key));
-
-    // 重新读取文件（data 已被 UploadImageRequest 消费）
-    let image_data = match std::fs::read(&file_path) {
-        Ok(d) => d,
-        Err(_) => {
-            app.set_status(format!("上传成功: {}（向量索引跳过: 读取文件失败）", resp.key));
-            return Ok(());
-        }
-    };
-
-    // 查询目标索引的 dim，确保向量维度匹配
+    // 查询 image 索引的 dim
     use laoflchdb_embedding_service_proto::proto::GetIndexInfoRequest;
     let target_dim = {
         let clients = app.clients.as_mut().unwrap();
@@ -132,27 +86,20 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
         let auth_req = clients.auth_request(emb_req);
         match clients.vector.create_embedding(auth_req).await {
             Ok(r) => r.into_inner(),
-            Err(e) => {
-                app.set_status(format!("上传成功: {}（向量索引跳过: {}", resp.key, e));
-                return Ok(());
-            }
+            Err(e) => return Err(anyhow!("向量化失败: {}", e)),
         }
     };
     if !emb_resp.success {
-        app.set_status(format!("上传成功: {}（向量化失败: {}）", resp.key, emb_resp.message));
-        return Ok(());
+        return Err(anyhow!("向量化失败: {}", emb_resp.message));
     }
 
     let embedding = match emb_resp.results.first() {
         Some(r) => r.embedding.clone(),
-        None => {
-            app.set_status(format!("上传成功: {}（向量索引跳过: 向量化结果为空）", resp.key));
-            return Ok(());
-        }
+        None => return Err(anyhow!("向量化结果为空")),
     };
 
-    // 使用 image key（Snowflake ID）作为向量索引 ID，可直接关联回图片
-    let id = resp.key.parse::<u64>().unwrap_or_else(|_| {
+    // 使用 key 中的 Snowflake ID 作为向量索引 ID
+    let id = key.parse::<u64>().unwrap_or_else(|_| {
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
@@ -171,16 +118,78 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
         let auth_req = clients.auth_request(ins_req);
         match clients.embedding.insert_embedding(auth_req).await {
             Ok(r) => r.into_inner(),
-            Err(e) => {
-                app.set_status(format!("上传成功: {}（索引请求失败: {}）", resp.key, e));
-                return Ok(());
-            }
+            Err(e) => return Err(anyhow!("索引请求失败: {}", e)),
         }
     };
-    if ins_resp.success {
-        app.set_status(format!("上传成功: {}, 向量索引成功 (id={}, dim={})", resp.key, id, target_dim));
+    if !ins_resp.success {
+        return Err(anyhow!("索引失败: {}", ins_resp.message));
+    }
+
+    Ok(resp.key)
+}
+
+/// 上传图片并自动向量索引
+///
+/// 从 `image_tab.file_path` 读取本地文件，上传到图片服务后，
+/// 自动调用 VectorService 生成向量并插入到 EmbeddingIndexService。
+/// 向量索引失败不影响上传结果。
+pub async fn upload_image(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+    let file_path = app.image_tab.file_path.value.clone();
+    let bucket = app.image_tab.bucket.value.clone();
+    let key = app.image_tab.key.value.clone();
+
+    if file_path.is_empty() {
+        app.set_error("请输入本地文件路径");
+        return Ok(());
+    }
+
+    let path = Path::new(&file_path);
+
+    // 根据扩展名推断 content_type
+    let content_type = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| match ext.to_lowercase().as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            _ => "application/octet-stream",
+        })
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
+    let use_key = if key.is_empty() {
+        // 自动生成 key
+        let snowflake = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+        format!("image_{}", snowflake)
     } else {
-        app.set_status(format!("上传成功: {}（索引失败: {}）", resp.key, ins_resp.message));
+        key.clone()
+    };
+
+    app.set_status("正在上传图片...");
+    match upload_and_index_file(app, &file_path, &bucket, &use_key, &content_type, &file_path).await {
+        Ok(uploaded_key) => {
+            app.image_tab.upload_result = Some(format!("key={}", uploaded_key));
+            app.image_tab.key.set_value("");
+            app.set_status(format!("上传成功: {}, 向量索引成功", uploaded_key));
+        }
+        Err(e) => {
+            let msg = format!("{}", e);
+            if msg.starts_with("上传") {
+                app.set_error(&msg);
+            } else {
+                // 可能是上传成功但索引失败，以状态栏显示
+                app.set_status(format!("上传成功（向量索引跳过: {}）", msg));
+            }
+        }
     }
 
     Ok(())
