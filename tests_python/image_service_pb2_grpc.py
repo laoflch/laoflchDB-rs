@@ -65,6 +65,11 @@ class ImageServiceStub(object):
                 request_serializer=image__service__pb2.DeleteImageRequest.SerializeToString,
                 response_deserializer=image__service__pb2.DeleteImageResponse.FromString,
                 _registered_method=True)
+        self.UploadImageStream = channel.stream_unary(
+                '/laoflchdb.image_service.ImageService/UploadImageStream',
+                request_serializer=image__service__pb2.UploadImageChunk.SerializeToString,
+                response_deserializer=image__service__pb2.UploadImageResponse.FromString,
+                _registered_method=True)
 
 
 class ImageServiceServicer(object):
@@ -113,6 +118,13 @@ class ImageServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def UploadImageStream(self, request_iterator, context):
+        """流式上传图片（支持大文件切片上传）
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_ImageServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -145,6 +157,11 @@ def add_ImageServiceServicer_to_server(servicer, server):
                     servicer.DeleteImage,
                     request_deserializer=image__service__pb2.DeleteImageRequest.FromString,
                     response_serializer=image__service__pb2.DeleteImageResponse.SerializeToString,
+            ),
+            'UploadImageStream': grpc.stream_unary_rpc_method_handler(
+                    servicer.UploadImageStream,
+                    request_deserializer=image__service__pb2.UploadImageChunk.FromString,
+                    response_serializer=image__service__pb2.UploadImageResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -310,6 +327,33 @@ class ImageService(object):
             '/laoflchdb.image_service.ImageService/DeleteImage',
             image__service__pb2.DeleteImageRequest.SerializeToString,
             image__service__pb2.DeleteImageResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def UploadImageStream(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_unary(
+            request_iterator,
+            target,
+            '/laoflchdb.image_service.ImageService/UploadImageStream',
+            image__service__pb2.UploadImageChunk.SerializeToString,
+            image__service__pb2.UploadImageResponse.FromString,
             options,
             channel_credentials,
             insecure,

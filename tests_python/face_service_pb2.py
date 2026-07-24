@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12\x66\x61\x63\x65_service.proto\x12\x16laoflchdb.face_service\"R\n\x12\x44\x65tectFacesRequest\x12\x12\n\nimage_data\x18\x01 \x01(\x0c\x12\x15\n\rdet_threshold\x18\x02 \x01(\x02\x12\x11\n\tmax_faces\x18\x03 \x01(\x05\">\n\x0c\x44\x65tectedFace\x12\x0c\n\x04\x62\x62ox\x18\x01 \x03(\x02\x12\r\n\x05score\x18\x02 \x01(\x02\x12\x11\n\tlandmarks\x18\x03 \x03(\x02\"\x97\x01\n\x13\x44\x65tectFacesResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x33\n\x05\x66\x61\x63\x65s\x18\x03 \x03(\x0b\x32$.laoflchdb.face_service.DetectedFace\x12\x13\n\x0bimage_width\x18\x04 \x01(\x05\x12\x14\n\x0cimage_height\x18\x05 \x01(\x05\"\xc5\x01\n\x1a\x45xtractFaceFeaturesRequest\x12\x12\n\nimage_data\x18\x01 \x01(\x0c\x12\x15\n\rdet_threshold\x18\x02 \x01(\x02\x12\x11\n\tmax_faces\x18\x03 \x01(\x05\x12\x1b\n\x13save_aligned_images\x18\x04 \x01(\x08\x12\x14\n\x0cimage_bucket\x18\x05 \x01(\t\x12\x1d\n\x15return_aligned_images\x18\x06 \x01(\x08\x12\x17\n\x0findex_embedding\x18\x07 \x01(\x08\"\xc0\x01\n\x0b\x46\x61\x63\x65\x46\x65\x61ture\x12\x37\n\tdetection\x18\x01 \x01(\x0b\x32$.laoflchdb.face_service.DetectedFace\x12\x11\n\tembedding\x18\x02 \x03(\x02\x12\x15\n\raligned_image\x18\x03 \x01(\x0c\x12\x17\n\x0fsaved_image_key\x18\x04 \x01(\t\x12\x1a\n\x12saved_image_bucket\x18\x05 \x01(\t\x12\x19\n\x11indexed_vector_id\x18\x06 \x01(\x04\"\x9e\x01\n\x1b\x45xtractFaceFeaturesResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x32\n\x05\x66\x61\x63\x65s\x18\x03 \x03(\x0b\x32#.laoflchdb.face_service.FaceFeature\x12\x13\n\x0bimage_width\x18\x04 \x01(\x05\x12\x14\n\x0cimage_height\x18\x05 \x01(\x05\">\n ExtractFeatureFromAlignedRequest\x12\x1a\n\x12\x61ligned_image_data\x18\x01 \x01(\x0c\"X\n!ExtractFeatureFromAlignedResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x11\n\tembedding\x18\x03 \x03(\x02\"<\n\x16\x43ompareFeaturesRequest\x12\x10\n\x08\x66\x65\x61ture1\x18\x01 \x03(\x02\x12\x10\n\x08\x66\x65\x61ture2\x18\x02 \x03(\x02\"g\n\x17\x43ompareFeaturesResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x12\n\nsimilarity\x18\x03 \x01(\x02\x12\x16\n\x0eis_same_person\x18\x04 \x01(\x08\x32\xfc\x03\n\x0b\x46\x61\x63\x65Service\x12\x66\n\x0b\x44\x65tectFaces\x12*.laoflchdb.face_service.DetectFacesRequest\x1a+.laoflchdb.face_service.DetectFacesResponse\x12~\n\x13\x45xtractFaceFeatures\x12\x32.laoflchdb.face_service.ExtractFaceFeaturesRequest\x1a\x33.laoflchdb.face_service.ExtractFaceFeaturesResponse\x12\x90\x01\n\x19\x45xtractFeatureFromAligned\x12\x38.laoflchdb.face_service.ExtractFeatureFromAlignedRequest\x1a\x39.laoflchdb.face_service.ExtractFeatureFromAlignedResponse\x12r\n\x0f\x43ompareFeatures\x12..laoflchdb.face_service.CompareFeaturesRequest\x1a/.laoflchdb.face_service.CompareFeaturesResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x12\x66\x61\x63\x65_service.proto\x12\x16laoflchdb.face_service\"R\n\x12\x44\x65tectFacesRequest\x12\x12\n\nimage_data\x18\x01 \x01(\x0c\x12\x15\n\rdet_threshold\x18\x02 \x01(\x02\x12\x11\n\tmax_faces\x18\x03 \x01(\x05\">\n\x0c\x44\x65tectedFace\x12\x0c\n\x04\x62\x62ox\x18\x01 \x03(\x02\x12\r\n\x05score\x18\x02 \x01(\x02\x12\x11\n\tlandmarks\x18\x03 \x03(\x02\"\x97\x01\n\x13\x44\x65tectFacesResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x33\n\x05\x66\x61\x63\x65s\x18\x03 \x03(\x0b\x32$.laoflchdb.face_service.DetectedFace\x12\x13\n\x0bimage_width\x18\x04 \x01(\x05\x12\x14\n\x0cimage_height\x18\x05 \x01(\x05\"\xe2\x01\n\x1a\x45xtractFaceFeaturesRequest\x12\x12\n\nimage_data\x18\x01 \x01(\x0c\x12\x15\n\rdet_threshold\x18\x02 \x01(\x02\x12\x11\n\tmax_faces\x18\x03 \x01(\x05\x12\x1b\n\x13save_aligned_images\x18\x04 \x01(\x08\x12\x14\n\x0cimage_bucket\x18\x05 \x01(\t\x12\x1d\n\x15return_aligned_images\x18\x06 \x01(\x08\x12\x17\n\x0findex_embedding\x18\x07 \x01(\x08\x12\x1b\n\x13save_original_image\x18\x08 \x01(\x08\"\xe2\x01\n\x0b\x46\x61\x63\x65\x46\x65\x61ture\x12\x37\n\tdetection\x18\x01 \x01(\x0b\x32$.laoflchdb.face_service.DetectedFace\x12\x11\n\tembedding\x18\x02 \x03(\x02\x12\x15\n\raligned_image\x18\x03 \x01(\x0c\x12\x17\n\x0fsaved_image_key\x18\x04 \x01(\t\x12\x1a\n\x12saved_image_bucket\x18\x05 \x01(\t\x12\x19\n\x11indexed_vector_id\x18\x06 \x01(\x04\x12 \n\x18saved_original_image_key\x18\x07 \x01(\t\"\x9e\x01\n\x1b\x45xtractFaceFeaturesResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x32\n\x05\x66\x61\x63\x65s\x18\x03 \x03(\x0b\x32#.laoflchdb.face_service.FaceFeature\x12\x13\n\x0bimage_width\x18\x04 \x01(\x05\x12\x14\n\x0cimage_height\x18\x05 \x01(\x05\">\n ExtractFeatureFromAlignedRequest\x12\x1a\n\x12\x61ligned_image_data\x18\x01 \x01(\x0c\"X\n!ExtractFeatureFromAlignedResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x11\n\tembedding\x18\x03 \x03(\x02\"<\n\x16\x43ompareFeaturesRequest\x12\x10\n\x08\x66\x65\x61ture1\x18\x01 \x03(\x02\x12\x10\n\x08\x66\x65\x61ture2\x18\x02 \x03(\x02\"g\n\x17\x43ompareFeaturesResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x12\n\nsimilarity\x18\x03 \x01(\x02\x12\x16\n\x0eis_same_person\x18\x04 \x01(\x08\x32\xfc\x03\n\x0b\x46\x61\x63\x65Service\x12\x66\n\x0b\x44\x65tectFaces\x12*.laoflchdb.face_service.DetectFacesRequest\x1a+.laoflchdb.face_service.DetectFacesResponse\x12~\n\x13\x45xtractFaceFeatures\x12\x32.laoflchdb.face_service.ExtractFaceFeaturesRequest\x1a\x33.laoflchdb.face_service.ExtractFaceFeaturesResponse\x12\x90\x01\n\x19\x45xtractFeatureFromAligned\x12\x38.laoflchdb.face_service.ExtractFeatureFromAlignedRequest\x1a\x39.laoflchdb.face_service.ExtractFeatureFromAlignedResponse\x12r\n\x0f\x43ompareFeatures\x12..laoflchdb.face_service.CompareFeaturesRequest\x1a/.laoflchdb.face_service.CompareFeaturesResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -38,19 +38,19 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_DETECTFACESRESPONSE']._serialized_start=195
   _globals['_DETECTFACESRESPONSE']._serialized_end=346
   _globals['_EXTRACTFACEFEATURESREQUEST']._serialized_start=349
-  _globals['_EXTRACTFACEFEATURESREQUEST']._serialized_end=546
-  _globals['_FACEFEATURE']._serialized_start=549
-  _globals['_FACEFEATURE']._serialized_end=741
-  _globals['_EXTRACTFACEFEATURESRESPONSE']._serialized_start=744
-  _globals['_EXTRACTFACEFEATURESRESPONSE']._serialized_end=902
-  _globals['_EXTRACTFEATUREFROMALIGNEDREQUEST']._serialized_start=904
-  _globals['_EXTRACTFEATUREFROMALIGNEDREQUEST']._serialized_end=966
-  _globals['_EXTRACTFEATUREFROMALIGNEDRESPONSE']._serialized_start=968
-  _globals['_EXTRACTFEATUREFROMALIGNEDRESPONSE']._serialized_end=1056
-  _globals['_COMPAREFEATURESREQUEST']._serialized_start=1058
-  _globals['_COMPAREFEATURESREQUEST']._serialized_end=1118
-  _globals['_COMPAREFEATURESRESPONSE']._serialized_start=1120
-  _globals['_COMPAREFEATURESRESPONSE']._serialized_end=1223
-  _globals['_FACESERVICE']._serialized_start=1226
-  _globals['_FACESERVICE']._serialized_end=1734
+  _globals['_EXTRACTFACEFEATURESREQUEST']._serialized_end=575
+  _globals['_FACEFEATURE']._serialized_start=578
+  _globals['_FACEFEATURE']._serialized_end=804
+  _globals['_EXTRACTFACEFEATURESRESPONSE']._serialized_start=807
+  _globals['_EXTRACTFACEFEATURESRESPONSE']._serialized_end=965
+  _globals['_EXTRACTFEATUREFROMALIGNEDREQUEST']._serialized_start=967
+  _globals['_EXTRACTFEATUREFROMALIGNEDREQUEST']._serialized_end=1029
+  _globals['_EXTRACTFEATUREFROMALIGNEDRESPONSE']._serialized_start=1031
+  _globals['_EXTRACTFEATUREFROMALIGNEDRESPONSE']._serialized_end=1119
+  _globals['_COMPAREFEATURESREQUEST']._serialized_start=1121
+  _globals['_COMPAREFEATURESREQUEST']._serialized_end=1181
+  _globals['_COMPAREFEATURESRESPONSE']._serialized_start=1183
+  _globals['_COMPAREFEATURESRESPONSE']._serialized_end=1286
+  _globals['_FACESERVICE']._serialized_start=1289
+  _globals['_FACESERVICE']._serialized_end=1797
 # @@protoc_insertion_point(module_scope)

@@ -3613,8 +3613,13 @@ version = "0.1.0"
 dependencies = [
  "axum 0.7.9",
  "bytes",
+ "futures",
  "image",
+ "laoflchdb_embedding_service",
+ "laoflchdb_embedding_service_proto",
  "laoflchdb_object_store_service",
+ "laoflchdb_vector_service",
+ "laoflchdb_vector_service_proto",
  "log",
  "prost",
  "serde",
@@ -3716,6 +3721,7 @@ dependencies = [
  "async-trait",
  "candle-core",
  "candle-nn",
+ "futures",
  "image",
  "laoflchdb_engines",
  "log",
@@ -3981,6 +3987,7 @@ dependencies = [
  "prost",
  "ratatui",
  "tokio",
+ "tokio-stream",
  "tonic",
 ]
 

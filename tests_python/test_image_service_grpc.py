@@ -815,6 +815,217 @@ def test_upload_rectangular_image_thumbnails():
         return False
 
 
+# ==================== 流式上传（切片上传）测试 ====================
+
+# 流式上传的切片大小（4MB - 1KB，留出 protobuf 编码开销空间）
+STREAM_CHUNK_SIZE = 4 * 1024 * 1024 - 1024
+
+
+def _make_large_png(width, height, color=(128, 128, 128)):
+    """生成一个较大的测试 PNG 图片（使用 PIL 直接创建，避免逐像素循环）"""
+    if HAS_PIL:
+        img = Image.new("RGB", (width, height), color)
+        buf = io.BytesIO()
+        # 使用较低的压缩级别加快生成速度
+        img.save(buf, format="PNG", compress_level=0)
+        return buf.getvalue()
+    else:
+        return _make_test_png(width, height, color)
+
+
+def _upload_stream_chunks(data, bucket, key, content_type, metadata=None, name=""):
+    """生成切片迭代器，供 UploadImageStream 使用"""
+    total_chunks = (len(data) + STREAM_CHUNK_SIZE - 1) // STREAM_CHUNK_SIZE
+    if metadata is None:
+        metadata = {}
+    for i in range(total_chunks):
+        start = i * STREAM_CHUNK_SIZE
+        end = min(start + STREAM_CHUNK_SIZE, len(data))
+        chunk = image_service_pb2.UploadImageChunk(
+            bucket=bucket if i == 0 else "",
+            key=key if i == 0 else "",
+            content_type=content_type if i == 0 else "",
+            metadata=metadata if i == 0 else {},
+            name=name if i == 0 else "",
+            data=data[start:end],
+            chunk_index=i,
+            total_chunks=total_chunks,
+        )
+        yield chunk
+
+
+def test_upload_stream_single_chunk():
+    """测试流式上传小图片（1 个切片）"""
+    key = "test_stream_single.png"
+    data = _make_test_png(100, 100, (255, 0, 0))
+    print(f"[测试] UploadImageStream 单切片: {TEST_BUCKET}/{key} ({len(data)} bytes)...")
+    try:
+        chunks = _upload_stream_chunks(data, TEST_BUCKET, key, "image/png")
+        resp = img_stub.UploadImageStream(chunks, metadata=get_metadata())
+        assert resp.success, f"流式上传失败: {resp.message}"
+        assert resp.key == key, f"返回的 key 不匹配: {resp.key}"
+        assert resp.metadata.width == 100, f"宽度应为 100，实际: {resp.metadata.width}"
+        assert resp.metadata.height == 100, f"高度应为 100，实际: {resp.metadata.height}"
+        print(f"    ✓ 流式上传单切片成功: {resp.metadata.width}x{resp.metadata.height}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 流式上传失败: {e}")
+        return False
+
+
+def test_upload_stream_two_chunks():
+    """测试流式上传需要 2 个切片的图片（略大于 4MB）"""
+    key = "test_stream_two_chunks.png"
+    # 生成一个略大于 4MB 的图片：3200x1200 ~ 11MB 未压缩，PNG 压缩后约 4-5MB
+    data = _make_large_png(3200, 1200, (0, 255, 128))
+    if len(data) <= STREAM_CHUNK_SIZE:
+        # 如果不够大，尝试更大的尺寸
+        data = _make_large_png(4000, 1500, (0, 255, 128))
+    chunks_count = (len(data) + STREAM_CHUNK_SIZE - 1) // STREAM_CHUNK_SIZE
+    print(f"[测试] UploadImageStream {chunks_count} 切片: {TEST_BUCKET}/{key} ({len(data)} bytes, {chunks_count} 切片)...")
+    try:
+        chunks = _upload_stream_chunks(data, TEST_BUCKET, key, "image/png")
+        resp = img_stub.UploadImageStream(chunks, metadata=get_metadata())
+        assert resp.success, f"流式上传失败: {resp.message}"
+        assert resp.key == key, f"返回的 key 不匹配: {resp.key}"
+        print(f"    ✓ 流式上传 {chunks_count} 切片成功: {resp.metadata.width}x{resp.metadata.height}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 流式上传失败: {e}")
+        return False
+
+
+def test_upload_stream_with_metadata():
+    """测试流式上传带元数据"""
+    key = "test_stream_metadata.png"
+    data = _make_test_png(100, 100, (0, 128, 255))
+    metadata = {"source": "stream_test", "chunked": "true"}
+    print(f"[测试] UploadImageStream 带元数据: {TEST_BUCKET}/{key}...")
+    try:
+        chunks = _upload_stream_chunks(data, TEST_BUCKET, key, "image/png", metadata=metadata, name="stream_upload.png")
+        resp = img_stub.UploadImageStream(chunks, metadata=get_metadata())
+        assert resp.success, f"流式上传失败: {resp.message}"
+        assert resp.metadata.user_metadata.get("source") == "stream_test", \
+            f"元数据 source 不匹配: {dict(resp.metadata.user_metadata)}"
+        assert resp.metadata.user_metadata.get("chunked") == "true", \
+            f"元数据 chunked 不匹配: {dict(resp.metadata.user_metadata)}"
+        print(f"    ✓ 流式上传带元数据成功: {dict(resp.metadata.user_metadata)}")
+        return True
+    except Exception as e:
+        print(f"    ✗ 流式上传失败: {e}")
+        return False
+
+
+def test_upload_stream_auto_key():
+    """测试流式上传自动生成 key"""
+    print(f"[测试] UploadImageStream 自动生成 key...")
+    try:
+        data = _make_test_png(50, 50, (0, 255, 0))
+        chunks = _upload_stream_chunks(data, TEST_BUCKET, "", "image/png")
+        resp = img_stub.UploadImageStream(chunks, metadata=get_metadata())
+        assert resp.success, f"流式上传失败: {resp.message}"
+        assert resp.key, "自动生成的 key 不应为空"
+        assert resp.key.isdigit(), f"自动生成的 key 应为 Snowflake ID（纯数字）: {resp.key}"
+        print(f"    ✓ 流式上传自动生成 key 成功: {resp.key}")
+        test_upload_stream_auto_key.generated_key = resp.key
+        return True
+    except Exception as e:
+        print(f"    ✗ 流式上传失败: {e}")
+        return False
+
+
+def test_upload_stream_empty():
+    """测试流式上传空数据（应被拒绝）"""
+    key = "test_stream_empty.png"
+    print(f"[测试] UploadImageStream 空数据（应失败）: {TEST_BUCKET}/{key}...")
+    try:
+        chunks = _upload_stream_chunks(b"", TEST_BUCKET, key, "image/png")
+        resp = img_stub.UploadImageStream(chunks, metadata=get_metadata())
+        # 应返回失败
+        print(f"    ✗ 应返回失败，但成功了: {resp.message}")
+        return False
+    except grpc.RpcError as e:
+        assert e.code() in (grpc.StatusCode.INVALID_ARGUMENT, grpc.StatusCode.INTERNAL), \
+            f"应返回 INVALID_ARGUMENT 或 INTERNAL，实际: {e.code()}"
+        print(f"    ✓ 正确返回错误: {e.code()}: {e.details()}")
+        return True
+    except Exception as e:
+        print(f"    ✓ 正确返回错误: {e}")
+        return True
+
+
+def test_upload_stream_verify():
+    """验证流式上传的图片可通过 GetImage 正常获取"""
+    key = "test_stream_single.png"
+    print(f"[测试] 验证流式上传图片可正常获取: {TEST_BUCKET}/{key}...")
+    try:
+        req = image_service_pb2.GetImageRequest(bucket=TEST_BUCKET, key=key)
+        resp = img_stub.GetImage(req, metadata=get_metadata())
+        assert resp.success, f"获取失败: {resp.message}"
+        assert resp.content_type == "image/png", f"content_type 不匹配: {resp.content_type}"
+        assert resp.content_length > 0, "content_length 应大于 0"
+        assert resp.data[:8] == b'\x89PNG\r\n\x1a\n', "返回的数据不是有效的 PNG"
+        print(f"    ✓ 流式上传图片获取成功: {resp.content_length} bytes")
+        return True
+    except Exception as e:
+        print(f"    ✗ 获取失败: {e}")
+        return False
+
+
+def test_upload_stream_compare_content():
+    """验证流式上传和原始数据一致"""
+    key = "test_stream_compare.png"
+    data = _make_test_png(100, 100, (128, 0, 255))
+    print(f"[测试] 验证流式上传与原始数据一致: {TEST_BUCKET}/{key}...")
+    try:
+        # 流式上传
+        chunks = _upload_stream_chunks(data, TEST_BUCKET, key, "image/png")
+        stream_resp = img_stub.UploadImageStream(chunks, metadata=get_metadata())
+        assert stream_resp.success, f"流式上传失败: {stream_resp.message}"
+
+        # 获取流式上传的图片数据
+        get_req = image_service_pb2.GetImageRequest(bucket=TEST_BUCKET, key=key)
+        get_resp = img_stub.GetImage(get_req, metadata=get_metadata())
+        assert get_resp.success, f"获取流式上传图片失败: {get_resp.message}"
+        assert get_resp.data == data, "流式上传的图片数据与原数据不一致"
+        print(f"    ✓ 流式上传与原始数据一致")
+        return True
+    except Exception as e:
+        print(f"    ✗ 验证失败: {e}")
+        return False
+
+
+def test_upload_stream_cleanup():
+    """清理流式上传的测试图片"""
+    keys_to_delete = [
+        "test_stream_single.png",
+        "test_stream_metadata.png",
+        "test_stream_compare.png",
+    ]
+    # 添加自动生成的 key
+    auto_key = getattr(test_upload_stream_auto_key, "generated_key", None)
+    if auto_key:
+        keys_to_delete.append(auto_key)
+    # 添加 2 切片测试图片（可能已上传成功）
+    keys_to_delete.append("test_stream_two_chunks.png")
+    print(f"[测试] 清理流式上传测试图片...")
+    try:
+        deleted_count = 0
+        for key in keys_to_delete:
+            try:
+                del_req = image_service_pb2.DeleteImageRequest(bucket=TEST_BUCKET, key=key)
+                resp = img_stub.DeleteImage(del_req, metadata=get_metadata())
+                if resp.success:
+                    deleted_count += len(resp.deleted_keys)
+            except Exception:
+                pass
+        print(f"    ✓ 清理完成，共删除 {deleted_count} 个对象")
+        return True
+    except Exception as e:
+        print(f"    ✗ 清理失败: {e}")
+        return False
+
+
 # ==================== 主测试流程 ====================
 
 def run_all_tests():
@@ -854,6 +1065,15 @@ def run_all_tests():
         ("删除图片", test_delete_image),
         ("验证删除后不可访问", test_delete_image_verify),
         ("删除不存在图片（幂等）", test_delete_image_not_found),
+        # 流式上传（切片上传）
+        ("流式上传单切片", test_upload_stream_single_chunk),
+        ("流式上传 2 切片", test_upload_stream_two_chunks),
+        ("流式上传带元数据", test_upload_stream_with_metadata),
+        ("流式上传自动生成 key", test_upload_stream_auto_key),
+        ("流式上传空数据（应失败）", test_upload_stream_empty),
+        ("验证流式上传图片可获取", test_upload_stream_verify),
+        ("验证流式上传数据一致性", test_upload_stream_compare_content),
+        ("清理流式上传测试图片", test_upload_stream_cleanup),
     ]
 
     passed = 0

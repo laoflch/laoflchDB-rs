@@ -361,6 +361,42 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
         }))
     }
 
+    async fn create_embedding_stream(
+        &self,
+        request: Request<tonic::Streaming<EmbeddingChunk>>,
+    ) -> Result<Response<EmbeddingResponse>, Status> {
+        use futures::StreamExt;
+        let mut stream = request.into_inner();
+
+        let mut model_name = String::new();
+        let mut dim = 0i32;
+        let mut all_data: Vec<u8> = Vec::new();
+        let mut chunk_count = 0;
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if chunk.chunk_index == 0 {
+                model_name = chunk.model_name;
+                dim = chunk.dim;
+            }
+            all_data.extend_from_slice(&chunk.data);
+            chunk_count += 1;
+        }
+
+        if chunk_count == 0 {
+            return Err(Status::invalid_argument("空的上传流"));
+        }
+
+        // 使用累积的数据调用常规 create_embedding
+        let req = EmbeddingRequest {
+            model_name,
+            texts: vec![],
+            dim,
+            images: vec![all_data],
+        };
+        self.create_embedding(Request::new(req)).await
+    }
+
     async fn compute_similarity(
         &self,
         request: Request<SimilarityRequest>,

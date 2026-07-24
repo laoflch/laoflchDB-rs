@@ -67,14 +67,23 @@ pub struct ImageServiceImpl {
     config: ImageServiceConfig,
     /// Snowflake ID 生成器，用于自动生成图片的唯一 key
     snowflake: Mutex<Snowflake>,
+    /// 向量服务（可选，用于自动向量索引）
+    #[cfg(feature = "auto_index")]
+    vector_service: Option<Arc<laoflchdb_vector_service::VectorServiceImpl>>,
+    /// 嵌入索引服务（可选，用于自动向量索引）
+    #[cfg(feature = "auto_index")]
+    embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
 }
 
 impl ImageServiceImpl {
     /// 创建图片服务
     /// object_store: 已初始化的对象存储服务实例
+    #[allow(unused_variables)]
     pub fn new(
         object_store: Arc<laoflchdb_object_store_service::ObjectStoreServiceImpl>,
         config: ImageServiceConfig,
+        vector_service: Option<Arc<laoflchdb_vector_service::VectorServiceImpl>>,
+        embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
     ) -> Self {
         // 优先用默认配置（基于 IP 推导 machine_id）；失败时回退到 machine_id=0, data_center_id=0
         let snowflake = Snowflake::new().unwrap_or_else(|_| {
@@ -93,6 +102,10 @@ impl ImageServiceImpl {
             object_store,
             config,
             snowflake: Mutex::new(snowflake),
+            #[cfg(feature = "auto_index")]
+            vector_service,
+            #[cfg(feature = "auto_index")]
+            embedding_service,
         }
     }
 
@@ -301,6 +314,13 @@ impl proto::image_service_server::ImageService for std::sync::Arc<ImageServiceIm
     ) -> std::result::Result<tonic::Response<DeleteImageResponse>, tonic::Status> {
         self.as_ref().delete_image(request).await
     }
+
+    async fn upload_image_stream(
+        &self,
+        request: tonic::Request<tonic::Streaming<UploadImageChunk>>,
+    ) -> std::result::Result<tonic::Response<UploadImageResponse>, tonic::Status> {
+        self.as_ref().upload_image_stream(request).await
+    }
 }
 
 #[tonic::async_trait]
@@ -347,6 +367,9 @@ impl ImageService for ImageServiceImpl {
                 key: image_key,
                 etag: String::new(),
                 metadata: None,
+                auto_indexed: false,
+                embedding_id: String::new(),
+                embedding_dim: 0,
             }));
         }
         let etag = put_resp.etag;
@@ -419,13 +442,111 @@ impl ImageService for ImageServiceImpl {
             bucket, image_key, width, height, metadata.format
         );
 
+        // ── 自动向量索引 ──
+        let mut auto_indexed = false;
+        let mut embedding_id = String::new();
+        let mut embedding_dim = 0i32;
+
+        #[cfg(feature = "auto_index")]
+        if req.auto_index {
+            let model_name = if req.auto_index_model.is_empty() {
+                "jina-clip-v2"
+            } else {
+                &req.auto_index_model
+            };
+
+            match self.auto_index_image(&req.data, &image_key, model_name).await {
+                Ok((eid, edim)) => {
+                    auto_indexed = true;
+                    embedding_id = eid;
+                    embedding_dim = edim;
+                    info!("图片自动向量索引成功: key='{}', model='{}', id='{}'", image_key, model_name, embedding_id);
+                }
+                Err(e) => {
+                    log::warn!("图片自动向量索引失败: key='{}', model='{}', error={}", image_key, model_name, e);
+                }
+            }
+        }
+
         Ok(Response::new(UploadImageResponse {
             success: true,
             message: "OK".to_string(),
             key: image_key,
             etag,
             metadata: Some(metadata),
+            auto_indexed,
+            embedding_id,
+            embedding_dim,
         }))
+    }
+
+    /// 自动向量索引：调用向量服务生成向量并插入 image 索引
+    #[cfg(feature = "auto_index")]
+    async fn auto_index_image(
+        &self,
+        image_data: &[u8],
+        key: &str,
+        model_name: &str,
+    ) -> Result<(String, i32), Box<dyn std::error::Error + Send + Sync>> {
+        use laoflchdb_vector_service_proto::proto::EmbeddingRequest;
+        use laoflchdb_embedding_service_proto::proto::InsertEmbeddingRequest;
+
+        let vector_svc = self.vector_service.as_ref().ok_or("向量服务未启用")?;
+        let embedding_svc = self.embedding_service.as_ref().ok_or("嵌入索引服务未启用")?;
+
+        // 1. 获取 image 索引的维度
+        let index_dim = {
+            use laoflchdb_embedding_service_proto::proto::GetIndexInfoRequest;
+            let info_req = tonic::Request::new(GetIndexInfoRequest {
+                index_name: "image".to_string(),
+            });
+            let info_resp = embedding_svc.get_index_info(info_req).await
+                .map_err(|e| format!("获取索引信息失败: {}", e))?;
+            let info = info_resp.into_inner();
+            if info.success {
+                info.stats.map(|s| s.dim as i32).unwrap_or(512)
+            } else {
+                512
+            }
+        };
+
+        // 2. 调用向量服务生成嵌入向量
+        let emb_req = tonic::Request::new(EmbeddingRequest {
+            model_name: model_name.to_string(),
+            texts: vec![],
+            dim: index_dim,
+            images: vec![image_data.to_vec()],
+        });
+        let emb_resp = vector_svc.create_embedding(emb_req).await
+            .map_err(|e| format!("向量化失败: {}", e))?;
+        let emb = emb_resp.into_inner();
+        if !emb.success {
+            return Err(format!("向量化失败: {}", emb.message).into());
+        }
+        let embedding = emb.results.first()
+            .ok_or("向量化结果为空")?
+            .embedding.clone();
+
+        // 3. 插入嵌入索引
+        let id = key.parse::<u64>().unwrap_or_else(|_| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+        });
+        let ins_req = tonic::Request::new(InsertEmbeddingRequest {
+            id,
+            index_name: "image".to_string(),
+            embedding,
+        });
+        let ins_resp = embedding_svc.insert_embedding(ins_req).await
+            .map_err(|e| format!("索引请求失败: {}", e))?;
+        let ins = ins_resp.into_inner();
+        if !ins.success {
+            return Err(format!("索引失败: {}", ins.message).into());
+        }
+
+        Ok((key.to_string(), index_dim))
     }
 
     async fn get_image(
@@ -656,6 +777,62 @@ impl ImageService for ImageServiceImpl {
             deleted_keys,
         }))
     }
+
+    async fn upload_image_stream(
+        &self,
+        request: Request<tonic::Streaming<UploadImageChunk>>,
+    ) -> Result<Response<UploadImageResponse>, Status> {
+        use futures::StreamExt;
+        let mut stream = request.into_inner();
+
+        let mut bucket = String::new();
+        let mut key = String::new();
+        let mut content_type = String::new();
+        let mut metadata = std::collections::HashMap::new();
+        let mut name = String::new();
+        let mut all_data: Vec<u8> = Vec::new();
+        let mut chunk_count = 0;
+        let mut auto_index = false;
+        let mut auto_index_model = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            if chunk.chunk_index == 0 {
+                bucket = chunk.bucket;
+                key = chunk.key;
+                content_type = chunk.content_type;
+                metadata = chunk.metadata;
+                name = chunk.name;
+                auto_index = chunk.auto_index;
+                auto_index_model = chunk.auto_index_model;
+            }
+            all_data.extend_from_slice(&chunk.data);
+            chunk_count += 1;
+        }
+
+        if chunk_count == 0 {
+            return Err(Status::invalid_argument("空的上传流"));
+        }
+
+        info!(
+            "流式上传完成: {} chunks, total_size={} bytes",
+            chunk_count,
+            all_data.len()
+        );
+
+        // 将累积的数据作为普通上传处理
+        let upload_req = UploadImageRequest {
+            bucket,
+            key,
+            data: all_data,
+            content_type,
+            metadata,
+            name,
+            auto_index,
+            auto_index_model,
+        };
+        self.upload_image(Request::new(upload_req)).await
+    }
 }
 
 // ==================== REST API Router ====================
@@ -765,6 +942,8 @@ async fn upload_image_handler(
         content_type,
         metadata: HashMap::new(),
         name: query.name,
+        auto_index: false,
+        auto_index_model: String::new(),
     });
 
     match service.upload_image(req).await {

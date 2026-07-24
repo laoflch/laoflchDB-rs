@@ -94,6 +94,24 @@ impl GrpcClients {
         Ok(())
     }
 
+    /// 构造一个带认证 token 的流式 gRPC 请求
+    ///
+    /// 用于客户端流式 RPC（如大文件切片上传）。
+    pub fn auth_request_stream<S>(&self, stream: S) -> tonic::Request<S>
+    where
+        S: tonic::IntoStreamingRequest,
+    {
+        let mut request = tonic::Request::new(stream);
+        if let Some(ref token) = self.token {
+            let value = format!("Bearer {}", token)
+                .parse()
+                .expect("token 必须是合法的 header value");
+            request.metadata_mut().insert("authorization", value);
+        }
+        request.set_timeout(Duration::from_secs(120)); // 大文件上传需要更长的超时
+        request
+    }
+
     /// 退出登录（清除本地 token，不调用服务端 Logout 以避免阻塞）
     pub fn logout(&mut self) {
         self.token = None;

@@ -42,6 +42,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         image_bucket,
         return_aligned_images: true,
         index_embedding: false,
+        save_original_image: false,
     };
 
     app.set_status("正在检测人脸...");
@@ -257,6 +258,8 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         content_type: "image/jpeg".to_string(),
         metadata,
         name: original_image_key.clone(),
+        auto_index: false,
+        auto_index_model: String::new(),
     };
 
     let upload_resp = {

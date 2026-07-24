@@ -39,7 +39,7 @@ laoflchdb_vector_service = { path = "./laoflchdb_vector_service" }
 laoflchdb_kv_rocksdb_engine = { path = "./laoflchdb_kv_rocksdb_engine" }
 laoflchdb_embedding_service = { path = "./laoflchdb_embedding_service" }
 laoflchdb_object_store_service = { path = "./laoflchdb_object_store_service" }
-laoflchdb_image_service = { path = "./laoflchdb_image_service" }
+laoflchdb_image_service = { path = "./laoflchdb_image_service", features = ["auto_index"] }
 laoflchdb_face_service = { path = "./laoflchdb_face_service" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}
 prost = "0.12"

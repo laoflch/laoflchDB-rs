@@ -104,6 +104,12 @@ impl LaoflchDBServer {
             }
         };
 
+        // 创建向量化服务实例（在图片服务之前创建，因为图片服务需要引用）
+        let vector_service = laoflchdb_vector_service::VectorServiceImpl::new_with_config(
+            &config.model_path,
+            auto_load_models.clone(),
+        );
+
         // 创建对象存储服务（如果配置启用）
         let object_store_service = match &config.object_store {
             Some(obj_cfg) if obj_cfg.enabled => {
@@ -137,7 +143,12 @@ impl LaoflchDBServer {
                     enabled: true,
                     default_bucket: img_cfg.default_bucket.clone(),
                 };
-                let img_svc = laoflchdb_image_service::ImageServiceImpl::new(os_svc.clone(), img_config);
+                let img_svc = laoflchdb_image_service::ImageServiceImpl::new(
+                    os_svc.clone(),
+                    img_config,
+                    vector_service.clone(),
+                    embedding_service.clone(),
+                );
                 info!("图片服务已启动");
                 Some(Arc::new(img_svc))
             }
@@ -183,10 +194,6 @@ impl LaoflchDBServer {
             let object_store_service = object_store_service.clone();
 
         if config.access_protocols.is_empty() {
-            let vector_service = laoflchdb_vector_service::VectorServiceImpl::new_with_config(
-                &config.model_path,
-                auto_load_models.clone(),
-            );
             let addr = config.addr.clone();
 
             info!("启动 gRPC 服务: {}", addr);
@@ -194,6 +201,7 @@ impl LaoflchDBServer {
             println!("   gRPC 服务监听: {}", addr);
             let grpc_service: crate::GrpcService = self.access_service.get_grpc_service(None);
 
+            let vector_service = vector_service.clone();
             tokio::spawn(async move {
                 if let Err(e) = start_grpc_server(grpc_service, vector_service, embedding_service, object_store_service, image_service, face_service, &addr).await {
                     log::error!("gRPC 服务错误: {}", e);
@@ -217,10 +225,7 @@ impl LaoflchDBServer {
                         started_protocols.push((protocol.to_string(), addr.to_string()));
                         let grpc_service = self.access_service.get_grpc_service(service_id);
                         let addr_owned = addr.to_string();
-                        let vector_service_clone = laoflchdb_vector_service::VectorServiceImpl::new_with_config(
-                            &config.model_path,
-                            auto_load_models.clone(),
-                        );
+                        let vector_service_clone = vector_service.clone();
                         let embedding_service_clone = embedding_service.clone();
 
                         let object_store_service_clone = object_store_service.clone();
@@ -304,7 +309,9 @@ async fn start_grpc_server(
     let addr_copy = addr.to_string();
     info!("gRPC 服务监听: {}", addr_copy);
 
+    let max_frame_size: u32 = 5 * 1024 * 1024; // 5MB（客户端切片为 4MB，留出 protobuf 编码开销空间）
     let mut server = Server::builder()
+        .max_frame_size(Some(max_frame_size))
         .add_service(LaoflchDbServer::new(laoflchdb_service))
         .add_service(VectorServiceServer::new(vector_service));
 

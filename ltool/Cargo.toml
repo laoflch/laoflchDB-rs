@@ -20,6 +20,7 @@ laoflchdb_vector_service_proto = { path = "../laoflchdb_vector_service_proto" }
 tonic = "0.11"
 prost = "0.12"
 tokio = { version = "1.0", features = ["full"] }
+tokio-stream = "0.1"
 # TUI
 ratatui = "0.26"
 crossterm = "0.27"

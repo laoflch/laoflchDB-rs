@@ -987,6 +987,31 @@ impl FaceService for FaceServiceImpl {
         }
         // 锁已释放，可以安全 await
 
+        // ── 保存原图（如果请求了 save_original_image）──
+        let mut original_image_key = String::new();
+        if req.save_original_image {
+            if let Some(ref img_svc) = self.image_service {
+                let (orig_key, _orig_id) = self.make_face_image_key();
+                let orig_bucket = if req.image_bucket.is_empty() {
+                    img_svc.default_bucket()
+                } else {
+                    req.image_bucket.clone()
+                };
+                // 编码原图为 JPEG 并上传
+                match save_original_image_to_service(img_svc, &req.image_data, &orig_key, &orig_bucket).await {
+                    Ok(_) => {
+                        original_image_key = orig_key;
+                        info!("原图已保存到 image_service: key={}, bucket={}", original_image_key, orig_bucket);
+                    }
+                    Err(e) => {
+                        warn!("保存原图失败: {}", e);
+                    }
+                }
+            } else {
+                warn!("请求保存原图但 image_service 未启用");
+            }
+        }
+
         let mut face_features = Vec::with_capacity(detected_and_embeddings.len());
         for (face_info, aligned, embedding) in &detected_and_embeddings {
             // 4. 去重检测：搜索 face 索引中是否有相同向量
@@ -1011,7 +1036,8 @@ impl FaceService for FaceServiceImpl {
                     } else {
                         req.image_bucket.clone()
                     };
-                    match save_aligned_to_image_service(img_svc, aligned, &key, &bucket).await {
+                    // 将原图 key 作为对齐人脸的 name 元数据保存
+                    match save_aligned_to_image_service(img_svc, aligned, &key, &bucket, &original_image_key).await {
                         Ok(_) => (key, bucket, id),
                         Err(e) => {
                             warn!("保存对齐人脸图片失败: {}", e);
@@ -1049,7 +1075,7 @@ impl FaceService for FaceServiceImpl {
                 0
             };
 
-            // 6. 可选：返回对齐图片数据
+            // 7. 可选：返回对齐图片数据
             let aligned_bytes = if req.return_aligned_images {
                 let mut buf = std::io::Cursor::new(Vec::new());
                 match aligned.write_to(&mut buf, image::ImageOutputFormat::Jpeg(95)) {
@@ -1074,6 +1100,7 @@ impl FaceService for FaceServiceImpl {
                 saved_image_key: saved_key,
                 saved_image_bucket: saved_bucket,
                 indexed_vector_id,
+                saved_original_image_key: original_image_key.clone(),
             });
         }
 
@@ -1155,6 +1182,7 @@ async fn save_aligned_to_image_service(
     aligned: &image::DynamicImage,
     key: &str,
     bucket: &str,
+    name: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use laoflchdb_image_service::proto::image_service_server::ImageService;
     use laoflchdb_image_service::proto::UploadImageRequest;
@@ -1170,7 +1198,9 @@ async fn save_aligned_to_image_service(
         data,
         content_type: "image/jpeg".to_string(),
         metadata: HashMap::new(),
-        name: String::new(),
+        name: name.to_string(),
+        auto_index: false,
+        auto_index_model: String::new(),
     });
 
     img_svc
@@ -1178,6 +1208,57 @@ async fn save_aligned_to_image_service(
         .await
         .map(|_| ())
         .map_err(|e| format!("image_service 上传失败: {}", e).into())
+}
+
+/// 保存原图到 image_service（直接使用原始图片字节数据）
+async fn save_original_image_to_service(
+    img_svc: &Arc<laoflchdb_image_service::ImageServiceImpl>,
+    image_data: &[u8],
+    key: &str,
+    bucket: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use laoflchdb_image_service::proto::image_service_server::ImageService;
+    use laoflchdb_image_service::proto::UploadImageRequest;
+
+    // 推断 content_type
+    let content_type = infer_content_type(image_data);
+
+    let request = tonic::Request::new(UploadImageRequest {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+        data: image_data.to_vec(),
+        content_type,
+        metadata: HashMap::new(),
+        name: String::new(),
+        auto_index: false,
+        auto_index_model: String::new(),
+    });
+
+    img_svc
+        .upload_image(request)
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("image_service 原图上传失败: {}", e).into())
+}
+
+/// 根据图片文件头推断 content_type
+fn infer_content_type(data: &[u8]) -> String {
+    if data.len() < 4 {
+        return "application/octet-stream".to_string();
+    }
+    if data[0] == 0xFF && data[1] == 0xD8 {
+        "image/jpeg".to_string()
+    } else if data[0] == 0x89 && data[1] == b'P' && data[2] == b'N' && data[3] == b'G' {
+        "image/png".to_string()
+    } else if data[0] == b'R' && data[1] == b'I' && data[2] == b'F' && data[3] == b'F' {
+        "image/webp".to_string()
+    } else if data[0] == b'G' && data[1] == b'I' && data[2] == b'F' {
+        "image/gif".to_string()
+    } else if data[0] == 0x42 && data[1] == 0x4D {
+        "image/bmp".to_string()
+    } else {
+        "application/octet-stream".to_string()
+    }
 }
 
 /// 把人脸特征向量写入 embedding_service 的 HNSW 索引
@@ -1333,6 +1414,8 @@ struct ExtractQuery {
     return_aligned_images: Option<bool>,
     #[serde(default)]
     index_embedding: Option<bool>,
+    #[serde(default)]
+    save_original_image: Option<bool>,
 }
 
 async fn extract_features_handler(
@@ -1348,6 +1431,7 @@ async fn extract_features_handler(
         image_bucket: query.image_bucket.unwrap_or_default(),
         return_aligned_images: query.return_aligned_images.unwrap_or(false),
         index_embedding: query.index_embedding.unwrap_or(false),
+        save_original_image: query.save_original_image.unwrap_or(false),
     };
 
     match service
@@ -1371,6 +1455,7 @@ async fn extract_features_handler(
                         "saved_image_key": f.saved_image_key,
                         "saved_image_bucket": f.saved_image_bucket,
                         "indexed_vector_id": f.indexed_vector_id,
+                        "saved_original_image_key": f.saved_original_image_key,
                         "has_aligned_image": !f.aligned_image.is_empty(),
                     })
                 }).collect::<Vec<_>>(),

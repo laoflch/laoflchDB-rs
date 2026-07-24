@@ -6,19 +6,25 @@ use anyhow::{anyhow, Result};
 use log::warn;
 use std::path::Path;
 use std::time::SystemTime;
+use tokio_stream::wrappers::ReceiverStream;
 
 use laoflchdb_image_service_proto::proto::{
     DeleteImageRequest, GetImageMetadataRequest, GetImageRequest, ListImagesRequest,
-    UploadImageRequest,
+    UploadImageChunk, UploadImageRequest,
 };
 
 use crate::app::App;
 
+/// 切片大小（4MB - 1KB，留出 protobuf 编码开销空间）
+const CHUNK_SIZE: usize = 4 * 1024 * 1024 - 1024;
+
 /// 上传图片文件并自动向量索引
 ///
-/// 读取指定文件，上传到图片服务后，自动调用 VectorService 生成向量并插入到 EmbeddingIndexService。
+/// 读取指定文件，上传到图片服务（设置 auto_index=true），服务端自动完成向量化。
 /// 返回上传后的图片 key。
 /// 此函数不依赖 image_tab 状态，可在 face_tab 等地方复用。
+///
+/// 大文件（>4MB）自动使用流式切片上传，小文件走普通上传路径。
 pub async fn upload_and_index_file(
     app: &mut App,
     file_path: &str,
@@ -29,100 +35,96 @@ pub async fn upload_and_index_file(
 ) -> Result<String> {
     let data = std::fs::read(file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
 
-    let req = UploadImageRequest {
-        bucket: bucket.to_string(),
-        key: key.to_string(),
-        data,
-        content_type: content_type.to_string(),
-        metadata: Default::default(),
-        name: name.to_string(),
+    // ── 上传（设置 auto_index=true，服务端自动完成向量化） ──
+    let resp_key = if data.len() > CHUNK_SIZE {
+        upload_file_chunked(app, &data, bucket, key, content_type, name, true, "jina-clip-v2").await?
+    } else {
+        let req = UploadImageRequest {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            data,
+            content_type: content_type.to_string(),
+            metadata: Default::default(),
+            name: name.to_string(),
+            auto_index: true,
+            auto_index_model: "jina-clip-v2".to_string(),
+        };
+        let resp = {
+            let clients = app.clients.as_mut().unwrap();
+            let auth_req = clients.auth_request(req);
+            match clients.image.upload_image(auth_req).await {
+                Ok(r) => r.into_inner(),
+                Err(e) => return Err(anyhow!("上传请求失败: {}", e)),
+            }
+        };
+        if !resp.success {
+            return Err(anyhow!("上传失败: {}", resp.message));
+        }
+        resp.key
     };
 
+    Ok(resp_key)
+}
+
+/// 流式切片上传大文件
+///
+/// 将数据分成 4MB 的切片，通过 UploadImageStream 流式上传。
+/// 第一个切片携带元数据，后续切片仅包含数据。
+async fn upload_file_chunked(
+    app: &mut App,
+    data: &[u8],
+    bucket: &str,
+    key: &str,
+    content_type: &str,
+    name: &str,
+    auto_index: bool,
+    auto_index_model: &str,
+) -> Result<String> {
+    let total_chunks = (data.len() + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    let (tx, rx) = tokio::sync::mpsc::channel::<UploadImageChunk>(8);
+
+    // 在后台任务中发送切片
+    let data_owned = data.to_vec();
+    let bucket_owned = bucket.to_string();
+    let key_owned = key.to_string();
+    let content_type_owned = content_type.to_string();
+    let name_owned = name.to_string();
+    let auto_index_model_owned = auto_index_model.to_string();
+    tokio::spawn(async move {
+        for i in 0..total_chunks {
+            let start = i * CHUNK_SIZE;
+            let end = std::cmp::min(start + CHUNK_SIZE, data_owned.len());
+            let chunk_data = data_owned[start..end].to_vec();
+
+            let chunk = UploadImageChunk {
+                bucket: if i == 0 { bucket_owned.clone() } else { String::new() },
+                key: if i == 0 { key_owned.clone() } else { String::new() },
+                content_type: if i == 0 { content_type_owned.clone() } else { String::new() },
+                metadata: Default::default(),
+                name: if i == 0 { name_owned.clone() } else { String::new() },
+                data: chunk_data,
+                chunk_index: i as i32,
+                total_chunks: total_chunks as i32,
+                auto_index: i == 0 && auto_index,
+                auto_index_model: if i == 0 { auto_index_model_owned.clone() } else { String::new() },
+            };
+            if tx.send(chunk).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    let stream = ReceiverStream::new(rx);
     let resp = {
         let clients = app.clients.as_mut().unwrap();
-        let auth_req = clients.auth_request(req);
-        match clients.image.upload_image(auth_req).await {
+        let auth_req = clients.auth_request_stream(stream);
+        match clients.image.upload_image_stream(auth_req).await {
             Ok(r) => r.into_inner(),
-            Err(e) => return Err(anyhow!("上传请求失败: {}", e)),
+            Err(e) => return Err(anyhow!("流式上传请求失败: {}", e)),
         }
     };
     if !resp.success {
-        return Err(anyhow!("上传失败: {}", resp.message));
-    }
-
-    // ── 自动向量索引 ──
-    let image_data = std::fs::read(file_path)
-        .map_err(|_| anyhow!("上传成功但重新读取文件失败"))?;
-
-    // 查询 image 索引的 dim
-    use laoflchdb_embedding_service_proto::proto::GetIndexInfoRequest;
-    let target_dim = {
-        let clients = app.clients.as_mut().unwrap();
-        let req = GetIndexInfoRequest { index_name: "image".to_string() };
-        let auth_req = clients.auth_request(req);
-        match clients.embedding.get_index_info(auth_req).await {
-            Ok(r) => {
-                let resp = r.into_inner();
-                if resp.success {
-                    resp.stats.map(|s| s.dim as i32).unwrap_or(512)
-                } else {
-                    512
-                }
-            }
-            Err(_) => 512,
-        }
-    };
-
-    use laoflchdb_vector_service_proto::proto::EmbeddingRequest;
-    let emb_req = EmbeddingRequest {
-        model_name: "jina-clip-v2".to_string(),
-        texts: vec![],
-        dim: target_dim,
-        images: vec![image_data],
-    };
-
-    let emb_resp = {
-        let clients = app.clients.as_mut().unwrap();
-        let auth_req = clients.auth_request(emb_req);
-        match clients.vector.create_embedding(auth_req).await {
-            Ok(r) => r.into_inner(),
-            Err(e) => return Err(anyhow!("向量化失败: {}", e)),
-        }
-    };
-    if !emb_resp.success {
-        return Err(anyhow!("向量化失败: {}", emb_resp.message));
-    }
-
-    let embedding = match emb_resp.results.first() {
-        Some(r) => r.embedding.clone(),
-        None => return Err(anyhow!("向量化结果为空")),
-    };
-
-    // 使用 key 中的 Snowflake ID 作为向量索引 ID
-    let id = key.parse::<u64>().unwrap_or_else(|_| {
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
-    });
-
-    use laoflchdb_embedding_service_proto::proto::InsertEmbeddingRequest;
-    let ins_req = InsertEmbeddingRequest {
-        id,
-        index_name: "image".to_string(),
-        embedding,
-    };
-
-    let ins_resp = {
-        let clients = app.clients.as_mut().unwrap();
-        let auth_req = clients.auth_request(ins_req);
-        match clients.embedding.insert_embedding(auth_req).await {
-            Ok(r) => r.into_inner(),
-            Err(e) => return Err(anyhow!("索引请求失败: {}", e)),
-        }
-    };
-    if !ins_resp.success {
-        return Err(anyhow!("索引失败: {}", ins_resp.message));
+        return Err(anyhow!("流式上传失败: {}", resp.message));
     }
 
     Ok(resp.key)

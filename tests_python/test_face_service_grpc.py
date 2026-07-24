@@ -294,6 +294,57 @@ def test_extract_features_with_save():
             return False
 
 
+def test_extract_features_with_save_original():
+    """测试提取特征：保存原图到 image_service（save_original_image=true）
+
+    验证：
+    - 当检测到人脸时，saved_original_image_key 应为非空值
+    - 通过 image_service 能取回该原图
+    """
+    print("[测试] 提取人脸特征 - 保存原图到 image_service...")
+    img_data = _make_test_image(200, 200)
+    try:
+        req = face_service_pb2.ExtractFaceFeaturesRequest(
+            image_data=img_data,
+            det_threshold=0.5,
+            save_original_image=True,
+            image_bucket=TEST_BUCKET,
+            return_aligned_images=True,
+        )
+        resp = face_stub.ExtractFaceFeatures(req, metadata=get_metadata())
+        if resp.success and len(resp.faces) > 0:
+            face = resp.faces[0]
+            print(f"    ✓ 提取成功，原图 key={face.saved_original_image_key}")
+            assert face.saved_original_image_key, "保存的原图 key 不应为空"
+
+            # 验证通过 image_service 能取回该原图
+            try:
+                get_req = image_service_pb2.GetImageRequest(
+                    bucket=face.saved_image_bucket or TEST_BUCKET,
+                    key=face.saved_original_image_key,
+                )
+                get_resp = img_stub.GetImage(get_req, metadata=get_metadata())
+                if get_resp.success:
+                    print(f"    ✓ 通过 image_service 取回原图成功: {len(get_resp.data)} bytes")
+                    return True
+                else:
+                    print(f"    ✗ image_service 取回失败: {get_resp.message}")
+                    return False
+            except grpc.RpcError as e:
+                print(f"    ✗ image_service 取回错误: {e.code()}")
+                return False
+        else:
+            print(f"    ✓ 模型未加载或无人脸，跳过保存验证: {resp.message}")
+            return True
+    except grpc.RpcError as e:
+        if e.code() == grpc.StatusCode.FAILED_PRECONDITION:
+            print(f"    ✓ 模型未加载，返回 FAILED_PRECONDITION: {e.details()}")
+            return True
+        else:
+            print(f"    ✗ 意外错误: {e.code()}")
+            return False
+
+
 def test_extract_features_with_index_embedding():
     """测试提取特征：同时保存图片并索引向量（index_embedding=true）
 
@@ -564,6 +615,7 @@ def run_tests():
         ("test_detect_faces_valid_image", test_detect_faces_valid_image),
         ("test_extract_features_valid_image", test_extract_features_valid_image),
         ("test_extract_features_with_save", test_extract_features_with_save),
+        ("test_extract_features_with_save_original", test_extract_features_with_save_original),
         ("test_extract_features_with_index_embedding", test_extract_features_with_index_embedding),
         ("test_compare_features_same_vector", test_compare_features_same_vector),
         ("test_compare_features_different_vectors", test_compare_features_different_vectors),

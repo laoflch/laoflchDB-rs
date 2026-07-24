@@ -15,6 +15,29 @@ service ImageService {
   rpc ListImages(ListImagesRequest) returns (ListImagesResponse);
   // 删除图片（同时删除原图和所有缩略图及元数据）
   rpc DeleteImage(DeleteImageRequest) returns (DeleteImageResponse);
+  // 流式上传图片（支持大文件切片上传）
+  rpc UploadImageStream(stream UploadImageChunk) returns (UploadImageResponse);
+}
+
+// ── UploadImageChunk ──────────────────────────
+
+message UploadImageChunk {
+  // 第一个 chunk 中设置的元数据，后续 chunk 忽略
+  string bucket = 1;
+  string key = 2;
+  string content_type = 3;
+  map<string, string> metadata = 4;
+  string name = 5;
+  // 切片数据
+  bytes data = 6;
+  // 切片索引（从 0 开始）
+  int32 chunk_index = 7;
+  // 总切片数
+  int32 total_chunks = 8;
+  // 是否自动向量索引（仅在第一个 chunk 中有效）
+  bool auto_index = 9;
+  // 向量化模型名称（仅在第一个 chunk 中有效，如 "jina-clip-v2"）
+  string auto_index_model = 10;
 }
 
 // ── UploadImage ────────────────────────────
@@ -32,6 +55,10 @@ message UploadImageRequest {
   map<string, string> metadata = 5;
   // 图片名称（不指定则使用本地文件路径）
   string name = 6;
+  // 是否自动向量索引（上传后自动调用向量服务生成向量并插入 image 索引）
+  bool auto_index = 7;
+  // 向量化模型名称（如 "jina-clip-v2"，不指定则使用默认模型）
+  string auto_index_model = 8;
 }
 
 // 图片元数据
@@ -59,6 +86,12 @@ message UploadImageResponse {
   string key = 3;
   string etag = 4;
   ImageMetadata metadata = 5;
+  // 自动向量索引结果
+  bool auto_indexed = 6;
+  // 向量索引 ID（自动索引时生成）
+  string embedding_id = 7;
+  // 向量维度
+  int32 embedding_dim = 8;
 }
 
 // ── GetImage ────────────────────────────

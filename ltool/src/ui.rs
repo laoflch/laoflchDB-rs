@@ -402,7 +402,7 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
             Constraint::Length(15),
             Constraint::Length(15),
             Constraint::Length(20),
-            Constraint::Min(0),
+            Constraint::Length(18),
         ])
         .split(Rect {
             x: chunks[0].x,
@@ -415,26 +415,30 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     draw_input_box(f, row2[1], "max_faces", &app.face_tab.max_faces, app.face_tab.focus == FaceFocus::MaxFaces);
     draw_input_box(f, row2[2], "bucket", &app.face_tab.bucket, app.face_tab.focus == FaceFocus::Bucket);
 
-    // 第三行：导出路径（独占一行，全宽，和本地路径一致）
-    let row3 = Rect { x: chunks[0].x, y: chunks[0].y + 6, width: chunks[0].width, height: 3 };
-    draw_input_box(f, row3, "导出路径", &app.face_tab.export_path, app.face_tab.focus == FaceFocus::ExportPath);
-
-    // 第四行：保存原图复选框
-    let row4 = Rect { x: chunks[0].x, y: chunks[0].y + 9, width: chunks[0].width, height: 3 };
+    // 第二行第四部分：保存原图复选框（与 bucket 等输入框同款样式）
     let check_label = if app.face_tab.save_original {
-        "[x] 保存原图（保存人脸前先上传原图并索引）"
+        "[x] 保存原图"
     } else {
         "[ ] 保存原图"
     };
     let check_style = if app.face_tab.save_original {
         Style::default().fg(Color::Green)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default()
     };
+    let check_block = Block::default()
+        .borders(Borders::ALL)
+        .title("保存原图")
+        .style(check_style);
     let check_para = Paragraph::new(Line::from(vec![
-        Span::styled(check_label, check_style),
-    ]));
-    f.render_widget(check_para, row4);
+        Span::raw(check_label),
+    ]))
+    .block(check_block);
+    f.render_widget(check_para, row2[3]);
+
+    // 第三行：导出路径（独占一行，全宽，和本地路径一致）
+    let row3 = Rect { x: chunks[0].x, y: chunks[0].y + 6, width: chunks[0].width, height: 3 };
+    draw_input_box(f, row3, "导出路径", &app.face_tab.export_path, app.face_tab.focus == FaceFocus::ExportPath);
 
     // 结果区
     let rows: Vec<Row> = app
