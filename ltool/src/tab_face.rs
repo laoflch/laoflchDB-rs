@@ -33,7 +33,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
     let max_faces: i32 = app.face_tab.max_faces.value.parse().unwrap_or(0);
     let image_bucket = app.face_tab.bucket.value.clone();
 
-    // 始终仅检测，不保存/索引
+    // 仅检测，不保存/索引；若开启了保存原图，由服务端自动保存并返回 key
     let req = ExtractFaceFeaturesRequest {
         image_data,
         det_threshold,
@@ -42,7 +42,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         image_bucket,
         return_aligned_images: true,
         index_embedding: false,
-        save_original_image: false,
+        save_original_image: app.face_tab.save_original,
     };
 
     app.set_status("正在检测人脸...");
@@ -179,55 +179,8 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         }
     }
 
-    // ── 2. 如果开启了保存原图，先处理原图上传和索引 ──
-    let mut original_image_key = String::new();
-    if app.face_tab.save_original {
-        let file_path = app.face_tab.file_path.value.clone();
-        if file_path.is_empty() {
-            app.set_error("保存原图时原始图片路径不能为空");
-            return Ok(());
-        }
-
-        // 根据文件扩展名推断 content_type
-        let path = std::path::Path::new(&file_path);
-        let content_type = path
-            .extension()
-            .and_then(|ext| ext.to_str())
-            .map(|ext| match ext.to_lowercase().as_str() {
-                "jpg" | "jpeg" => "image/jpeg",
-                "png" => "image/png",
-                "gif" => "image/gif",
-                "webp" => "image/webp",
-                "bmp" => "image/bmp",
-                _ => "application/octet-stream",
-            })
-            .unwrap_or("application/octet-stream")
-            .to_string();
-
-        // 原图 key 为空，服务端自动生成 Snowflake ID
-        let orig_key = String::new();
-
-        // 复用图片上传功能：上传 + 向量化 + 索引
-        app.set_status("正在处理原图...");
-        match crate::tab_image::upload_and_index_file(
-            app,
-            &file_path,
-            "images",
-            &orig_key,
-            &content_type,
-            "",
-        )
-        .await
-        {
-            Ok(key) => {
-                original_image_key = key.clone();
-                app.set_status(format!("原图已上传并索引: key={}", key));
-            }
-            Err(e) => {
-                app.set_warning(format!("原图上传/索引失败（不影响人脸保存）: {}", e));
-            }
-        }
-    }
+    // ── 2. 使用检测时服务端已保存的原图 key（F1 时若 save_original=true，服务端已保存并返回 key）──
+    let original_image_key = app.face_tab.original_image_key.clone();
 
     // ── 3. 上传对齐图片到 image_service（key 为空，服务端自动生成 Snowflake ID）──
     //     先上传获取到服务端生成的 key，再用其数字部分作为向量 ID

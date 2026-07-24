@@ -308,8 +308,10 @@ pub struct FaceTabState {
     pub det_threshold: InputState,
     pub max_faces: InputState,
     pub bucket: InputState,
-    /// 是否保存原图（保存人脸前先上传原图并索引，原图 key 作为人脸元数据 name）
+    /// 是否保存原图（检测时由服务端自动保存，原图 key 作为人脸元数据 name）
     pub save_original: bool,
+    /// 检测时服务端返回的原图 key（由 extract_face_features 的 save_original_image 返回）
+    pub original_image_key: String,
     /// 检测到的人脸列表（编号 / score / bbox / saved_key / vector_id）
     pub faces: Vec<(usize, f32, Vec<f32>, String, u64)>,
     /// 所有检测结果的 embedding（与 faces 一一对应）
@@ -370,6 +372,7 @@ impl Default for FaceTabState {
             max_faces: InputState::with_value("0"),
             bucket: InputState::with_value("faces"),
             save_original: false,
+            original_image_key: String::new(),
             faces: Vec::new(),
             embeddings: Vec::new(),
             selected_face: 0,

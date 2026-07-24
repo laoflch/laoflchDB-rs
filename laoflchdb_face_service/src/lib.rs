@@ -281,7 +281,7 @@ impl FaceServiceImpl {
     /// 生成人脸图片保存的 key（基于 Snowflake ID，同时返回 ID 用于向量索引）
     fn make_face_image_key(&self) -> (String, u64) {
         let id = self.generate_face_key();
-        (format!("face_{}", id), id)
+        (id.to_string(), id)
     }
 }
 
@@ -1174,6 +1174,43 @@ impl FaceService for FaceServiceImpl {
             is_same_person: is_same,
         }))
     }
+
+    async fn save_original_image(
+        &self,
+        request: Request<SaveOriginalImageRequest>,
+    ) -> Result<TonicResponse<SaveOriginalImageResponse>, Status> {
+        let req = request.into_inner();
+
+        let img_svc = self.image_service.as_ref().ok_or_else(|| {
+            Status::failed_precondition("image_service 未启用，无法保存原图")
+        })?;
+
+        let (key, _id) = self.make_face_image_key();
+        let bucket = if req.bucket.is_empty() {
+            img_svc.default_bucket()
+        } else {
+            req.bucket.clone()
+        };
+
+        match save_original_image_to_service(img_svc, &req.image_data, &key, &bucket).await {
+            Ok(saved_key) => {
+                info!("SaveOriginalImage 成功: key={}, bucket={}", saved_key, bucket);
+                Ok(TonicResponse::new(SaveOriginalImageResponse {
+                    success: true,
+                    message: format!("原图已保存: key={}", saved_key),
+                    key: saved_key,
+                }))
+            }
+            Err(e) => {
+                warn!("SaveOriginalImage 失败: {}", e);
+                Ok(TonicResponse::new(SaveOriginalImageResponse {
+                    success: false,
+                    message: format!("保存原图失败: {}", e),
+                    key: String::new(),
+                }))
+            }
+        }
+    }
 }
 
 /// 保存对齐后的人脸图片到 image_service
@@ -1212,12 +1249,13 @@ async fn save_aligned_to_image_service(
 }
 
 /// 保存原图到 image_service（直接使用原始图片字节数据）
+/// 自动向量化索引到 image 索引，遇重复自动跳过返回已有 key
 async fn save_original_image_to_service(
     img_svc: &Arc<laoflchdb_image_service::ImageServiceImpl>,
     image_data: &[u8],
     key: &str,
     bucket: &str,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     use laoflchdb_image_service::proto::image_service_server::ImageService;
     use laoflchdb_image_service::proto::UploadImageRequest;
 
@@ -1231,16 +1269,25 @@ async fn save_original_image_to_service(
         content_type,
         metadata: HashMap::new(),
         name: String::new(),
-        auto_index: false,
+        auto_index: true,
         auto_index_model: String::new(),
-        duplicate_action: String::new(),
+        duplicate_action: "skip".to_string(),
     });
 
-    img_svc
+    let resp = img_svc
         .upload_image(request)
         .await
-        .map(|_| ())
-        .map_err(|e| format!("image_service 原图上传失败: {}", e).into())
+        .map_err(|e| format!("image_service 原图上传失败: {}", e))?;
+    let inner = resp.into_inner();
+    if !inner.success {
+        return Err(format!("原图上传失败: {}", inner.message).into());
+    }
+    let saved_key = if inner.duplicate_detected && !inner.existing_key.is_empty() {
+        inner.existing_key
+    } else {
+        inner.key
+    };
+    Ok(saved_key)
 }
 
 /// 根据图片文件头推断 content_type

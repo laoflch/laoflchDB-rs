@@ -18,6 +18,10 @@ service FaceService {
 
   // 比较两个人脸特征向量的相似度（余弦相似度）
   rpc CompareFeatures(CompareFeaturesRequest) returns (CompareFeaturesResponse);
+
+  // 保存原图到 image_service（内部调用 ImageService，避免客户端二次上传）
+  // 原图会自动向量化索引到 image 索引，遇重复自动跳过返回已有 key
+  rpc SaveOriginalImage(SaveOriginalImageRequest) returns (SaveOriginalImageResponse);
 }
 
 // ── DetectFaces ────────────────────────────
@@ -129,4 +133,20 @@ message CompareFeaturesResponse {
   float similarity = 3;
   // 是否同一人（similarity >= 0.5 视为同一人）
   bool is_same_person = 4;
+}
+
+// ── SaveOriginalImage ────────────────────────────
+
+message SaveOriginalImageRequest {
+  // 原始图片二进制数据
+  bytes image_data = 1;
+  // 保存到 image_service 的 bucket（留空用默认 bucket）
+  string bucket = 2;
+}
+
+message SaveOriginalImageResponse {
+  bool success = 1;
+  string message = 2;
+  // 保存后的图片 key（Snowflake ID）
+  string key = 3;
 }
