@@ -988,19 +988,16 @@ impl FaceService for FaceServiceImpl {
         // 锁已释放，可以安全 await
 
         // ── 保存原图（如果请求了 save_original_image）──
+        // 原图保存在 images bucket，不经过 face_ 前缀
         let mut original_image_key = String::new();
         if req.save_original_image {
             if let Some(ref img_svc) = self.image_service {
                 let (orig_key, _orig_id) = self.make_face_image_key();
-                let orig_bucket = if req.image_bucket.is_empty() {
-                    img_svc.default_bucket()
-                } else {
-                    req.image_bucket.clone()
-                };
+                let orig_bucket = "images".to_string();
                 // 编码原图为 JPEG 并上传
                 match save_original_image_to_service(img_svc, &req.image_data, &orig_key, &orig_bucket).await {
-                    Ok(_) => {
-                        original_image_key = orig_key;
+                    Ok(saved_key) => {
+                        original_image_key = saved_key;
                         info!("原图已保存到 image_service: key={}, bucket={}", original_image_key, orig_bucket);
                     }
                     Err(e) => {

@@ -33,7 +33,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
     let max_faces: i32 = app.face_tab.max_faces.value.parse().unwrap_or(0);
     let image_bucket = app.face_tab.bucket.value.clone();
 
-    // 仅检测，不保存/索引；若开启了保存原图，由服务端自动保存并返回 key
+    // 仅检测，不保存/索引；若开启保存原图，由服务端串行完成（人脸检测→释放锁→原图向量化）
     let req = ExtractFaceFeaturesRequest {
         image_data,
         det_threshold,
@@ -94,8 +94,17 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
     app.face_tab.list_scroll = 0;
     app.face_tab.selected_face_num = if n > 0 { Some(0) } else { None };
     app.face_tab.detection_action_open = false;
+
+    // 取第一个非空的 saved_original_image_key 作为原图 key
+    let original_key = resp.faces.iter()
+        .find_map(|f| if !f.saved_original_image_key.is_empty() { Some(f.saved_original_image_key.clone()) } else { None })
+        .unwrap_or_default();
+    app.face_tab.original_image_key = original_key.clone();
+
     if all_empty && n > 0 {
         app.set_status(format!("检测到 {} 张人脸，但对齐图片数据为空", n));
+    } else if !original_key.is_empty() {
+        app.set_status(format!("检测到 {} 张人脸，原图已保存: key={}，↑↓ 选择人脸，Enter 打开操作菜单", n, original_key));
     } else {
         app.set_status(format!("检测到 {} 张人脸，↑↓ 选择人脸，Enter 打开操作菜单", n));
     }
@@ -179,7 +188,7 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         }
     }
 
-    // ── 2. 使用检测时服务端已保存的原图 key（F1 时若 save_original=true，服务端已保存并返回 key）──
+    // ── 2. 使用检测时由服务端串行保存的原图 key（F1 时若 save_original=true，服务端已保存并返回 key）──
     let original_image_key = app.face_tab.original_image_key.clone();
 
     // ── 3. 上传对齐图片到 image_service（key 为空，服务端自动生成 Snowflake ID）──
