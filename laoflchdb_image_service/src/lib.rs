@@ -22,6 +22,8 @@ use laoflchdb_object_store_service::proto::{
 };
 use log::info;
 use snowflake_me::Snowflake;
+use laoflchdb_embedding_service::proto::embedding_index_service_server::EmbeddingIndexService;
+use laoflchdb_vector_service::proto::vector_service_server::VectorService;
 use proto::image_service_server::ImageService;
 use proto::*;
 use tonic::{Request, Response, Status};
@@ -323,6 +325,77 @@ impl proto::image_service_server::ImageService for std::sync::Arc<ImageServiceIm
     }
 }
 
+// ── 内部辅助方法（非 trait 方法） ──
+impl ImageServiceImpl {
+    /// 自动向量索引：调用向量服务生成向量并插入 image 索引
+    #[cfg(feature = "auto_index")]
+    async fn auto_index_image(
+        &self,
+        image_data: &[u8],
+        key: &str,
+        model_name: &str,
+    ) -> Result<(String, i32), Box<dyn std::error::Error + Send + Sync>> {
+        let vector_svc = self.vector_service.as_ref().ok_or("向量服务未启用")?;
+        let embedding_svc = self.embedding_service.as_ref().ok_or("嵌入索引服务未启用")?;
+
+        // 1. 获取 image 索引的维度
+        let index_dim = {
+            use laoflchdb_embedding_service::proto::GetIndexInfoRequest;
+            let info_req = tonic::Request::new(GetIndexInfoRequest {
+                index_name: "image".to_string(),
+            });
+            let info_resp = embedding_svc.get_index_info(info_req).await
+                .map_err(|e| format!("获取索引信息失败: {}", e))?;
+            let info = info_resp.into_inner();
+            if info.success {
+                info.stats.map(|s| s.dim as i32).unwrap_or(512)
+            } else {
+                512
+            }
+        };
+
+        // 2. 调用向量服务生成嵌入向量
+        use laoflchdb_vector_service::proto::EmbeddingRequest;
+        let emb_req = tonic::Request::new(EmbeddingRequest {
+            model_name: model_name.to_string(),
+            texts: vec![],
+            dim: index_dim,
+            images: vec![image_data.to_vec()],
+        });
+        let emb_resp = vector_svc.create_embedding(emb_req).await
+            .map_err(|e| format!("向量化失败: {}", e))?;
+        let emb = emb_resp.into_inner();
+        if !emb.success {
+            return Err(format!("向量化失败: {}", emb.message).into());
+        }
+        let embedding = emb.results.first()
+            .ok_or("向量化结果为空")?
+            .embedding.clone();
+
+        // 3. 插入嵌入索引
+        use laoflchdb_embedding_service::proto::InsertEmbeddingRequest;
+        let id = key.parse::<u64>().unwrap_or_else(|_| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64
+        });
+        let ins_req = tonic::Request::new(InsertEmbeddingRequest {
+            id,
+            index_name: "image".to_string(),
+            embedding,
+        });
+        let ins_resp = embedding_svc.insert_embedding(ins_req).await
+            .map_err(|e| format!("索引请求失败: {}", e))?;
+        let ins = ins_resp.into_inner();
+        if !ins.success {
+            return Err(format!("索引失败: {}", ins.message).into());
+        }
+
+        Ok((key.to_string(), index_dim))
+    }
+}
+
 #[tonic::async_trait]
 impl ImageService for ImageServiceImpl {
     async fn upload_image(
@@ -478,75 +551,6 @@ impl ImageService for ImageServiceImpl {
             embedding_id,
             embedding_dim,
         }))
-    }
-
-    /// 自动向量索引：调用向量服务生成向量并插入 image 索引
-    #[cfg(feature = "auto_index")]
-    async fn auto_index_image(
-        &self,
-        image_data: &[u8],
-        key: &str,
-        model_name: &str,
-    ) -> Result<(String, i32), Box<dyn std::error::Error + Send + Sync>> {
-        use laoflchdb_vector_service_proto::proto::EmbeddingRequest;
-        use laoflchdb_embedding_service_proto::proto::InsertEmbeddingRequest;
-
-        let vector_svc = self.vector_service.as_ref().ok_or("向量服务未启用")?;
-        let embedding_svc = self.embedding_service.as_ref().ok_or("嵌入索引服务未启用")?;
-
-        // 1. 获取 image 索引的维度
-        let index_dim = {
-            use laoflchdb_embedding_service_proto::proto::GetIndexInfoRequest;
-            let info_req = tonic::Request::new(GetIndexInfoRequest {
-                index_name: "image".to_string(),
-            });
-            let info_resp = embedding_svc.get_index_info(info_req).await
-                .map_err(|e| format!("获取索引信息失败: {}", e))?;
-            let info = info_resp.into_inner();
-            if info.success {
-                info.stats.map(|s| s.dim as i32).unwrap_or(512)
-            } else {
-                512
-            }
-        };
-
-        // 2. 调用向量服务生成嵌入向量
-        let emb_req = tonic::Request::new(EmbeddingRequest {
-            model_name: model_name.to_string(),
-            texts: vec![],
-            dim: index_dim,
-            images: vec![image_data.to_vec()],
-        });
-        let emb_resp = vector_svc.create_embedding(emb_req).await
-            .map_err(|e| format!("向量化失败: {}", e))?;
-        let emb = emb_resp.into_inner();
-        if !emb.success {
-            return Err(format!("向量化失败: {}", emb.message).into());
-        }
-        let embedding = emb.results.first()
-            .ok_or("向量化结果为空")?
-            .embedding.clone();
-
-        // 3. 插入嵌入索引
-        let id = key.parse::<u64>().unwrap_or_else(|_| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64
-        });
-        let ins_req = tonic::Request::new(InsertEmbeddingRequest {
-            id,
-            index_name: "image".to_string(),
-            embedding,
-        });
-        let ins_resp = embedding_svc.insert_embedding(ins_req).await
-            .map_err(|e| format!("索引请求失败: {}", e))?;
-        let ins = ins_resp.into_inner();
-        if !ins.success {
-            return Err(format!("索引失败: {}", ins.message).into());
-        }
-
-        Ok((key.to_string(), index_dim))
     }
 
     async fn get_image(

@@ -105,10 +105,10 @@ impl LaoflchDBServer {
         };
 
         // 创建向量化服务实例（在图片服务之前创建，因为图片服务需要引用）
-        let vector_service = laoflchdb_vector_service::VectorServiceImpl::new_with_config(
+        let vector_service = Arc::new(laoflchdb_vector_service::VectorServiceImpl::new_with_config(
             &config.model_path,
             auto_load_models.clone(),
-        );
+        ));
 
         // 创建对象存储服务（如果配置启用）
         let object_store_service = match &config.object_store {
@@ -146,7 +146,7 @@ impl LaoflchDBServer {
                 let img_svc = laoflchdb_image_service::ImageServiceImpl::new(
                     os_svc.clone(),
                     img_config,
-                    vector_service.clone(),
+                    Some(vector_service.clone()),
                     embedding_service.clone(),
                 );
                 info!("图片服务已启动");
@@ -291,7 +291,7 @@ impl LaoflchDBServer {
 
 async fn start_grpc_server(
     laoflchdb_service: impl crate::pb::rpc::laoflch_db_server::LaoflchDb,
-    vector_service: impl laoflchdb_vector_service::proto::vector_service_server::VectorService,
+    vector_service: Arc<laoflchdb_vector_service::VectorServiceImpl>,
     embedding_service: Option<std::sync::Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
     object_store_service: Option<std::sync::Arc<laoflchdb_object_store_service::ObjectStoreServiceImpl>>,
     image_service: Option<std::sync::Arc<laoflchdb_image_service::ImageServiceImpl>>,
@@ -313,7 +313,7 @@ async fn start_grpc_server(
     let mut server = Server::builder()
         .max_frame_size(Some(max_frame_size))
         .add_service(LaoflchDbServer::new(laoflchdb_service))
-        .add_service(VectorServiceServer::new(vector_service));
+        .add_service(VectorServiceServer::from_arc(vector_service));
 
     // 如果有嵌入向量索引服务配置，则注册
     if let Some(embedding) = embedding_service {

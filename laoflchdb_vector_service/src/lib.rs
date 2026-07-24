@@ -696,6 +696,66 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
     }
 }
 
+// Arc 委托实现：允许通过 Arc<VectorServiceImpl> 直接注册 gRPC 服务
+#[tonic::async_trait]
+impl proto::vector_service_server::VectorService for std::sync::Arc<VectorServiceImpl> {
+    async fn create_embedding(
+        &self,
+        request: tonic::Request<proto::EmbeddingRequest>,
+    ) -> std::result::Result<tonic::Response<proto::EmbeddingResponse>, tonic::Status> {
+        self.as_ref().create_embedding(request).await
+    }
+
+    async fn create_embedding_stream(
+        &self,
+        request: tonic::Request<tonic::Streaming<proto::EmbeddingChunk>>,
+    ) -> std::result::Result<tonic::Response<proto::EmbeddingResponse>, tonic::Status> {
+        self.as_ref().create_embedding_stream(request).await
+    }
+
+    async fn get_model_info(
+        &self,
+        request: tonic::Request<proto::ModelInfoRequest>,
+    ) -> std::result::Result<tonic::Response<proto::ModelInfoResponse>, tonic::Status> {
+        self.as_ref().get_model_info(request).await
+    }
+
+    async fn list_models(
+        &self,
+        request: tonic::Request<proto::ListModelsRequest>,
+    ) -> std::result::Result<tonic::Response<proto::ListModelsResponse>, tonic::Status> {
+        self.as_ref().list_models(request).await
+    }
+
+    async fn load_model(
+        &self,
+        request: tonic::Request<proto::LoadModelRequest>,
+    ) -> std::result::Result<tonic::Response<proto::LoadModelResponse>, tonic::Status> {
+        self.as_ref().load_model(request).await
+    }
+
+    async fn unload_model(
+        &self,
+        request: tonic::Request<proto::UnloadModelRequest>,
+    ) -> std::result::Result<tonic::Response<proto::UnloadModelResponse>, tonic::Status> {
+        self.as_ref().unload_model(request).await
+    }
+
+    async fn list_loadable_models(
+        &self,
+        request: tonic::Request<proto::ListLoadableModelsRequest>,
+    ) -> std::result::Result<tonic::Response<proto::ListLoadableModelsResponse>, tonic::Status> {
+        self.as_ref().list_loadable_models(request).await
+    }
+
+    async fn compute_similarity(
+        &self,
+        request: tonic::Request<proto::SimilarityRequest>,
+    ) -> std::result::Result<tonic::Response<proto::SimilarityResponse>, tonic::Status> {
+        self.as_ref().compute_similarity(request).await
+    }
+}
+
 // ============================================================================
 // BERT 模型实现 (使用 candle-nn 0.10.2 从零构建)
 // ============================================================================
