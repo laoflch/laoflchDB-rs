@@ -60,7 +60,11 @@ pub async fn upload_and_index_file(
         if !resp.success {
             return Err(anyhow!("上传失败: {}", resp.message));
         }
-        resp.key
+        if resp.duplicate_detected && !resp.existing_key.is_empty() {
+            resp.existing_key
+        } else {
+            resp.key
+        }
     };
 
     Ok(resp_key)
@@ -127,7 +131,11 @@ async fn upload_file_chunked(
         return Err(anyhow!("流式上传失败: {}", resp.message));
     }
 
-    Ok(resp.key)
+    if resp.duplicate_detected && !resp.existing_key.is_empty() {
+        Ok(resp.existing_key)
+    } else {
+        Ok(resp.key)
+    }
 }
 
 /// 上传图片并自动向量索引
@@ -392,19 +400,21 @@ pub async fn delete_image(app: &mut App) -> Result<()> {
         return Ok(());
     }
 
-    // 同时删除对应的向量索引（如果 key 包含 vector_id，如 face_{id} 格式）
-    if let Some(vector_id_str) = deleted_key.strip_prefix("face_") {
-        if let Ok(vector_id) = vector_id_str.parse::<u64>() {
-            use laoflchdb_embedding_service_proto::proto::DeleteEmbeddingRequest;
-            let del_vec_req = DeleteEmbeddingRequest {
-                id: vector_id,
-                index_name: "face".to_string(),
-            };
-            let clients = app.clients.as_mut().unwrap();
-            let auth_req = clients.auth_request(del_vec_req);
-            if let Err(e) = clients.embedding.delete_embedding(auth_req).await {
-                warn!("删除向量失败 (id={}): {}", vector_id, e);
-            }
+    // 同时删除对应的向量索引（key 为 Snowflake ID 数字串，或旧的 face_{id} 格式）
+    let vector_id: Option<u64> = deleted_key
+        .strip_prefix("face_")
+        .and_then(|s| s.parse().ok())
+        .or_else(|| deleted_key.parse().ok());
+    if let Some(vector_id) = vector_id {
+        use laoflchdb_embedding_service_proto::proto::DeleteEmbeddingRequest;
+        let del_vec_req = DeleteEmbeddingRequest {
+            id: vector_id,
+            index_name: "face".to_string(),
+        };
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(del_vec_req);
+        if let Err(e) = clients.embedding.delete_embedding(auth_req).await {
+            warn!("删除向量失败 (id={}): {}", vector_id, e);
         }
     }
 

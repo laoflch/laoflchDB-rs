@@ -167,7 +167,7 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         if let Some(result) = search_resp.results.first() {
             if result.distance < 0.01 {
                 let existing_vector_id = result.id;
-                let existing_key = format!("face_{}", existing_vector_id);
+                let existing_key = existing_vector_id.to_string();
                 app.face_tab.faces[face_idx].3 = existing_key.clone();
                 app.face_tab.faces[face_idx].4 = existing_vector_id;
                 app.set_status(format!(
@@ -395,7 +395,7 @@ pub async fn list_saved_faces(app: &mut App) -> Result<()> {
 
     let req = ListImagesRequest {
         bucket,
-        prefix: "face_".to_string(),
+        prefix: String::new(),
         max_keys: 1000,
         marker: String::new(),
     };
@@ -442,11 +442,8 @@ pub async fn delete_saved_face(app: &mut App) -> Result<()> {
         }
     };
 
-    // 从 key 中提取 vector_id: "face_{id}" → id
-    let vector_id: u64 = key
-        .strip_prefix("face_")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+    // 从 key 中提取 vector_id：key 就是 Snowflake ID
+    let vector_id: u64 = key.parse().unwrap_or(0);
 
     let bucket = app.face_tab.bucket.value.clone();
 
