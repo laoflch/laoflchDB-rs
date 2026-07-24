@@ -81,7 +81,7 @@ async fn start_server(
         }
     };
     
-    let server = LaoflchDBServer::new(
+    let mut server = LaoflchDBServer::new(
         service.schema_manager().clone(),
         sql_engine,
         service,
@@ -106,6 +106,12 @@ async fn start_server(
         }
     }
     
+    // 保存 HNSW 索引快照
+    match server.shutdown().await {
+        Ok(_) => info!("HNSW 索引快照已保存"),
+        Err(e) => warn!("保存 HNSW 索引快照时出错: {}", e),
+    }
+
     info!("正在关闭数据库服务...");
     match service_clone.shutdown().await {
         Ok(_) => info!("数据库服务关闭成功"),

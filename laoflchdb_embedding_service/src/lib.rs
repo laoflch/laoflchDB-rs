@@ -481,6 +481,11 @@ impl EmbeddingIndexServiceImpl {
         Ok(total)
     }
 
+    /// 保存所有索引的快照（公开方法，供服务退出时调用）
+    pub async fn save_snapshot_on_shutdown(&self) -> Result<String, Status> {
+        self.save_snapshot_internal().await
+    }
+
     /// 从 RocksDB 重建所有索引（公开方法，供外部调用）
     /// 设置 building 标志，重建完成后自动保存快照
     pub async fn rebuild_all_from_rocks_db_public(&self) -> Result<u64, Status> {
@@ -637,11 +642,6 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
 
         log::info!("向量插入成功: id={}, index={}", req.id, index_name);
 
-        // 3. 自动保存快照（持久化 HNSW 图拓扑到磁盘）
-        if let Err(e) = self.save_snapshot_internal().await {
-            log::warn!("插入后自动保存快照失败: {}", e);
-        }
-
         Ok(Response::new(InsertEmbeddingResponse {
             success: true,
             message: format!("向量插入成功, id={}, index={}", req.id, index_name),
@@ -755,11 +755,6 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         }
 
         log::info!("向量删除处理完成: id={}, index={}, removed_from_hnsw={}", req.id, index_name, removed);
-
-        // 3. 自动保存快照（持久化 HNSW 图拓扑到磁盘）
-        if let Err(e) = self.save_snapshot_internal().await {
-            log::warn!("删除后自动保存快照失败: {}", e);
-        }
 
         Ok(Response::new(DeleteEmbeddingResponse {
             success: true,

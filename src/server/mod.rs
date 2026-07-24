@@ -11,6 +11,7 @@ pub struct LaoflchDBServer {
     sql_engine: Arc<tokio::sync::RwLock<dyn SQLEngine>>,
     service: Arc<dyn DatabaseService>,
     access_service: Arc<AccessService>,
+    embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
 }
 
 impl LaoflchDBServer {
@@ -37,6 +38,7 @@ impl LaoflchDBServer {
             sql_engine,
             service,
             access_service,
+            embedding_service: None,
         }
     }
 
@@ -47,7 +49,7 @@ impl LaoflchDBServer {
         Ok(())
     }
 
-    pub async fn start(&self, config: &DatabaseConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn start(&mut self, config: &DatabaseConfig) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.init().await?;
 
         // 创建向量化服务实例（从配置的模型目录自动加载模型）
@@ -125,6 +127,7 @@ impl LaoflchDBServer {
                             }
                         }
                         info!("嵌入向量索引服务已启动");
+                        self.embedding_service = Some(svc.clone());
                         Some(svc)
                     }
                     Err(e) => {
@@ -321,6 +324,18 @@ impl LaoflchDBServer {
     
     pub fn sql_engine(&self) -> &Arc<tokio::sync::RwLock<dyn SQLEngine>> {
         &self.sql_engine
+    }
+
+    /// 关闭服务，保存 HNSW 快照
+    pub async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(ref svc) = self.embedding_service {
+            log::info!("正在保存 HNSW 索引快照...");
+            match svc.save_snapshot_on_shutdown().await {
+                Ok(path) => log::info!("HNSW 索引快照已保存: {}", path),
+                Err(e) => log::warn!("保存 HNSW 索引快照失败: {}", e),
+            }
+        }
+        Ok(())
     }
 }
 

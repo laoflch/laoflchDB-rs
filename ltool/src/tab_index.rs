@@ -220,6 +220,45 @@ pub async fn search_index(app: &mut App, query: &str) -> Result<()> {
     Ok(())
 }
 
+/// 从 RocksDB 重建 HNSW 嵌入索引
+pub async fn rebuild_embedding_index(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+    let index_name = app.index_tab.index_name.value.clone();
+    if index_name.is_empty() {
+        app.set_error("请先输入索引名称");
+        return Ok(());
+    }
+
+    use laoflchdb_embedding_service_proto::proto::RebuildIndexFromRocksDbRequest;
+    let req = RebuildIndexFromRocksDbRequest { index_name: index_name.clone() };
+    app.set_status(format!("正在重建索引 {}...（可能较慢，请耐心等待）", index_name));
+
+    // 重建可能耗时较长，使用 5 分钟超时
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let mut auth_req = clients.auth_request(req);
+        auth_req.set_timeout(std::time::Duration::from_secs(300));
+        match clients.embedding.rebuild_index_from_rocks_db(auth_req).await {
+            Ok(resp) => resp.into_inner(),
+            Err(e) => {
+                app.set_error(format!("重建索引失败: {}", e));
+                return Ok(());
+            }
+        }
+    };
+    if !resp.success {
+        app.set_error(format!("重建索引失败: {}", resp.message));
+        return Ok(());
+    }
+
+    app.set_status(format!("索引 {} 重建成功，共 {} 条", index_name, resp.rebuilt_count));
+    // 重建后刷新索引列表
+    let _ = list_indices(app).await;
+    Ok(())
+}
+
 /// 列类型转字符串
 fn column_type_to_string(col_type: i32) -> String {
     const COLUMN_TYPE_STRING: i32 = 0;
