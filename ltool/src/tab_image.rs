@@ -385,7 +385,7 @@ pub async fn download_image(app: &mut App) -> Result<()> {
 /// 搜索相似图片
 ///
 /// 1. 读取本地图片文件
-/// 2. 调用 VectorService.CreateEmbedding 生成向量
+/// 2. 调用 VectorService.CreateEmbeddingStream 生成向量（支持大图片的流式上传）
 /// 3. 调用 EmbeddingIndexService.SearchEmbedding 在指定索引中搜索相似向量
 /// 4. 结果存入 app.image_tab.search_results，弹窗显示
 pub async fn search_similar_image(app: &mut App, model_name: &str, index_name: &str, dim: i32, top_k: i32, max_distance: f32) -> Result<()> {
@@ -400,20 +400,37 @@ pub async fn search_similar_image(app: &mut App, model_name: &str, index_name: &
 
     let data = std::fs::read(&file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
 
-    // 1. 调用 VectorService.CreateEmbedding 生成向量
-    use laoflchdb_vector_service_proto::proto::EmbeddingRequest;
-    let req = EmbeddingRequest {
-        model_name: model_name.to_string(),
-        texts: vec![],
-        dim,
-        images: vec![data],
-    };
-
+    // 1. 调用 VectorService.CreateEmbeddingStream 生成向量（使用流式上传支持大图片）
     app.set_status("正在生成查询向量...");
     let emb_resp = {
+        let chunk_size = CHUNK_SIZE;
+        let total_chunks = (data.len() + chunk_size - 1) / chunk_size;
+        let (tx, rx) = tokio::sync::mpsc::channel::<laoflchdb_vector_service_proto::proto::EmbeddingChunk>(8);
+
+        // 后台发送切片
+        let data_owned = data.clone();
+        let model_name_owned = model_name.to_string();
+        tokio::spawn(async move {
+            for i in 0..total_chunks {
+                let start = i * chunk_size;
+                let end = std::cmp::min(start + chunk_size, data_owned.len());
+                let chunk = laoflchdb_vector_service_proto::proto::EmbeddingChunk {
+                    model_name: if i == 0 { model_name_owned.clone() } else { String::new() },
+                    dim: if i == 0 { dim } else { 0 },
+                    data: data_owned[start..end].to_vec(),
+                    chunk_index: i as i32,
+                    total_chunks: total_chunks as i32,
+                };
+                if tx.send(chunk).await.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let stream = ReceiverStream::new(rx);
         let clients = app.clients.as_mut().unwrap();
-        let auth_req = clients.auth_request(req);
-        match clients.vector.create_embedding(auth_req).await {
+        let auth_req = clients.auth_request_stream(stream);
+        match clients.vector.create_embedding_stream(auth_req).await {
             Ok(r) => r.into_inner(),
             Err(e) => {
                 app.set_error(format!("向量化请求失败: {}", e));

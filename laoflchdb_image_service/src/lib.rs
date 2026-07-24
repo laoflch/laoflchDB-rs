@@ -328,6 +328,7 @@ impl proto::image_service_server::ImageService for std::sync::Arc<ImageServiceIm
 // ── 内部辅助方法（非 trait 方法） ──
 impl ImageServiceImpl {
     /// 自动向量索引：调用向量服务生成向量并插入 image 索引
+    /// 服务端内部调用，直接传数据不需要流式
     #[cfg(feature = "auto_index")]
     async fn auto_index_image(
         &self,
@@ -354,7 +355,7 @@ impl ImageServiceImpl {
             }
         };
 
-        // 2. 调用向量服务生成嵌入向量
+        // 2. 调用向量服务生成嵌入向量（服务端内部调用，直接传数据）
         use laoflchdb_vector_service::proto::EmbeddingRequest;
         let emb_req = tonic::Request::new(EmbeddingRequest {
             model_name: model_name.to_string(),
@@ -374,12 +375,16 @@ impl ImageServiceImpl {
 
         // 3. 插入嵌入索引
         use laoflchdb_embedding_service::proto::InsertEmbeddingRequest;
-        let id = key.parse::<u64>().unwrap_or_else(|_| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64
-        });
+        let id = key
+            .strip_prefix("image_")
+            .and_then(|s| s.parse::<u64>().ok())
+            .or_else(|| key.parse::<u64>().ok())
+            .unwrap_or_else(|| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos() as u64
+            });
         let ins_req = tonic::Request::new(InsertEmbeddingRequest {
             id,
             index_name: "image".to_string(),

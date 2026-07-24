@@ -2321,7 +2321,7 @@ fn draw_search_results_popup(f: &mut Frame, app: &mut App) {
             Style::default()
         };
         let row = Paragraph::new(Line::from(vec![
-            Span::raw(format!(" {}", result.id)),
+            Span::raw(format!(" image_{}", result.id)),
             Span::raw("  "),
             Span::styled(
                 format!("{:.4}", result.score),

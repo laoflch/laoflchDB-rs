@@ -12,6 +12,19 @@ message EmbeddingRequest {
   repeated bytes images = 4;  // 图片原始字节数据（PNG/JPEG）
 }
 
+// 流式向量化请求切片
+message EmbeddingChunk {
+  // 第一个 chunk 中设置的元数据，后续 chunk 忽略
+  string model_name = 1;
+  int32 dim = 2;
+  // 切片数据（单张图片的部分数据）
+  bytes data = 3;
+  // 切片索引（从 0 开始）
+  int32 chunk_index = 4;
+  // 总切片数
+  int32 total_chunks = 5;
+}
+
 message EmbeddingResponse {
   bool success = 1;
   string message = 2;
@@ -109,6 +122,7 @@ message ListLoadableModelsResponse {
 
 service VectorService {
   rpc CreateEmbedding(EmbeddingRequest) returns (EmbeddingResponse);
+  rpc CreateEmbeddingStream(stream EmbeddingChunk) returns (EmbeddingResponse);
   rpc ComputeSimilarity(SimilarityRequest) returns (SimilarityResponse);
   rpc GetModelInfo(ModelInfoRequest) returns (ModelInfoResponse);
   rpc ListModels(ListModelsRequest) returns (ListModelsResponse);
