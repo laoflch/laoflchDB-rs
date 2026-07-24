@@ -375,16 +375,12 @@ impl ImageServiceImpl {
 
         // 3. 插入嵌入索引
         use laoflchdb_embedding_service::proto::InsertEmbeddingRequest;
-        let id = key
-            .strip_prefix("image_")
-            .and_then(|s| s.parse::<u64>().ok())
-            .or_else(|| key.parse::<u64>().ok())
-            .unwrap_or_else(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64
-            });
+        let id = key.parse::<u64>().unwrap_or_else(|_| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos() as u64
+        });
         let ins_req = tonic::Request::new(InsertEmbeddingRequest {
             id,
             index_name: "image".to_string(),
@@ -739,6 +735,19 @@ impl ImageService for ImageServiceImpl {
         };
 
         let mut deleted_keys = Vec::new();
+
+        // 先删除向量索引（如果存在且启用了 auto_index 功能）
+        #[cfg(feature = "auto_index")]
+        if let Some(embedding_svc) = &self.embedding_service {
+            if let Ok(id) = req.key.parse::<u64>() {
+                use laoflchdb_embedding_service::proto::DeleteEmbeddingRequest;
+                let del_emb_req = tonic::Request::new(DeleteEmbeddingRequest {
+                    id,
+                    index_name: "image".to_string(),
+                });
+                let _ = embedding_svc.delete_embedding(del_emb_req).await;
+            }
+        }
 
         // 删除原图
         let del_req = Request::new(DeleteObjectRequest {

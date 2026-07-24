@@ -166,12 +166,12 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
         .to_string();
 
     let use_key = if key.is_empty() {
-        // 自动生成 key
-        let snowflake = SystemTime::now()
+        // 自动生成 key（纯数字，不带前缀）
+        SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
-            .as_nanos() as u64;
-        format!("image_{}", snowflake)
+            .as_nanos()
+            .to_string()
     } else {
         key.clone()
     };
