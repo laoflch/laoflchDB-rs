@@ -441,14 +441,15 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     draw_input_box(f, row2[1], "max_faces", &app.face_tab.max_faces, app.face_tab.focus == FaceFocus::MaxFaces);
     draw_input_box(f, row2[2], "bucket", &app.face_tab.bucket, app.face_tab.focus == FaceFocus::Bucket);
 
-    // 第二行第四部分：保存原图复选框（与 bucket 等输入框同款样式）
+    // 第二行第四部分：保存原图复选框（与输入框同款样式）
     let check_label = if app.face_tab.save_original {
         "[x] 保存原图"
     } else {
         "[ ] 保存原图"
     };
-    let check_style = if app.face_tab.save_original {
-        Style::default().fg(Color::Green)
+    let check_focused = app.face_tab.focus == FaceFocus::SaveOriginal;
+    let check_style = if check_focused {
+        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
@@ -456,8 +457,17 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
         .borders(Borders::ALL)
         .title("保存原图")
         .style(check_style);
+    let check_text = if app.face_tab.save_original {
+        format!("[x] 保存原图")
+    } else {
+        format!("[ ] 保存原图")
+    };
     let check_para = Paragraph::new(Line::from(vec![
-        Span::raw(check_label),
+        Span::styled(check_text, if app.face_tab.save_original {
+            Style::default().fg(Color::Green)
+        } else {
+            Style::default()
+        }),
     ]))
     .block(check_block);
     f.render_widget(check_para, row2[3]);

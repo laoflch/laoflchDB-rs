@@ -141,7 +141,6 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
     }
     let file_path = app.image_tab.file_path.value.clone();
     let bucket = app.image_tab.bucket.value.clone();
-    let key = app.image_tab.key.value.clone();
 
     if file_path.is_empty() {
         app.set_error("请输入本地文件路径");
@@ -167,12 +166,12 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
 
     let data = std::fs::read(&file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
 
-    // key 为空时，服务端自动生成 Snowflake ID
+    // key 始终为空，让服务端自动生成 Snowflake ID，避免缓存 key 导致重复
     app.set_status("正在上传图片...");
 
     let req = UploadImageRequest {
         bucket: bucket.clone(),
-        key: key.clone(),
+        key: String::new(), // 始终为空，服务端自动生成新 key
         data: data.clone(),
         content_type: content_type.clone(),
         metadata: Default::default(),

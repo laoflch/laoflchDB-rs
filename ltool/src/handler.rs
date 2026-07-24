@@ -851,16 +851,6 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
             let _ = crate::tab_face::export_faces(app, &export_path).await;
             return true;
         }
-        KeyCode::Char('o') if event.modifiers.is_empty() => {
-            // o: 切换保存原图选项
-            app.face_tab.save_original = !app.face_tab.save_original;
-            if app.face_tab.save_original {
-                app.set_status("已开启保存原图：保存人脸前将上传并索引原图");
-            } else {
-                app.set_status("已关闭保存原图");
-            }
-            return true;
-        }
         _ => {}
     }
 
@@ -937,6 +927,17 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         }
     }
 
+    // ── 保存原图复选框：Enter 切换选中状态 ──
+    if app.face_tab.focus == FaceFocus::SaveOriginal && event.code == KeyCode::Enter {
+        app.face_tab.save_original = !app.face_tab.save_original;
+        if app.face_tab.save_original {
+            app.set_status("已开启保存原图：保存人脸前将上传并索引原图");
+        } else {
+            app.set_status("已关闭保存原图");
+        }
+        return true;
+    }
+
     // ── 已保存人脸列表导航 ──
     if app.face_tab.show_saved {
         match event.code {
@@ -995,7 +996,8 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
                 FaceFocus::FilePath => FaceFocus::DetThreshold,
                 FaceFocus::DetThreshold => FaceFocus::MaxFaces,
                 FaceFocus::MaxFaces => FaceFocus::Bucket,
-                FaceFocus::Bucket => FaceFocus::ExportPath,
+                FaceFocus::Bucket => FaceFocus::SaveOriginal,
+                FaceFocus::SaveOriginal => FaceFocus::ExportPath,
                 FaceFocus::ExportPath => FaceFocus::FilePath,
             };
             if app.face_tab.focus == FaceFocus::FilePath {
@@ -1011,7 +1013,8 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
                 FaceFocus::DetThreshold => FaceFocus::FilePath,
                 FaceFocus::MaxFaces => FaceFocus::DetThreshold,
                 FaceFocus::Bucket => FaceFocus::MaxFaces,
-                FaceFocus::ExportPath => FaceFocus::Bucket,
+                FaceFocus::SaveOriginal => FaceFocus::Bucket,
+                FaceFocus::ExportPath => FaceFocus::SaveOriginal,
             };
             return true;
         }
@@ -1021,7 +1024,8 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
                 FaceFocus::FilePath => FaceFocus::DetThreshold,
                 FaceFocus::DetThreshold => FaceFocus::MaxFaces,
                 FaceFocus::MaxFaces => FaceFocus::Bucket,
-                FaceFocus::Bucket => FaceFocus::ExportPath,
+                FaceFocus::Bucket => FaceFocus::SaveOriginal,
+                FaceFocus::SaveOriginal => FaceFocus::ExportPath,
                 FaceFocus::ExportPath => FaceFocus::FilePath,
             };
             return true;
@@ -1045,6 +1049,7 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         FaceFocus::DetThreshold => &mut app.face_tab.det_threshold,
         FaceFocus::MaxFaces => &mut app.face_tab.max_faces,
         FaceFocus::Bucket => &mut app.face_tab.bucket,
+        FaceFocus::SaveOriginal => return false,
         FaceFocus::ExportPath => &mut app.face_tab.export_path,
     };
     let changed = handle_input_event(input, event);

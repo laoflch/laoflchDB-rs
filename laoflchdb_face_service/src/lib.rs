@@ -1201,6 +1201,7 @@ async fn save_aligned_to_image_service(
         name: name.to_string(),
         auto_index: false,
         auto_index_model: String::new(),
+        duplicate_action: String::new(),
     });
 
     img_svc
@@ -1232,6 +1233,7 @@ async fn save_original_image_to_service(
         name: String::new(),
         auto_index: false,
         auto_index_model: String::new(),
+        duplicate_action: String::new(),
     });
 
     img_svc

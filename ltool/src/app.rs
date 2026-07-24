@@ -352,6 +352,7 @@ pub enum FaceFocus {
     DetThreshold,
     MaxFaces,
     Bucket,
+    SaveOriginal,
     ExportPath,
 }
 

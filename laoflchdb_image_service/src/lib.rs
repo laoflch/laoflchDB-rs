@@ -335,14 +335,14 @@ impl ImageServiceImpl {
         &self,
         image_data: &[u8],
         model_name: &str,
-    ) -> Result<Option<(String, i32)>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Vec<(String, i32)>, Box<dyn std::error::Error + Send + Sync>> {
         let vector_svc = match self.vector_service.as_ref() {
             Some(svc) => svc,
-            None => return Ok(None),
+            None => return Ok(vec![]),
         };
         let embedding_svc = match self.embedding_service.as_ref() {
             Some(svc) => svc,
-            None => return Ok(None),
+            None => return Ok(vec![]),
         };
 
         // 1. 获取 image 索引的维度
@@ -380,27 +380,30 @@ impl ImageServiceImpl {
             .ok_or("向量化结果为空")?
             .embedding.clone();
 
-        // 3. 搜索 image 索引
+        // 3. 搜索 image 索引（返回多个结果以检测所有重复）
         use laoflchdb_embedding_service::proto::SearchEmbeddingRequest;
         let search_req = tonic::Request::new(SearchEmbeddingRequest {
             query_embedding: embedding,
-            top_k: 1,
+            top_k: 100,
             index_name: "image".to_string(),
         });
         let search_resp = embedding_svc.search_embedding(search_req).await
             .map_err(|e| format!("搜索向量索引失败: {}", e))?;
         let search = search_resp.into_inner();
+        let mut duplicates: Vec<(String, i32)> = Vec::new();
         if search.success {
-            if let Some(result) = search.results.first() {
+            for result in &search.results {
                 if result.distance < 0.0001 {
                     let existing_key = result.id.to_string();
-                    info!("去重检查: 图片已存在, key='{}', distance={:.4}", existing_key, result.distance);
-                    return Ok(Some((existing_key, index_dim)));
+                    duplicates.push((existing_key, index_dim));
                 }
+            }
+            if !duplicates.is_empty() {
+                info!("去重检查: 发现 {} 张重复图片", duplicates.len());
             }
         }
 
-        Ok(None)
+        Ok(duplicates)
     }
 
     /// 自动向量索引：生成向量并插入索引
@@ -489,39 +492,78 @@ impl ImageService for ImageServiceImpl {
                     Status::internal(format!("图片去重检查失败: {}", e))
                 })?
         } else {
-            None
+            vec![]
         };
         #[cfg(not(feature = "auto_index"))]
-        let duplicate_info: Option<(String, i32)> = None;
+        let duplicate_info: Vec<(String, i32)> = vec![];
 
-        if let Some((ref existing_key, existing_dim)) = duplicate_info {
+        if !duplicate_info.is_empty() {
+            let first_key = &duplicate_info[0].0;
+            let first_dim = duplicate_info[0].1;
             match req.duplicate_action.as_str() {
                 "overwrite" => {
-                    info!("图片已存在，用户选择覆盖: key='{}'", existing_key);
-                    // 覆盖：继续执行上传流程，使用现有 key
+                    info!("图片已存在，用户选择覆盖: 共 {} 张重复图片，全部删除", duplicate_info.len());
+                    // 删除所有重复图片和索引
+                    for (existing_key, _) in &duplicate_info {
+                        #[cfg(feature = "auto_index")]
+                        if let Some(embedding_svc) = &self.embedding_service {
+                            if let Ok(id) = existing_key.parse::<u64>() {
+                                use laoflchdb_embedding_service::proto::DeleteEmbeddingRequest;
+                                let del_emb_req = tonic::Request::new(DeleteEmbeddingRequest {
+                                    id,
+                                    index_name: "image".to_string(),
+                                });
+                                let _ = embedding_svc.delete_embedding(del_emb_req).await;
+                            }
+                        }
+                        // 删除原图
+                        let del_req_orig = Request::new(DeleteObjectRequest {
+                            bucket: bucket.clone(),
+                            key: existing_key.clone(),
+                        });
+                        let _ = self.object_store.delete_object(del_req_orig).await;
+                        // 删除缩略图
+                        if let Ok(Some(meta)) = self.get_metadata_from_store(&bucket, existing_key).await {
+                            for (_, thumb_key) in &meta.thumbnails {
+                                let del_req = Request::new(DeleteObjectRequest {
+                                    bucket: bucket.clone(),
+                                    key: thumb_key.clone(),
+                                });
+                                let _ = self.object_store.delete_object(del_req).await;
+                            }
+                        }
+                        // 删除元数据
+                        let meta_key = Self::metadata_key(existing_key);
+                        let del_req = Request::new(DeleteObjectRequest {
+                            bucket: bucket.clone(),
+                            key: meta_key.clone(),
+                        });
+                        let _ = self.object_store.delete_object(del_req).await;
+                    }
+                    // 覆盖模式强制生成新 key
                 }
                 "new" => {
-                    info!("图片已存在，用户选择新增: key='{}'", existing_key);
+                    info!("图片已存在，用户选择新增: key='{}'", first_key);
                     // 新增：继续执行上传流程，生成新 key
                 }
                 "skip" => {
-                    info!("图片已存在，用户选择跳过: key='{}'", existing_key);
+                    info!("图片已存在，用户选择跳过: key='{}'", first_key);
                     return Ok(Response::new(UploadImageResponse {
                         success: true,
                         message: "Image already exists, skipped storage".to_string(),
-                        key: existing_key.clone(),
+                        key: first_key.clone(),
                         etag: String::new(),
                         metadata: None,
                         auto_indexed: true,
-                        embedding_id: existing_key.clone(),
-                        embedding_dim: existing_dim,
+                        embedding_id: first_key.clone(),
+                        embedding_dim: first_dim,
                         duplicate_detected: true,
-                        existing_key: existing_key.clone(),
+                        existing_key: first_key.clone(),
                     }));
                 }
                 _ => {
                     // 默认行为：返回前端确认
-                    info!("图片已存在，返回前端确认: key='{}'", existing_key);
+                    info!("图片已存在，返回前端确认: key='{}'", first_key);
                     return Ok(Response::new(UploadImageResponse {
                         success: true,
                         message: "Duplicate image detected, please confirm".to_string(),
@@ -532,16 +574,18 @@ impl ImageService for ImageServiceImpl {
                         embedding_id: String::new(),
                         embedding_dim: 0,
                         duplicate_detected: true,
-                        existing_key: existing_key.clone(),
+                        existing_key: first_key.clone(),
                     }));
                 }
             }
         }
 
-        // 生成图片 key（覆盖模式使用现有 key）
-        let is_overwrite = duplicate_info.as_ref().map(|_| req.duplicate_action == "overwrite").unwrap_or(false);
-        let image_key = if is_overwrite {
-            duplicate_info.unwrap().0
+        // 生成图片 key（覆盖模式和新增模式都生成新 key）
+        let has_duplicate = !duplicate_info.is_empty();
+        let is_overwrite = has_duplicate && req.duplicate_action == "overwrite";
+        let is_new = has_duplicate && req.duplicate_action == "new";
+        let image_key = if is_overwrite || is_new {
+            self.generate_image_key()
         } else if req.key.is_empty() {
             self.generate_image_key()
         } else {
