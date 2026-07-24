@@ -392,7 +392,7 @@ impl ImageServiceImpl {
         let search = search_resp.into_inner();
         if search.success {
             if let Some(result) = search.results.first() {
-                if result.distance < 0.01 {
+                if result.distance < 0.0001 {
                     let existing_key = result.id.to_string();
                     info!("去重检查: 图片已存在, key='{}', distance={:.4}", existing_key, result.distance);
                     return Ok(Some((existing_key, index_dim)));
@@ -482,31 +482,67 @@ impl ImageService for ImageServiceImpl {
 
         // ── 先检查自动向量索引去重（仅在 auto_index 启用且嵌入服务可用时） ──
         #[cfg(feature = "auto_index")]
-        if req.auto_index {
-            if let Some((existing_key, existing_dim)) = self
-                .check_existing_image(&req.data, &req.auto_index_model)
-                .await
+        let duplicate_info = if req.auto_index {
+            self.check_existing_image(&req.data, &req.auto_index_model).await
                 .map_err(|e| {
                     log::warn!("图片去重检查失败: {}", e);
                     Status::internal(format!("图片去重检查失败: {}", e))
                 })?
-            {
-                info!("图片已存在，跳过存储: key='{}', dim={}", existing_key, existing_dim);
-                return Ok(Response::new(UploadImageResponse {
-                    success: true,
-                    message: "Image already exists, skipped storage".to_string(),
-                    key: existing_key.clone(),
-                    etag: String::new(),
-                    metadata: None,
-                    auto_indexed: true,
-                    embedding_id: existing_key,
-                    embedding_dim: existing_dim,
-                }));
+        } else {
+            None
+        };
+        #[cfg(not(feature = "auto_index"))]
+        let duplicate_info: Option<(String, i32)> = None;
+
+        if let Some((ref existing_key, existing_dim)) = duplicate_info {
+            match req.duplicate_action.as_str() {
+                "overwrite" => {
+                    info!("图片已存在，用户选择覆盖: key='{}'", existing_key);
+                    // 覆盖：继续执行上传流程，使用现有 key
+                }
+                "new" => {
+                    info!("图片已存在，用户选择新增: key='{}'", existing_key);
+                    // 新增：继续执行上传流程，生成新 key
+                }
+                "skip" => {
+                    info!("图片已存在，用户选择跳过: key='{}'", existing_key);
+                    return Ok(Response::new(UploadImageResponse {
+                        success: true,
+                        message: "Image already exists, skipped storage".to_string(),
+                        key: existing_key.clone(),
+                        etag: String::new(),
+                        metadata: None,
+                        auto_indexed: true,
+                        embedding_id: existing_key.clone(),
+                        embedding_dim: existing_dim,
+                        duplicate_detected: true,
+                        existing_key: existing_key.clone(),
+                    }));
+                }
+                _ => {
+                    // 默认行为：返回前端确认
+                    info!("图片已存在，返回前端确认: key='{}'", existing_key);
+                    return Ok(Response::new(UploadImageResponse {
+                        success: true,
+                        message: "Duplicate image detected, please confirm".to_string(),
+                        key: String::new(),
+                        etag: String::new(),
+                        metadata: None,
+                        auto_indexed: false,
+                        embedding_id: String::new(),
+                        embedding_dim: 0,
+                        duplicate_detected: true,
+                        existing_key: existing_key.clone(),
+                    }));
+                }
             }
         }
 
-        // 生成图片 key（若未指定则使用 Snowflake ID 自动生成）
-        let image_key = if req.key.is_empty() {
+        // 生成图片 key（覆盖模式使用现有 key）
+        let is_overwrite = duplicate_info.as_ref().map(|_| req.duplicate_action == "overwrite").unwrap_or(false);
+        let image_key = if is_overwrite {
+            duplicate_info.unwrap().0
+        } else if req.key.is_empty() {
             self.generate_image_key()
         } else {
             req.key.clone()
@@ -542,6 +578,8 @@ impl ImageService for ImageServiceImpl {
                 auto_indexed: false,
                 embedding_id: String::new(),
                 embedding_dim: 0,
+                duplicate_detected: false,
+                existing_key: String::new(),
             }));
         }
         let etag = put_resp.etag;
@@ -649,6 +687,8 @@ impl ImageService for ImageServiceImpl {
             auto_indexed,
             embedding_id,
             embedding_dim,
+            duplicate_detected: false,
+            existing_key: String::new(),
         }))
     }
 
@@ -946,6 +986,7 @@ impl ImageService for ImageServiceImpl {
             name,
             auto_index,
             auto_index_model,
+            duplicate_action: String::new(),
         };
         self.upload_image(Request::new(upload_req)).await
     }
@@ -1060,6 +1101,7 @@ async fn upload_image_handler(
         name: query.name,
         auto_index: false,
         auto_index_model: String::new(),
+        duplicate_action: String::new(),
     });
 
     match service.upload_image(req).await {

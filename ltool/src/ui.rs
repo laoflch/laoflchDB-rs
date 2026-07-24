@@ -107,6 +107,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_delete_confirm_dialog(f, key);
     }
 
+    // 图片重复确认弹窗
+    if app.image_tab.duplicate_confirm.is_some() {
+        draw_duplicate_confirm_dialog(f, app);
+    }
+
     // 下载确认弹窗
     if app.image_tab.download_confirm.is_some() {
         draw_download_confirm_dialog(f, app);
@@ -979,30 +984,34 @@ fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
         let scroll = app.vector_tab.vector_detail_scroll;
         let visible_lines = 20usize;
         let lines: Vec<Line> = emb
-            .iter()
+            .chunks(4)
             .enumerate()
             .skip(scroll)
             .take(visible_lines)
-            .map(|(i, v)| {
-                Line::from(format!("[{}]  {:.6}", i, v))
+            .map(|(chunk_idx, chunk)| {
+                let parts: Vec<String> = chunk.iter().enumerate()
+                    .map(|(offset, v)| format!("[{}]  {:.6}", chunk_idx * 4 + offset, v))
+                    .collect();
+                Line::from(parts.join("  │  "))
             })
             .collect();
 
         let area = f.size();
-        let width = 60;
+        let width = 85;
         let height = visible_lines as u16 + 3;
         let x = (area.width.saturating_sub(width)) / 2;
         let y = (area.height.saturating_sub(height)) / 2;
         let dialog_area = Rect { x, y, width, height };
 
+        let total_lines = (dim + 3) / 4;
         let block = Block::default()
             .borders(Borders::ALL)
             .title(format!(
-                "向量详情（{} 维，Scroll: {}-{}/{}，↑↓ 滚动，Esc 关闭）",
+                "向量详情（{} 维，每行 4 维，Scroll: {}-{}/{}，↑↓ 滚动，Esc 关闭）",
                 dim,
                 scroll,
-                (scroll + visible_lines).min(dim),
-                dim
+                (scroll + visible_lines).min(total_lines),
+                total_lines
             ));
         let list = List::new(lines).block(block);
         f.render_widget(Clear, dialog_area);
@@ -2504,6 +2513,82 @@ fn draw_delete_confirm_dialog(f: &mut Frame, key: &str) {
     f.render_widget(hint, Rect {
         x: inner.x,
         y: inner.y + 2,
+        width: inner.width,
+        height: 1,
+    });
+}
+
+/// 绘制图片重复确认弹窗
+fn draw_duplicate_confirm_dialog(f: &mut Frame, app: &mut App) {
+    let confirm = match &app.image_tab.duplicate_confirm {
+        Some(c) => c,
+        None => return,
+    };
+    let area = f.size();
+    let width = 50.min(area.width.saturating_sub(4));
+    let height = 9;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("图片已存在")
+        .style(Style::default().bg(Color::Black).fg(Color::Yellow));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let existing_key_display = truncate_str(&confirm.existing_key, inner.width as usize);
+    let msg = Paragraph::new(Line::from(vec![
+        Span::styled("检测到重复图片: ", Style::default().fg(Color::White)),
+        Span::styled(existing_key_display, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+    ]));
+    f.render_widget(msg, Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: 1,
+    });
+
+    let options = ["跳过存储", "覆盖存储", "新增存储"];
+    let option_items: Vec<ListItem> = options.iter().enumerate().map(|(i, label)| {
+        let selected = i == confirm.selected;
+        let content = format!(" {} {}", if selected { ">" } else { " " }, label);
+        let style = if selected {
+            Style::default().fg(Color::Black).bg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        ListItem::new(Line::from(Span::styled(content, style)))
+    }).collect();
+    let list = List::new(option_items);
+    f.render_widget(list, Rect {
+        x: inner.x + 2,
+        y: inner.y + 2,
+        width: inner.width.saturating_sub(4),
+        height: options.len() as u16,
+    });
+
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("↑↓ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw("选择  "),
+        Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        Span::raw("确认  "),
+        Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw("取消"),
+    ]))
+    .alignment(Alignment::Center);
+    f.render_widget(hint, Rect {
+        x: inner.x,
+        y: inner.y + 2 + options.len() as u16,
         width: inner.width,
         height: 1,
     });

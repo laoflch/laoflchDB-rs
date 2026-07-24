@@ -249,6 +249,7 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         name: original_image_key.clone(),
         auto_index: false,
         auto_index_model: String::new(),
+        duplicate_action: String::new(),
     };
 
     let upload_resp = {

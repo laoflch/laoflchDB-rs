@@ -185,6 +185,8 @@ pub struct ImageTabState {
     pub path_popup: PathPopup,
     /// 本地文件操作弹窗：选择文件后弹出，提供上传和向量搜索两个 Tab
     pub local_file_action: Option<LocalFileAction>,
+    /// 图片重复确认弹窗
+    pub duplicate_confirm: Option<DuplicateConfirm>,
     /// 图片操作弹窗（选中列表中图片后按 Enter 弹出）
     pub action_popup_open: bool,
     /// 操作弹窗中当前选中的选项索引
@@ -207,6 +209,22 @@ pub struct ImageTabState {
     pub search_selected: Option<usize>,
     /// 搜索时使用的索引名称（用于弹窗标题展示）
     pub search_index_name: String,
+}
+
+/// 图片重复确认弹窗
+#[derive(Debug, Clone)]
+pub struct DuplicateConfirm {
+    /// 已存在的图片 key
+    pub existing_key: String,
+    /// 文件路径（用于重新上传）
+    pub file_path: String,
+    pub bucket: String,
+    pub content_type: String,
+    pub name: String,
+    /// 图片数据（缓存，用于重新上传）
+    pub data: Vec<u8>,
+    /// 当前选中的选项索引：0=跳过，1=覆盖，2=新增
+    pub selected: usize,
 }
 
 /// 向量搜索结果项
@@ -267,6 +285,7 @@ impl Default for ImageTabState {
             list_scroll: 0,
             path_popup: PathPopup::default(),
             local_file_action: None,
+            duplicate_confirm: None,
             action_popup_open: false,
             action_popup_selected: 0,
             delete_confirm: None,
@@ -801,6 +820,7 @@ impl App {
     /// 清除图片 Tab 的所有弹窗
     pub fn clear_image_tab_popups(&mut self) {
         self.image_tab.local_file_action = None;
+        self.image_tab.duplicate_confirm = None;
         self.image_tab.action_popup_open = false;
         self.image_tab.delete_confirm = None;
         self.image_tab.download_confirm = None;

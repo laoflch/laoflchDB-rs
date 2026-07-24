@@ -369,6 +369,43 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
         }
     }
 
+    // 图片重复确认弹窗
+    if app.image_tab.duplicate_confirm.is_some() {
+        match event.code {
+            KeyCode::Up => {
+                let confirm = app.image_tab.duplicate_confirm.as_mut().unwrap();
+                if confirm.selected > 0 {
+                    confirm.selected -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let confirm = app.image_tab.duplicate_confirm.as_mut().unwrap();
+                if confirm.selected < 2 {
+                    confirm.selected += 1;
+                }
+                return true;
+            }
+            KeyCode::Enter => {
+                let action = match app.image_tab.duplicate_confirm.as_ref().unwrap().selected {
+                    0 => "skip",
+                    1 => "overwrite",
+                    2 => "new",
+                    _ => "skip",
+                };
+                let _ = crate::tab_image::upload_with_duplicate_action(app, action).await;
+                app.image_tab.duplicate_confirm = None;
+                return true;
+            }
+            KeyCode::Esc => {
+                app.image_tab.duplicate_confirm = None;
+                app.set_status("已取消上传");
+                return true;
+            }
+            _ => {}
+        }
+    }
+
     // 删除确认弹窗
     if app.image_tab.delete_confirm.is_some() {
         match event.code {

@@ -59,6 +59,8 @@ message UploadImageRequest {
   bool auto_index = 7;
   // 向量化模型名称（如 "jina-clip-v2"，不指定则使用默认模型）
   string auto_index_model = 8;
+  // 重复图片处理策略: ""(默认-返回前端确认), "overwrite"(覆盖), "new"(新增), "skip"(跳过)
+  string duplicate_action = 9;
 }
 
 // 图片元数据
@@ -92,6 +94,10 @@ message UploadImageResponse {
   string embedding_id = 7;
   // 向量维度
   int32 embedding_dim = 8;
+  // 是否检测到重复图片
+  bool duplicate_detected = 9;
+  // 已存在的图片 key（重复检测到时设置）
+  string existing_key = 10;
 }
 
 // ── GetImage ────────────────────────────

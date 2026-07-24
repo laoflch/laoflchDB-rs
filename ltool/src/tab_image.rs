@@ -12,7 +12,7 @@ use laoflchdb_image_service_proto::proto::{
     UploadImageChunk, UploadImageRequest,
 };
 
-use crate::app::App;
+use crate::app::{App, DuplicateConfirm};
 
 /// 切片大小（4MB - 1KB，留出 protobuf 编码开销空间）
 const CHUNK_SIZE: usize = 4 * 1024 * 1024 - 1024;
@@ -47,6 +47,7 @@ pub async fn upload_and_index_file(
             name: name.to_string(),
             auto_index: true,
             auto_index_model: "jina-clip-v2".to_string(),
+            duplicate_action: String::new(),
         };
         let resp = {
             let clients = app.clients.as_mut().unwrap();
@@ -164,23 +165,116 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
         .unwrap_or("application/octet-stream")
         .to_string();
 
+    let data = std::fs::read(&file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
+
     // key 为空时，服务端自动生成 Snowflake ID
     app.set_status("正在上传图片...");
-    match upload_and_index_file(app, &file_path, &bucket, &key, &content_type, &file_path).await {
-        Ok(uploaded_key) => {
-            app.image_tab.upload_result = Some(format!("key={}", uploaded_key));
-            app.image_tab.key.set_value("");
-            app.set_status(format!("上传成功: {}, 向量索引成功", uploaded_key));
-        }
-        Err(e) => {
-            let msg = format!("{}", e);
-            if msg.starts_with("上传") {
-                app.set_error(&msg);
-            } else {
-                // 可能是上传成功但索引失败，以状态栏显示
-                app.set_status(format!("上传成功（向量索引跳过: {}）", msg));
+
+    let req = UploadImageRequest {
+        bucket: bucket.clone(),
+        key: key.clone(),
+        data: data.clone(),
+        content_type: content_type.clone(),
+        metadata: Default::default(),
+        name: file_path.clone(),
+        auto_index: true,
+        auto_index_model: "jina-clip-v2".to_string(),
+        duplicate_action: String::new(), // 空字符串：检测重复时返回前端确认
+    };
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(req);
+        match clients.image.upload_image(auth_req).await {
+            Ok(r) => r.into_inner(),
+            Err(e) => {
+                app.set_error(format!("上传请求失败: {}", e));
+                return Ok(());
             }
         }
+    };
+    if !resp.success {
+        app.set_error(format!("上传失败: {}", resp.message));
+        return Ok(());
+    }
+
+    if resp.duplicate_detected && !resp.existing_key.is_empty() {
+        // 检测到重复，显示确认弹窗
+        app.image_tab.duplicate_confirm = Some(DuplicateConfirm {
+            existing_key: resp.existing_key,
+            file_path: file_path.clone(),
+            bucket,
+            content_type,
+            name: file_path,
+            data,
+            selected: 0,
+        });
+        app.set_status("图片已存在，请选择处理方式：跳过 / 覆盖 / 新增");
+        return Ok(());
+    }
+
+    app.image_tab.upload_result = Some(format!("key={}", resp.key));
+    app.image_tab.key.set_value("");
+    if resp.auto_indexed {
+        app.set_status(format!("上传成功: {}, 向量索引成功", resp.key));
+    } else {
+        app.set_status(format!("上传成功: {}", resp.key));
+    }
+
+    Ok(())
+}
+
+/// 根据重复确认弹窗的选择重新上传
+pub async fn upload_with_duplicate_action(app: &mut App, action: &str) -> Result<()> {
+    let confirm = match app.image_tab.duplicate_confirm.take() {
+        Some(c) => c,
+        None => return Ok(()),
+    };
+
+    app.set_status(format!("正在{}图片...", match action {
+        "overwrite" => "覆盖",
+        "new" => "新增",
+        _ => "跳过",
+    }));
+
+    if action == "skip" {
+        app.image_tab.upload_result = Some(format!("key={}", confirm.existing_key));
+        app.set_status(format!("已跳过上传，使用现有图片: {}", confirm.existing_key));
+        return Ok(());
+    }
+
+    let req = UploadImageRequest {
+        bucket: confirm.bucket,
+        key: String::new(), // 覆盖模式由服务端决定 key，新增模式生成新 key
+        data: confirm.data,
+        content_type: confirm.content_type,
+        metadata: Default::default(),
+        name: confirm.name,
+        auto_index: true,
+        auto_index_model: "jina-clip-v2".to_string(),
+        duplicate_action: action.to_string(),
+    };
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(req);
+        match clients.image.upload_image(auth_req).await {
+            Ok(r) => r.into_inner(),
+            Err(e) => {
+                app.set_error(format!("上传请求失败: {}", e));
+                return Ok(());
+            }
+        }
+    };
+    if !resp.success {
+        app.set_error(format!("上传失败: {}", resp.message));
+        return Ok(());
+    }
+
+    app.image_tab.upload_result = Some(format!("key={}", resp.key));
+    app.image_tab.key.set_value("");
+    if resp.auto_indexed {
+        app.set_status(format!("上传成功: {}, 向量索引成功", resp.key));
+    } else {
+        app.set_status(format!("上传成功: {}", resp.key));
     }
 
     Ok(())
