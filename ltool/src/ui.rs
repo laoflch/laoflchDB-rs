@@ -365,6 +365,23 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
 
     f.render_widget(table, table_area);
 
+    // 显示元数据详情（如果有）
+    if let Some(ref meta) = app.image_tab.meta_detail {
+        let meta_area = Rect::new(
+            table_area.left() + 1,
+            table_area.bottom() + 1,
+            table_area.width.saturating_sub(2),
+            2,
+        );
+        let meta_block = Block::default()
+            .borders(Borders::ALL)
+            .title("元数据")
+            .style(Style::default().fg(Color::Green));
+        let meta_para = Paragraph::new(truncate_str(meta, meta_area.width as usize - 4))
+            .block(meta_block);
+        f.render_widget(meta_para, meta_area);
+    }
+
     // 滚动条
     let total = app.image_tab.images.len();
     let visible = 50; // 与 take(50) 一致
