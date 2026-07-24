@@ -1685,6 +1685,11 @@ async fn handle_index_tab(app: &mut App, event: KeyEvent) -> bool {
         app.set_status("请输入搜索查询后按 Enter");
         return true;
     }
+    // F6: 从 RocksDB 重建索引
+    if event.code == KeyCode::F(6) {
+        let _ = crate::tab_index::rebuild_embedding_index(app).await;
+        return true;
+    }
     // Enter 在输入框非空时获取索引详情
     if event.code == KeyCode::Enter && !app.index_tab.index_name.value.is_empty() {
         let _ = crate::tab_index::get_index_detail(app).await;

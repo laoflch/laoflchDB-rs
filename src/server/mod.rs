@@ -82,15 +82,50 @@ impl LaoflchDBServer {
                     indices,
                     kv_db_path: embedding_cfg.kv_db_path.clone(),
                     snapshot_path: embedding_cfg.snapshot_path.clone(),
+                    startup_mode: embedding_cfg.startup_mode.clone(),
                 };
                 match laoflchdb_embedding_service::EmbeddingIndexServiceImpl::new(&embedding_config).await {
                     Ok(svc) => {
-                        // 尝试自动加载快照
-                        if let Ok(Some(n)) = svc.try_load_snapshot().await {
-                            info!("嵌入向量索引从快照恢复: {} 条向量", n);
+                        let svc = Arc::new(svc);
+                        let startup_mode = embedding_cfg.startup_mode.as_str();
+                        let is_rebuild = startup_mode == "rebuild";
+
+                        if is_rebuild {
+                            // 重建模式：异步重建，不阻塞启动
+                            info!("嵌入向量索引启动模式: rebuild（从 RocksDB 异步重建）");
+                            let svc_arc = svc.clone();
+                            tokio::spawn(async move {
+                                let start = std::time::Instant::now();
+                                info!("嵌入向量索引开始异步重建...");
+                                match svc_arc.rebuild_all_from_rocks_db_public().await {
+                                    Ok(n) if n > 0 => info!("嵌入向量索引重建完成: {} 条向量, 耗时 {:?}", n, start.elapsed()),
+                                    Ok(_) => info!("嵌入向量索引为空（无数据需要重建）"),
+                                    Err(e) => log::warn!("嵌入向量索引重建失败: {}", e),
+                                }
+                            });
+                        } else {
+                            // 快照模式：尝试快照恢复，失败则异步重建
+                            match svc.try_load_snapshot().await {
+                                Ok(Some(n)) => {
+                                    info!("嵌入向量索引从快照恢复: {} 条向量", n);
+                                }
+                                _ => {
+                                    info!("未找到快照，异步重建中...");
+                                    let svc_arc = svc.clone();
+                                    tokio::spawn(async move {
+                                        let start = std::time::Instant::now();
+                                        info!("嵌入向量索引开始异步重建...");
+                                        match svc_arc.rebuild_all_from_rocks_db_public().await {
+                                            Ok(n) if n > 0 => info!("嵌入向量索引重建完成: {} 条向量, 耗时 {:?}", n, start.elapsed()),
+                                            Ok(_) => info!("嵌入向量索引为空（无数据需要重建）"),
+                                            Err(e) => log::warn!("嵌入向量索引重建失败: {}", e),
+                                        }
+                                    });
+                                }
+                            }
                         }
                         info!("嵌入向量索引服务已启动");
-                        Some(Arc::new(svc))
+                        Some(svc)
                     }
                     Err(e) => {
                         log::error!("嵌入向量索引服务启动失败: {}", e);

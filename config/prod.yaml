@@ -15,6 +15,7 @@ vector_service:
 # 嵌入向量索引服务配置
 embedding_index:
   enabled: true
+  startup_mode: snapshot
   dim: 512
   m: 32
   ef_construction: 200

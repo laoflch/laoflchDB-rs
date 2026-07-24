@@ -168,6 +168,9 @@ pub struct EmbeddingIndexConfig {
     /// 是否启用
     #[serde(default)]
     pub enabled: bool,
+    /// 启动模式: "snapshot"（快照恢复，默认）或 "rebuild"（从 RocksDB 重建）
+    #[serde(default = "default_startup_mode")]
+    pub startup_mode: String,
     /// 索引定义列表（至少定义一个）
     #[serde(default = "default_hnsw_indices")]
     pub indices: Vec<IndexDef>,
@@ -177,6 +180,10 @@ pub struct EmbeddingIndexConfig {
     /// 图拓扑快照保存路径
     #[serde(default = "default_hnsw_snapshot_path")]
     pub snapshot_path: String,
+}
+
+fn default_startup_mode() -> String {
+    "snapshot".to_string()
 }
 
 fn default_hnsw_indices() -> Vec<IndexDef> {
@@ -232,6 +239,7 @@ impl Default for EmbeddingIndexConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            startup_mode: default_startup_mode(),
             indices: default_hnsw_indices(),
             kv_db_path: default_hnsw_kv_db_path(),
             snapshot_path: default_hnsw_snapshot_path(),

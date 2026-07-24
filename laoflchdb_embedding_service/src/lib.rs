@@ -17,6 +17,7 @@ use laoflchdb_engines::{EngineOptions, StorageEngine};
 use laoflchdb_kv_rocksdb_engine::KVRocksDBEngine;
 use std::collections::HashMap;
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::io::AsyncWriteExt;
@@ -76,6 +77,8 @@ pub struct EmbeddingServiceConfig {
     pub kv_db_path: String,
     /// HNSW 图拓扑快照保存路径
     pub snapshot_path: String,
+    /// 启动模式: "snapshot"（快照恢复）或 "rebuild"（从 RocksDB 重建）
+    pub startup_mode: String,
 }
 
 impl Default for EmbeddingServiceConfig {
@@ -121,6 +124,7 @@ impl Default for EmbeddingServiceConfig {
             ],
             kv_db_path: "./laoflch_hnsw_data".to_string(),
             snapshot_path: "./laoflch_hnsw_snapshots".to_string(),
+            startup_mode: "snapshot".to_string(),
         }
     }
 }
@@ -148,6 +152,8 @@ pub struct EmbeddingIndexServiceImpl {
     storage: Mutex<KVRocksDBEngine>,
     /// 服务配置
     config: Arc<EmbeddingServiceConfig>,
+    /// 是否正在构建/重建索引（启动时重建或手动重建期间为 true）
+    building: Arc<AtomicBool>,
 }
 
 impl EmbeddingIndexServiceImpl {
@@ -194,12 +200,32 @@ impl EmbeddingIndexServiceImpl {
             indices,
             storage: Mutex::new(storage),
             config: Arc::new(config.clone()),
+            building: Arc::new(AtomicBool::new(false)),
         })
     }
 
     /// 获取指定索引的配置
     fn get_index_config(&self, index_name: &str) -> Option<&IndexConfig> {
         self.indices.get(index_name).map(|s| &s.config)
+    }
+
+    /// 检查索引是否正在构建中
+    pub fn is_building(&self) -> bool {
+        self.building.load(Ordering::Relaxed)
+    }
+
+    /// 设置构建状态
+    fn set_building(&self, val: bool) {
+        self.building.store(val, Ordering::Relaxed);
+    }
+
+    /// 检查构建状态，如果正在构建中则返回错误
+    fn check_building(&self) -> Result<(), Status> {
+        if self.building.load(Ordering::Relaxed) {
+            Err(Status::unavailable("HNSW 服务正在构建中，请稍后再试"))
+        } else {
+            Ok(())
+        }
     }
 
     /// 从快照文件恢复所有 HNSW 图拓扑（如果快照文件存在）
@@ -454,6 +480,39 @@ impl EmbeddingIndexServiceImpl {
         }
         Ok(total)
     }
+
+    /// 从 RocksDB 重建所有索引（公开方法，供外部调用）
+    /// 设置 building 标志，重建完成后自动保存快照
+    pub async fn rebuild_all_from_rocks_db_public(&self) -> Result<u64, Status> {
+        self.set_building(true);
+        let result = self.rebuild_all_from_rocks_db_internal().await;
+        self.set_building(false);
+        let _ = self.save_snapshot_internal().await;
+        result
+    }
+
+    /// 内部重建方法（不设置 building 标志）
+    /// 遍历所有索引，从 RocksDB 逐条重建 HNSW 图拓扑
+    async fn rebuild_all_from_rocks_db_internal(&self) -> Result<u64, Status> {
+        let mut total = 0u64;
+        let index_names: Vec<String> = self.indices.keys().cloned().collect();
+        for name in index_names {
+            let req = Request::new(RebuildIndexFromRocksDbRequest {
+                index_name: name.clone(),
+            });
+            match self.rebuild_index_from_rocks_db(req).await {
+                Ok(resp) => {
+                    let inner = resp.into_inner();
+                    total += inner.rebuilt_count;
+                    log::info!("重建索引 [{}]: {} 条向量", name, inner.rebuilt_count);
+                }
+                Err(e) => {
+                    log::warn!("重建索引 [{}] 失败: {}", name, e);
+                }
+            }
+        }
+        Ok(total)
+    }
 }
 
 /// 允许通过 `Arc<EmbeddingIndexServiceImpl>` 直接作为 gRPC 服务注册
@@ -532,6 +591,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         &self,
         request: Request<InsertEmbeddingRequest>,
     ) -> Result<Response<InsertEmbeddingResponse>, Status> {
+        self.check_building()?;
         let req = request.into_inner();
         let index_name = if req.index_name.is_empty() {
             "default"
@@ -576,6 +636,12 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         })?;
 
         log::info!("向量插入成功: id={}, index={}", req.id, index_name);
+
+        // 3. 自动保存快照（持久化 HNSW 图拓扑到磁盘）
+        if let Err(e) = self.save_snapshot_internal().await {
+            log::warn!("插入后自动保存快照失败: {}", e);
+        }
+
         Ok(Response::new(InsertEmbeddingResponse {
             success: true,
             message: format!("向量插入成功, id={}, index={}", req.id, index_name),
@@ -587,6 +653,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         &self,
         request: Request<SearchEmbeddingRequest>,
     ) -> Result<Response<SearchEmbeddingResponse>, Status> {
+        self.check_building()?;
         let req = request.into_inner();
         let index_name = if req.index_name.is_empty() {
             "default"
@@ -659,6 +726,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         &self,
         request: Request<DeleteEmbeddingRequest>,
     ) -> Result<Response<DeleteEmbeddingResponse>, Status> {
+        self.check_building()?;
         let req = request.into_inner();
         let index_name = if req.index_name.is_empty() {
             "default"
@@ -687,6 +755,12 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         }
 
         log::info!("向量删除处理完成: id={}, index={}, removed_from_hnsw={}", req.id, index_name, removed);
+
+        // 3. 自动保存快照（持久化 HNSW 图拓扑到磁盘）
+        if let Err(e) = self.save_snapshot_internal().await {
+            log::warn!("删除后自动保存快照失败: {}", e);
+        }
+
         Ok(Response::new(DeleteEmbeddingResponse {
             success: true,
             message: format!("向量删除处理完成, id={}, index={}", req.id, index_name),
@@ -698,6 +772,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         &self,
         request: Request<GetIndexInfoRequest>,
     ) -> Result<Response<GetIndexInfoResponse>, Status> {
+        self.check_building()?;
         let req = request.into_inner();
 
         // index_name 为空时返回所有索引
@@ -765,6 +840,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         &self,
         _request: Request<SaveSnapshotRequest>,
     ) -> Result<Response<SaveSnapshotResponse>, Status> {
+        self.check_building()?;
         let path = self.save_snapshot_internal().await?;
         Ok(Response::new(SaveSnapshotResponse {
             success: true,
@@ -778,6 +854,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         &self,
         _request: Request<LoadSnapshotRequest>,
     ) -> Result<Response<LoadSnapshotResponse>, Status> {
+        self.check_building()?;
         let num_elements = self.load_snapshot_internal().await?;
         Ok(Response::new(LoadSnapshotResponse {
             success: true,
@@ -791,6 +868,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         &self,
         request: Request<ListEmbeddingsRequest>,
     ) -> Result<Response<ListEmbeddingsResponse>, Status> {
+        self.check_building()?;
         let req = request.into_inner();
         let index_name = if req.index_name.is_empty() {
             "default"
@@ -857,6 +935,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         &self,
         request: Request<AnalyzeConsistencyRequest>,
     ) -> Result<Response<AnalyzeConsistencyResponse>, Status> {
+        self.check_building()?;
         let req = request.into_inner();
         let index_name = if req.index_name.is_empty() {
             "default"

@@ -15,6 +15,7 @@ vector_service:
 # 嵌入向量索引服务配置
 embedding_index:
   enabled: true
+  startup_mode: snapshot
   kv_db_path: /workspace/rust_space/laoflchDB-rust/laoflch_hnsw_data
   snapshot_path: /workspace/rust_space/laoflchDB-rust/laoflch_hnsw_snapshots
   indices:
