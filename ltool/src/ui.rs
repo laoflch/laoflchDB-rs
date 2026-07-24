@@ -281,9 +281,16 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
 // ── 图片 Tab ──────────────────────────────────────
 
 fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
+    // 计算元数据区域高度（有元数据时显示3行）
+    let meta_height = if app.image_tab.meta_detail.is_some() { 3 } else { 0 };
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(5)])
+        .constraints([
+            Constraint::Length(3),           // 文件路径输入框
+            Constraint::Min(5),              // 图片列表
+            Constraint::Length(meta_height), // 元数据区域
+        ])
         .split(area);
 
     // 文件路径输入框独占一整行
@@ -296,16 +303,14 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
         app.image_tab.focus == ImageFocus::FilePath,
     );
 
-    // 下半部：结果区
-    let result_area = chunks[1];
-
-    // 分割为表格区域和滚动条区域
-    let result_chunks = Layout::horizontal([
+    // 图片列表区域
+    let list_area = chunks[1];
+    let list_chunks = Layout::horizontal([
         Constraint::Min(1),
         Constraint::Length(1),
-    ]).split(result_area);
-    let table_area = result_chunks[0];
-    let scrollbar_area = result_chunks[1];
+    ]).split(list_area);
+    let table_area = list_chunks[0];
+    let scrollbar_area = list_chunks[1];
 
     let rows: Vec<Row> = app
         .image_tab
@@ -323,7 +328,6 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
                 Cell::from(format_timestamp(&m.last_modified)),
                 Cell::from(if m.name.is_empty() { m.key.clone() } else { m.name.clone() }),
             ];
-            // 选中行高亮
             if Some(i) == app.image_tab.selected_index {
                 Row::new(cells).style(Style::default().bg(Color::Green).fg(Color::Black))
             } else {
@@ -342,7 +346,6 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     ])
     .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
 
-    // 如果有上传结果，附加到顶部
     let title = if let Some(ref r) = app.image_tab.upload_result {
         format!("图片列表  | 上传结果: {}", truncate_str(r, 60))
     } else {
@@ -365,26 +368,9 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
 
     f.render_widget(table, table_area);
 
-    // 显示元数据详情（如果有）
-    if let Some(ref meta) = app.image_tab.meta_detail {
-        let meta_area = Rect::new(
-            table_area.left() + 1,
-            table_area.bottom() + 1,
-            table_area.width.saturating_sub(2),
-            2,
-        );
-        let meta_block = Block::default()
-            .borders(Borders::ALL)
-            .title("元数据")
-            .style(Style::default().fg(Color::Green));
-        let meta_para = Paragraph::new(truncate_str(meta, meta_area.width as usize - 4))
-            .block(meta_block);
-        f.render_widget(meta_para, meta_area);
-    }
-
     // 滚动条
     let total = app.image_tab.images.len();
-    let visible = 50; // 与 take(50) 一致
+    let visible = 50;
     if total > visible {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
@@ -394,6 +380,24 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
             .style(Style::default().fg(Color::DarkGray));
         let mut state = ScrollbarState::new(total).position(app.image_tab.list_scroll);
         f.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
+    }
+
+    // 元数据区域（在图片列表和状态栏之间）
+    if let Some(ref meta) = app.image_tab.meta_detail {
+        let meta_area = chunks[2];
+        let meta_chunks = Layout::horizontal([
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ]).split(meta_area);
+        let meta_content_area = meta_chunks[0];
+
+        let meta_block = Block::default()
+            .borders(Borders::ALL)
+            .title("元数据")
+            .style(Style::default().fg(Color::Green));
+        let meta_para = Paragraph::new(truncate_str(meta, meta_content_area.width as usize - 4))
+            .block(meta_block);
+        f.render_widget(meta_para, meta_content_area);
     }
 
     Some(path_area)

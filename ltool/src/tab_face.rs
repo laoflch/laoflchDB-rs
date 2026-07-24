@@ -204,13 +204,8 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
             .unwrap_or("application/octet-stream")
             .to_string();
 
-        // 生成原图 key
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let orig_snowflake = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64;
-        let orig_key = format!("image_{}", orig_snowflake);
+        // 原图 key 为空，服务端自动生成 Snowflake ID
+        let orig_key = String::new();
 
         // 复用图片上传功能：上传 + 向量化 + 索引
         app.set_status("正在处理原图...");
@@ -234,17 +229,11 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         }
     }
 
-    // ── 3. 生成 Snowflake ID，同时用于人脸图片 key 和向量 ID ──
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let snowflake_id = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
-    let face_key = format!("face_{}", snowflake_id);
+    // ── 3. 上传对齐图片到 image_service（key 为空，服务端自动生成 Snowflake ID）──
+    //     先上传获取到服务端生成的 key，再用其数字部分作为向量 ID
+    app.set_status(format!("正在保存人脸 #{}...", face_num));
 
-    app.set_status(format!("正在保存并索引人脸 #{}...", face_num));
-
-    // ── 4. 上传对齐图片到 image_service（使用 face_ 前缀的 key）──
+    // ── 3.1 上传对齐图片到 image_service（key 为空，服务端自动生成）──
     use std::collections::HashMap;
     use laoflchdb_image_service_proto::proto::UploadImageRequest;
     let mut metadata = HashMap::new();
@@ -253,7 +242,7 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
     }
     let upload_req = UploadImageRequest {
         bucket: bucket.clone(),
-        key: face_key.clone(),
+        key: String::new(),  // 空 key，服务端自动生成 Snowflake ID
         data: aligned_image,
         content_type: "image/jpeg".to_string(),
         metadata,
@@ -278,7 +267,13 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         return Ok(());
     }
 
-    // ── 5. 插入 embedding 到 embedding_service ──
+    let face_key = upload_resp.key.clone();
+    let snowflake_id = face_key.parse::<u64>().unwrap_or_else(|_| {
+        warn!("服务端返回的 key 不是有效数字: {}", face_key);
+        0
+    });
+
+    // ── 4. 插入 embedding 到 embedding_service ──
     use laoflchdb_embedding_service_proto::proto::InsertEmbeddingRequest;
     let insert_req = InsertEmbeddingRequest {
         index_name: "face".to_string(),

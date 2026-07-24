@@ -375,12 +375,9 @@ impl ImageServiceImpl {
 
         // 3. 插入嵌入索引
         use laoflchdb_embedding_service::proto::InsertEmbeddingRequest;
-        let id = key.parse::<u64>().unwrap_or_else(|_| {
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos() as u64
-        });
+        let id = key.parse::<u64>().map_err(|_| {
+            format!("图片 key 不是有效数字 ID: {}", key)
+        })?;
         let ins_req = tonic::Request::new(InsertEmbeddingRequest {
             id,
             index_name: "image".to_string(),

@@ -5,7 +5,6 @@
 use anyhow::{anyhow, Result};
 use log::warn;
 use std::path::Path;
-use std::time::SystemTime;
 use tokio_stream::wrappers::ReceiverStream;
 
 use laoflchdb_image_service_proto::proto::{
@@ -165,19 +164,9 @@ pub async fn upload_image(app: &mut App) -> Result<()> {
         .unwrap_or("application/octet-stream")
         .to_string();
 
-    let use_key = if key.is_empty() {
-        // 自动生成 key（纯数字，不带前缀）
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .to_string()
-    } else {
-        key.clone()
-    };
-
+    // key 为空时，服务端自动生成 Snowflake ID
     app.set_status("正在上传图片...");
-    match upload_and_index_file(app, &file_path, &bucket, &use_key, &content_type, &file_path).await {
+    match upload_and_index_file(app, &file_path, &bucket, &key, &content_type, &file_path).await {
         Ok(uploaded_key) => {
             app.image_tab.upload_result = Some(format!("key={}", uploaded_key));
             app.image_tab.key.set_value("");
