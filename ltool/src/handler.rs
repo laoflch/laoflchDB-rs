@@ -929,6 +929,17 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         }
     }
 
+    // ── 保存原图复选框：Enter 切换选中状态（必须在检测结果列表导航之前，避免 Enter 被拦截）──
+    if app.face_tab.focus == FaceFocus::SaveOriginal && event.code == KeyCode::Enter {
+        app.face_tab.save_original = !app.face_tab.save_original;
+        if app.face_tab.save_original {
+            app.set_status("已开启保存原图：保存人脸前将上传并索引原图");
+        } else {
+            app.set_status("已关闭保存原图");
+        }
+        return true;
+    }
+
     // ── 检测结果列表导航 ──
     // 仅在未显示已保存人脸列表时启用，避免与 F3 弹窗导航冲突
     if !app.face_tab.show_saved && !app.face_tab.faces.is_empty() {
@@ -963,17 +974,6 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
             }
             _ => {}
         }
-    }
-
-    // ── 保存原图复选框：Enter 切换选中状态 ──
-    if app.face_tab.focus == FaceFocus::SaveOriginal && event.code == KeyCode::Enter {
-        app.face_tab.save_original = !app.face_tab.save_original;
-        if app.face_tab.save_original {
-            app.set_status("已开启保存原图：保存人脸前将上传并索引原图");
-        } else {
-            app.set_status("已关闭保存原图");
-        }
-        return true;
     }
 
     // ── 已保存人脸列表导航 ──

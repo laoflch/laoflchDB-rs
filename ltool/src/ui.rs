@@ -419,7 +419,7 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     use crate::app::FaceFocus;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(12), Constraint::Min(5)])
+        .constraints([Constraint::Length(9), Constraint::Min(5)])
         .split(area);
 
     // 第一行：本地图片路径（独占一行，全宽）
