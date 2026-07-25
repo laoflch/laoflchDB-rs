@@ -75,6 +75,8 @@ message ExtractFaceFeaturesRequest {
   bool index_embedding = 7;
   // 是否自动保存原图到 image_service，原图 key 会作为人脸 name 元数据保存
   bool save_original_image = 8;
+  // 原图在本地的文件名/路径，保存为 image_service 中图片的 name 元数据
+  string original_image_name = 9;
 }
 
 // 人脸特征提取结果

@@ -995,7 +995,7 @@ impl FaceService for FaceServiceImpl {
                 let (orig_key, _orig_id) = self.make_face_image_key();
                 let orig_bucket = "images".to_string();
                 // 编码原图为 JPEG 并上传
-                match save_original_image_to_service(img_svc, &req.image_data, &orig_key, &orig_bucket).await {
+                match save_original_image_to_service(img_svc, &req.image_data, &orig_key, &orig_bucket, &req.original_image_name).await {
                     Ok(saved_key) => {
                         original_image_key = saved_key;
                         info!("原图已保存到 image_service: key={}, bucket={}", original_image_key, orig_bucket);
@@ -1189,7 +1189,7 @@ impl FaceService for FaceServiceImpl {
             req.bucket.clone()
         };
 
-        match save_original_image_to_service(img_svc, &req.image_data, &key, &bucket).await {
+        match save_original_image_to_service(img_svc, &req.image_data, &key, &bucket, "").await {
             Ok(saved_key) => {
                 info!("SaveOriginalImage 成功: key={}, bucket={}", saved_key, bucket);
                 Ok(TonicResponse::new(SaveOriginalImageResponse {
@@ -1252,6 +1252,7 @@ async fn save_original_image_to_service(
     image_data: &[u8],
     key: &str,
     bucket: &str,
+    name: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     use laoflchdb_image_service::proto::image_service_server::ImageService;
     use laoflchdb_image_service::proto::UploadImageRequest;
@@ -1265,7 +1266,7 @@ async fn save_original_image_to_service(
         data: image_data.to_vec(),
         content_type,
         metadata: HashMap::new(),
-        name: String::new(),
+        name: name.to_string(),
         auto_index: true,
         auto_index_model: String::new(),
         duplicate_action: "skip".to_string(),
@@ -1478,6 +1479,7 @@ async fn extract_features_handler(
         return_aligned_images: query.return_aligned_images.unwrap_or(false),
         index_embedding: query.index_embedding.unwrap_or(false),
         save_original_image: query.save_original_image.unwrap_or(false),
+        original_image_name: String::new(),
     };
 
     match service

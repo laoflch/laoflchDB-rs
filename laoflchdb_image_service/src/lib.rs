@@ -327,23 +327,15 @@ impl proto::image_service_server::ImageService for std::sync::Arc<ImageServiceIm
 
 // ── 内部辅助方法（非 trait 方法） ──
 impl ImageServiceImpl {
-    /// 检查图片是否已存在于向量索引中（去重检查）
-    /// 生成 embedding 并搜索 image 索引，如果找到相同向量则返回 (existing_key, dim)
-    /// 仅生成和搜索，不插入索引
+    /// 生成图片 embedding（单次 GPU 推理）
     #[cfg(feature = "auto_index")]
-    async fn check_existing_image(
+    async fn generate_image_embedding(
         &self,
         image_data: &[u8],
         model_name: &str,
-    ) -> Result<Vec<(String, i32)>, Box<dyn std::error::Error + Send + Sync>> {
-        let vector_svc = match self.vector_service.as_ref() {
-            Some(svc) => svc,
-            None => return Ok(vec![]),
-        };
-        let embedding_svc = match self.embedding_service.as_ref() {
-            Some(svc) => svc,
-            None => return Ok(vec![]),
-        };
+    ) -> Result<(Vec<f32>, i32), Box<dyn std::error::Error + Send + Sync>> {
+        let vector_svc = self.vector_service.as_ref().ok_or("向量服务未启用")?;
+        let embedding_svc = self.embedding_service.as_ref().ok_or("嵌入索引服务未启用")?;
 
         // 1. 获取 image 索引的维度
         let index_dim = {
@@ -361,7 +353,7 @@ impl ImageServiceImpl {
             }
         };
 
-        // 2. 生成 embedding
+        // 2. 调用向量服务生成嵌入向量（仅一次 GPU 推理）
         let model = if model_name.is_empty() { "jina-clip-v2" } else { model_name };
         use laoflchdb_vector_service::proto::EmbeddingRequest;
         let emb_req = tonic::Request::new(EmbeddingRequest {
@@ -380,10 +372,24 @@ impl ImageServiceImpl {
             .ok_or("向量化结果为空")?
             .embedding.clone();
 
-        // 3. 搜索 image 索引（返回多个结果以检测所有重复）
+        Ok((embedding, index_dim))
+    }
+
+    /// 使用已有 embedding 搜索重复图片
+    #[cfg(feature = "auto_index")]
+    async fn check_existing_image_with_embedding(
+        &self,
+        embedding: &[f32],
+        index_dim: i32,
+    ) -> Result<Vec<(String, i32)>, Box<dyn std::error::Error + Send + Sync>> {
+        let embedding_svc = match self.embedding_service.as_ref() {
+            Some(svc) => svc,
+            None => return Ok(vec![]),
+        };
+
         use laoflchdb_embedding_service::proto::SearchEmbeddingRequest;
         let search_req = tonic::Request::new(SearchEmbeddingRequest {
-            query_embedding: embedding,
+            query_embedding: embedding.to_vec(),
             top_k: 100,
             index_name: "image".to_string(),
         });
@@ -406,57 +412,20 @@ impl ImageServiceImpl {
         Ok(duplicates)
     }
 
-    /// 自动向量索引：生成向量并插入索引
-    /// 注意：去重检查由 check_existing_image 在调用前完成
+    /// 使用已有 embedding 插入索引（不再重复向量化）
     #[cfg(feature = "auto_index")]
-    async fn auto_index_image(
+    async fn index_image_with_embedding(
         &self,
-        image_data: &[u8],
+        embedding: Vec<f32>,
         key: &str,
-        model_name: &str,
     ) -> Result<(String, i32), Box<dyn std::error::Error + Send + Sync>> {
-        let vector_svc = self.vector_service.as_ref().ok_or("向量服务未启用")?;
         let embedding_svc = self.embedding_service.as_ref().ok_or("嵌入索引服务未启用")?;
 
-        // 1. 获取 image 索引的维度
-        let index_dim = {
-            use laoflchdb_embedding_service::proto::GetIndexInfoRequest;
-            let info_req = tonic::Request::new(GetIndexInfoRequest {
-                index_name: "image".to_string(),
-            });
-            let info_resp = embedding_svc.get_index_info(info_req).await
-                .map_err(|e| format!("获取索引信息失败: {}", e))?;
-            let info = info_resp.into_inner();
-            if info.success {
-                info.stats.map(|s| s.dim as i32).unwrap_or(512)
-            } else {
-                512
-            }
-        };
-
-        // 2. 调用向量服务生成嵌入向量
-        use laoflchdb_vector_service::proto::EmbeddingRequest;
-        let emb_req = tonic::Request::new(EmbeddingRequest {
-            model_name: model_name.to_string(),
-            texts: vec![],
-            dim: index_dim,
-            images: vec![image_data.to_vec()],
-        });
-        let emb_resp = vector_svc.create_embedding(emb_req).await
-            .map_err(|e| format!("向量化失败: {}", e))?;
-        let emb = emb_resp.into_inner();
-        if !emb.success {
-            return Err(format!("向量化失败: {}", emb.message).into());
-        }
-        let embedding = emb.results.first()
-            .ok_or("向量化结果为空")?
-            .embedding.clone();
-
-        // 3. 插入嵌入索引（去重检查由 check_existing_image 在调用前完成）
         use laoflchdb_embedding_service::proto::InsertEmbeddingRequest;
         let id = key.parse::<u64>().map_err(|_| {
             format!("图片 key 不是有效数字 ID: {}", key)
         })?;
+        let dim = embedding.len() as i32;
         let ins_req = tonic::Request::new(InsertEmbeddingRequest {
             id,
             index_name: "image".to_string(),
@@ -469,7 +438,7 @@ impl ImageServiceImpl {
             return Err(format!("索引失败: {}", ins.message).into());
         }
 
-        Ok((key.to_string(), index_dim))
+        Ok((key.to_string(), dim))
     }
 }
 
@@ -483,19 +452,30 @@ impl ImageService for ImageServiceImpl {
         let bucket = self.resolve_bucket(&req.bucket);
         self.ensure_bucket(&bucket).await?;
 
-        // ── 先检查自动向量索引去重（仅在 auto_index 启用且嵌入服务可用时） ──
+        // ── 生成 embedding（单次 GPU 推理）+ 去重检查 ──
         #[cfg(feature = "auto_index")]
-        let duplicate_info = if req.auto_index {
-            self.check_existing_image(&req.data, &req.auto_index_model).await
-                .map_err(|e| {
-                    log::warn!("图片去重检查失败: {}", e);
-                    Status::internal(format!("图片去重检查失败: {}", e))
-                })?
+        let (duplicate_info, cached_embedding, cached_dim) = if req.auto_index {
+            // 先生成 embedding（仅一次 GPU 推理）
+            match self.generate_image_embedding(&req.data, &req.auto_index_model).await {
+                Ok((embedding, dim)) => {
+                    // 用同一 embedding 做去重检查
+                    let dups = self.check_existing_image_with_embedding(&embedding, dim).await
+                        .map_err(|e| {
+                            log::warn!("图片去重检查失败: {}", e);
+                            Status::internal(format!("图片去重检查失败: {}", e))
+                        })?;
+                    (dups, Some(embedding), dim)
+                }
+                Err(e) => {
+                    log::warn!("图片向量化失败，跳过去重检查: {}", e);
+                    (vec![], None, 0)
+                }
+            }
         } else {
-            vec![]
+            (vec![], None, 0)
         };
         #[cfg(not(feature = "auto_index"))]
-        let duplicate_info: Vec<(String, i32)> = vec![];
+        let (duplicate_info, cached_embedding, cached_dim): (Vec<(String, i32)>, Option<Vec<f32>>, i32) = (vec![], None, 0);
 
         if !duplicate_info.is_empty() {
             let first_key = &duplicate_info[0].0;
@@ -696,30 +676,29 @@ impl ImageService for ImageServiceImpl {
             bucket, image_key, width, height, metadata.format
         );
 
-        // ── 自动向量索引（新图片，插入 embedding） ──
+        // ── 自动向量索引（复用已生成的 embedding，不再重复向量化） ──
         let mut auto_indexed = false;
         let mut embedding_id = String::new();
         let mut embedding_dim = 0i32;
 
         #[cfg(feature = "auto_index")]
         if req.auto_index {
-            let model_name = if req.auto_index_model.is_empty() {
-                "jina-clip-v2"
+            if let Some(embedding) = cached_embedding {
+                match self.index_image_with_embedding(embedding, &image_key).await {
+                    Ok((eid, edim)) => {
+                        auto_indexed = true;
+                        embedding_id = eid;
+                        embedding_dim = edim;
+                        info!("图片自动向量索引成功: key='{}', id='{}'", image_key, embedding_id);
+                    }
+                    Err(e) => {
+                        log::warn!("图片自动向量索引失败: key='{}', error={}", image_key, e);
+                    }
+                }
             } else {
-                &req.auto_index_model
-            };
-
-            match self.auto_index_image(&req.data, &image_key, model_name).await {
-                Ok((eid, edim)) => {
-                    auto_indexed = true;
-                    embedding_id = eid;
-                    embedding_dim = edim;
-                    info!("图片自动向量索引成功: key='{}', model='{}', id='{}'", image_key, model_name, embedding_id);
-                }
-                Err(e) => {
-                    log::warn!("图片自动向量索引失败: key='{}', model='{}', error={}", image_key, model_name, e);
-                }
+                log::warn!("图片自动向量索引跳过: 无缓存的 embedding（向量化此前已失败）");
             }
+            let _ = cached_dim;
         }
 
         Ok(Response::new(UploadImageResponse {
@@ -1340,6 +1319,7 @@ async fn get_image_meta_handler(
                         "thumbnails": thumbnails,
                         "user_metadata": user_metadata,
                         "format": m.format,
+                        "name": m.name,
                     });
                     (
                         StatusCode::OK,

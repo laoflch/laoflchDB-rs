@@ -43,6 +43,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         return_aligned_images: true,
         index_embedding: false,
         save_original_image: app.face_tab.save_original,
+        original_image_name: app.face_tab.file_path.value.clone(),
     };
 
     app.set_status("正在检测人脸...");
