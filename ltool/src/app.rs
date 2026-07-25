@@ -346,6 +346,10 @@ pub struct FaceTabState {
     pub saved_action_selected: usize,
     /// 已保存人脸删除确认
     pub saved_delete_key: Option<String>,
+    /// ── 检测结果操作：检索相似人脸结果弹窗 ──
+    pub show_face_search_results: bool,
+    pub face_search_results: Vec<SearchResultItem>,
+    pub face_search_scroll: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -393,6 +397,9 @@ impl Default for FaceTabState {
             saved_action_open: false,
             saved_action_selected: 0,
             saved_delete_key: None,
+            show_face_search_results: false,
+            face_search_results: Vec::new(),
+            face_search_scroll: 0,
         }
     }
 }

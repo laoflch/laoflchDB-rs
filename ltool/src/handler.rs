@@ -738,7 +738,7 @@ fn auto_scroll_face_saved(tab: &mut crate::app::FaceTabState) {
 async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
     // ── 检测结果操作弹窗 ──
     if app.face_tab.detection_action_open {
-        const DETECTION_ACTION_OPTIONS: &[&str] = &["保存人脸并索引"];
+        const DETECTION_ACTION_OPTIONS: &[&str] = &["保存人脸并索引", "检索相似人脸"];
         match event.code {
             KeyCode::Up => {
                 if app.face_tab.detection_action_selected > 0 {
@@ -759,11 +759,49 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
                 if idx == 0 {
                     // 保存人脸并索引
                     let _ = crate::tab_face::save_and_index_face(app).await;
+                } else if idx == 1 {
+                    // 检索相似人脸
+                    let _ = crate::tab_face::search_similar_face(app).await;
                 }
                 return true;
             }
             KeyCode::Esc => {
                 app.face_tab.detection_action_open = false;
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // ── 检索相似人脸结果弹窗 ──
+    if app.face_tab.show_face_search_results {
+        match event.code {
+            KeyCode::Up => {
+                if app.face_tab.face_search_scroll > 0 {
+                    app.face_tab.face_search_scroll -= 1;
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = app.face_tab.face_search_results.len().saturating_sub(1);
+                if app.face_tab.face_search_scroll < max {
+                    app.face_tab.face_search_scroll += 1;
+                }
+                return true;
+            }
+            KeyCode::PageUp => {
+                app.face_tab.face_search_scroll = app.face_tab.face_search_scroll.saturating_sub(10);
+                return true;
+            }
+            KeyCode::PageDown => {
+                let max = app.face_tab.face_search_results.len().saturating_sub(1);
+                app.face_tab.face_search_scroll = (app.face_tab.face_search_scroll + 10).min(max);
+                return true;
+            }
+            KeyCode::Esc => {
+                app.face_tab.show_face_search_results = false;
+                app.face_tab.face_search_results.clear();
+                app.face_tab.face_search_scroll = 0;
                 return true;
             }
             _ => {}

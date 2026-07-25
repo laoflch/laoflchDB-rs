@@ -122,6 +122,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_face_detection_action_popup(f, app);
     }
 
+    // ── 人脸 Tab 检索相似人脸结果弹窗 ──
+    if app.current_tab == Tab::Face && app.face_tab.show_face_search_results {
+        draw_face_search_results_popup(f, app);
+    }
+
     // ── 人脸 Tab 已保存人脸列表弹窗 ──
     if app.current_tab == Tab::Face && app.face_tab.show_saved {
         draw_face_saved_list(f, app);
@@ -538,7 +543,7 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
 
 /// 绘制检测结果操作弹窗
 fn draw_face_detection_action_popup(f: &mut Frame, app: &mut App) {
-    const OPTIONS: &[&str] = &["保存人脸并索引"];
+    const OPTIONS: &[&str] = &["保存人脸并索引", "检索相似人脸"];
     let area = f.size();
     let width = 30;
     let height = OPTIONS.len() as u16 + 3;
@@ -580,6 +585,150 @@ fn draw_face_detection_action_popup(f: &mut Frame, app: &mut App) {
             height: 1,
         });
     }
+}
+
+/// 绘制检索相似人脸结果弹窗
+///
+/// 显示 5 行结果，超出通过 ↑/↓ 选择自动滚动，PgUp/PgDn 翻 10 行。
+/// 标题栏显示总数和滚动位置，右侧显示滚动条（结果数超过可见行时）。
+fn draw_face_search_results_popup(f: &mut Frame, app: &mut App) {
+    let area = f.size();
+    let results = &app.face_tab.face_search_results;
+    let total = results.len();
+    if total == 0 {
+        return;
+    }
+
+    // 固定显示 5 行结果
+    const VISIBLE_RESULTS: usize = 5;
+    let result_rows = VISIBLE_RESULTS;
+    let width = 50.min(area.width.saturating_sub(4));
+    // 弹窗高度 = 上下边框(2) + 表头(1) + 分隔线(1) + 结果行 + 底部提示(1)
+    let height = result_rows as u16 + 5;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let title = format!("相似人脸检索[face]  ({}/{})", total, total);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(truncate_str(&title, dialog_area.width as usize - 2))
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    // 将可视区域分为左右：内容区 + 滚动条区
+    let content_width = inner.width.saturating_sub(1);
+    let content_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: content_width,
+        height: inner.height,
+    };
+    let scrollbar_area = Rect {
+        x: inner.x + content_width,
+        y: inner.y,
+        width: 1,
+        height: inner.height,
+    };
+
+    // 表头
+    let header = Paragraph::new(Line::from(vec![
+        Span::styled(" ID", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::raw("  "),
+        Span::styled("距离", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+    ]));
+    f.render_widget(header, Rect {
+        x: content_area.x,
+        y: content_area.y,
+        width: content_area.width,
+        height: 1,
+    });
+
+    // 分隔线
+    let sep = Paragraph::new(Line::from(Span::raw("─".repeat(content_area.width as usize))))
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(sep, Rect {
+        x: content_area.x,
+        y: content_area.y + 1,
+        width: content_area.width,
+        height: 1,
+    });
+
+    // 结果行区域
+    let result_area_y = content_area.y + 2;
+    let result_area_h = content_area.height.saturating_sub(3); // 表头+分隔+提示
+    let visible = result_area_h as usize;
+
+    // 限制滚动范围
+    if visible >= total {
+        app.face_tab.face_search_scroll = 0;
+    } else if app.face_tab.face_search_scroll + visible > total {
+        app.face_tab.face_search_scroll = total.saturating_sub(visible);
+    }
+
+    let start = app.face_tab.face_search_scroll;
+    let end = (start + visible).min(total);
+
+    for (i, idx) in (start..end).enumerate() {
+        let result = &results[idx];
+        let row_y = result_area_y + i as u16;
+        if row_y >= content_area.y + content_area.height - 1 {
+            break;
+        }
+        let row = Paragraph::new(Line::from(vec![
+            Span::raw(format!(" {}", result.id)),
+            Span::raw("  "),
+            Span::styled(
+                format!("{:.4}", result.score),
+                Style::default().fg(Color::Yellow),
+            ),
+        ]));
+        f.render_widget(row, Rect {
+            x: content_area.x,
+            y: row_y,
+            width: content_area.width,
+            height: 1,
+        });
+    }
+
+    // 滚动条（仅当结果数超过可见行数时显示）
+    if total > visible {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .thumb_symbol("█")
+            .track_symbol(Some("░"))
+            .style(Style::default().fg(Color::DarkGray));
+        let mut state = ScrollbarState::new(total - visible + 1).position(app.face_tab.face_search_scroll);
+        f.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
+    }
+
+    // 底部提示
+    let hint = Paragraph::new(Line::from(vec![
+        Span::styled("↑/↓ ", Style::default().fg(Color::Cyan)),
+        Span::raw("滚动  "),
+        Span::styled("PgUp/PgDn ", Style::default().fg(Color::Cyan)),
+        Span::raw("翻页  "),
+        Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::raw("关闭"),
+    ]))
+    .alignment(Alignment::Center);
+    let hint_y = content_area.y + content_area.height - 1;
+    f.render_widget(hint, Rect {
+        x: content_area.x,
+        y: hint_y,
+        width: content_area.width,
+        height: 1,
+    });
 }
 
 /// 绘制已保存人脸列表（F3 弹窗）

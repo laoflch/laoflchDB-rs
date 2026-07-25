@@ -48,7 +48,13 @@ impl VectorServiceImpl {
     /// - `model_dir`: 模型存储根目录
     /// - `auto_load_models`: `None`=加载 candle 下所有有效模型, `Some(vec)`=只加载指定名称的模型, `Some(vec![])`=不加载任何模型
     pub fn new_with_config(model_dir: &str, auto_load_models: Option<Vec<String>>) -> Self {
-        let device = Self::detect_device();
+        Self::new_with_config_and_device(model_dir, auto_load_models, true)
+    }
+
+    /// 创建服务实例，指定模型目录、自动加载配置和设备选择
+    /// - `use_cuda`: true=使用 GPU, false=使用 CPU（避免多屏卡顿）
+    pub fn new_with_config_and_device(model_dir: &str, auto_load_models: Option<Vec<String>>, use_cuda: bool) -> Self {
+        let device = Self::detect_device(use_cuda);
         let model_dir = model_dir.to_string();
         let candle_dir = Path::new(&model_dir).join("candle");
         let models = Self::init_models_from_dir(&candle_dir, &device, auto_load_models);
@@ -210,18 +216,22 @@ impl VectorServiceImpl {
         models
     }
 
-    fn detect_device() -> Device {
+    fn detect_device(use_cuda: bool) -> Device {
         #[cfg(feature = "cuda")]
         {
-            info!("CUDA feature 已启用，检测 GPU...");
-            match Device::cuda_if_available(0) {
-                Ok(device) => {
-                    info!("CUDA GPU 可用，使用 GPU 设备: RTX 2070S");
-                    return device;
+            if use_cuda {
+                info!("CUDA feature 已启用且配置允许使用 GPU，检测 GPU...");
+                match Device::cuda_if_available(0) {
+                    Ok(device) => {
+                        info!("CUDA GPU 可用，使用 GPU 设备: RTX 2070S");
+                        return device;
+                    }
+                    Err(e) => {
+                        warn!("CUDA 设备初始化失败: {}，回退到 CPU", e);
+                    }
                 }
-                Err(e) => {
-                    warn!("CUDA 设备初始化失败: {}，回退到 CPU", e);
-                }
+            } else {
+                info!("配置禁用 CUDA，vector_service 使用 CPU（避免多屏卡顿）");
             }
         }
 

@@ -8,9 +8,9 @@ use log::warn;
 
 use laoflchdb_face_service_proto::proto::ExtractFaceFeaturesRequest;
 use laoflchdb_image_service_proto::proto::{DeleteImageRequest, ListImagesRequest};
-use laoflchdb_embedding_service_proto::proto::DeleteEmbeddingRequest;
+use laoflchdb_embedding_service_proto::proto::{DeleteEmbeddingRequest, SearchEmbeddingRequest};
 
-use crate::app::App;
+use crate::app::{App, SearchResultItem};
 
 /// 提取人脸特征（仅检测，不保存/索引）
 ///
@@ -153,7 +153,6 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
     let face_num = face_idx + 1;
 
     // ── 1. 先搜索 face 索引，检查是否已存在相同向量 ──
-    use laoflchdb_embedding_service_proto::proto::SearchEmbeddingRequest;
     let search_req = SearchEmbeddingRequest {
         query_embedding: embedding.clone(),
         top_k: 1,
@@ -506,5 +505,76 @@ pub async fn export_saved_face(app: &mut App, key: &str) -> Result<()> {
         .map_err(|e| anyhow!("保存人脸图片失败: {}", e))?;
 
     app.set_status(format!("已导出人脸: {} ({} bytes) → {}", key, file_size, filepath.to_string_lossy()));
+    Ok(())
+}
+
+/// 检索相似人脸
+///
+/// 使用当前选中检测结果人脸的 embedding 搜索 face 索引（top_k=20），
+/// 结果存入 `face_search_results`，并弹出搜索结果弹窗供用户查看。
+pub async fn search_similar_face(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+
+    let face_idx = match app.face_tab.selected_face_num {
+        Some(idx) => idx,
+        None => {
+            app.set_error("请先选中一张人脸");
+            return Ok(());
+        }
+    };
+
+    if face_idx >= app.face_tab.faces.len() {
+        app.set_error("选中的人脸索引无效");
+        return Ok(());
+    }
+
+    let embedding = app.face_tab.embeddings.get(face_idx).cloned().unwrap_or_default();
+    if embedding.is_empty() {
+        app.set_error("该人脸没有 embedding 数据，无法检索");
+        return Ok(());
+    }
+
+    let face_num = face_idx + 1;
+    app.set_status(format!("正在检索与人脸 #{} 相似的人脸...", face_num));
+
+    let search_req = SearchEmbeddingRequest {
+        query_embedding: embedding,
+        top_k: 20,
+        index_name: "face".to_string(),
+    };
+
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(search_req);
+        match clients.embedding.search_embedding(auth_req).await {
+            Ok(r) => r.into_inner(),
+            Err(e) => {
+                app.set_error(format!("检索相似人脸失败: {}", e));
+                return Ok(());
+            }
+        }
+    };
+
+    if !resp.success {
+        app.set_error(format!("检索相似人脸失败: {}", resp.message));
+        return Ok(());
+    }
+
+    let results: Vec<SearchResultItem> = resp
+        .results
+        .into_iter()
+        .map(|r| SearchResultItem {
+            id: r.id,
+            score: r.distance,
+        })
+        .collect();
+
+    let n = results.len();
+    app.face_tab.face_search_results = results;
+    app.face_tab.face_search_scroll = 0;
+    app.face_tab.show_face_search_results = true;
+    app.set_status(format!("人脸 #{} 检索到 {} 条相似人脸", face_num, n));
     Ok(())
 }

@@ -127,6 +127,13 @@ pub struct VectorServiceConfig {
     /// 指定启动时加载的模型名称列表（空列表表示加载所有有效模型）
     #[serde(default)]
     pub load_models: Vec<String>,
+    /// 是否使用 CUDA GPU 加速（false=CPU，避免多屏卡顿）
+    #[serde(default = "default_vector_use_cuda")]
+    pub use_cuda: bool,
+}
+
+fn default_vector_use_cuda() -> bool {
+    true
 }
 
 fn default_vector_auto_load() -> bool {

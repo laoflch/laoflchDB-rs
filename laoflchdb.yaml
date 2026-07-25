@@ -11,6 +11,8 @@ vector_service:
   auto_load: true
   # 可指定启动时加载的模型名称列表（空列表表示加载 candle 目录下所有有效模型）
   load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
+  # 是否使用 CUDA GPU 加速（false=CPU，避免多屏卡顿）
+  use_cuda: true
 
 # 嵌入向量索引服务配置
 embedding_index:

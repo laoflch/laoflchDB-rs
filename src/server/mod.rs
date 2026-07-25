@@ -143,9 +143,11 @@ impl LaoflchDBServer {
         };
 
         // 创建向量化服务实例（在图片服务之前创建，因为图片服务需要引用）
-        let vector_service = Arc::new(laoflchdb_vector_service::VectorServiceImpl::new_with_config(
+        let use_cuda = config.vector_service.as_ref().map(|c| c.use_cuda).unwrap_or(true);
+        let vector_service = Arc::new(laoflchdb_vector_service::VectorServiceImpl::new_with_config_and_device(
             &config.model_path,
             auto_load_models.clone(),
+            use_cuda,
         ));
 
         // 创建对象存储服务（如果配置启用）
