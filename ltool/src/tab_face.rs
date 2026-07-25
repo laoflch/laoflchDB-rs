@@ -196,18 +196,13 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
     app.set_status(format!("正在保存人脸 #{}...", face_num));
 
     // ── 3.1 上传对齐图片到 image_service（key 为空，服务端自动生成）──
-    use std::collections::HashMap;
     use laoflchdb_image_service_proto::proto::UploadImageRequest;
-    let mut metadata = HashMap::new();
-    if !original_image_key.is_empty() {
-        metadata.insert("name".to_string(), original_image_key.clone());
-    }
     let upload_req = UploadImageRequest {
         bucket: bucket.clone(),
         key: String::new(),  // 空 key，服务端自动生成 Snowflake ID
         data: aligned_image,
         content_type: "image/jpeg".to_string(),
-        metadata,
+        metadata: Default::default(),
         name: original_image_key.clone(),
         auto_index: false,
         auto_index_model: String::new(),
