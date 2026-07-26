@@ -14,26 +14,46 @@ use crate::app::{App, SearchResultItem};
 
 /// 提取人脸特征（仅检测，不保存/索引）
 ///
-/// 从 `face_tab.file_path` 读取本地图片，调用 FaceService.ExtractFaceFeatures，
-/// 始终设置 save_aligned_images=false, index_embedding=false，
-/// 仅返回检测结果和对齐图片、embedding 数据。
+/// 根据 face_tab.source 选择图片来源：
+/// - LocalFile: 从本地文件读取
+/// - Url: 从 URL 下载
+/// - ImageLibrary: 通过 extract_features_from_image_service 调用
 pub async fn extract_features(app: &mut App) -> Result<()> {
     if !app.require_login() {
         return Ok(());
     }
-    let file_path = app.face_tab.file_path.value.clone();
-    if file_path.is_empty() {
-        app.set_error("请输入本地图片路径");
-        return Ok(());
-    }
 
-    let image_data = std::fs::read(&file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
+    let (image_data, source_name) = match app.face_tab.source {
+        crate::app::FaceSource::LocalFile => {
+            let file_path = app.face_tab.file_path.value.clone();
+            if file_path.is_empty() {
+                app.set_error("请输入本地图片路径");
+                return Ok(());
+            }
+            let data = std::fs::read(&file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
+            (data, file_path.clone())
+        }
+        crate::app::FaceSource::Url => {
+            let url = app.face_tab.url_input.value.clone();
+            if url.is_empty() {
+                app.set_error("请输入图片 URL");
+                return Ok(());
+            }
+            app.set_status("正在下载图片...");
+            let data = download_image_from_url(&url).await?;
+            (data, url.clone())
+        }
+        crate::app::FaceSource::ImageLibrary => {
+            // 图片库来源：通过图片库弹窗选择，入口在 extract_features_from_image_service
+            app.set_error("请从图片库弹窗中选择图片");
+            return Ok(());
+        }
+    };
 
     let det_threshold: f32 = app.face_tab.det_threshold.value.parse().unwrap_or(0.5);
     let max_faces: i32 = app.face_tab.max_faces.value.parse().unwrap_or(0);
     let image_bucket = app.face_tab.bucket.value.clone();
 
-    // 仅检测，不保存/索引；若开启保存原图，由服务端串行完成（人脸检测→释放锁→原图向量化）
     let req = ExtractFaceFeaturesRequest {
         image_data,
         det_threshold,
@@ -43,7 +63,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         return_aligned_images: true,
         index_embedding: false,
         save_original_image: app.face_tab.save_original,
-        original_image_name: app.face_tab.file_path.value.clone(),
+        original_image_name: source_name.clone(),
     };
 
     app.set_status("正在检测人脸...");
@@ -66,50 +86,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         return Ok(());
     }
 
-    let mut faces = Vec::new();
-    let mut embeddings = Vec::new();
-    let mut first_embedding = Vec::new();
-    let mut aligned_images = Vec::new();
-    let mut all_empty = true;
-    for (i, f) in resp.faces.iter().enumerate() {
-        let score = f.detection.as_ref().map(|d| d.score).unwrap_or(0.0);
-        let bbox = f.detection.as_ref().map(|d| d.bbox.clone()).unwrap_or_default();
-        // 初始状态：saved_key 为空，vector_id=0
-        faces.push((i + 1, score, bbox, String::new(), 0u64));
-        embeddings.push(f.embedding.clone());
-        if i == 0 {
-            first_embedding = f.embedding.clone();
-        }
-        aligned_images.push(f.aligned_image.clone());
-        if !f.aligned_image.is_empty() {
-            all_empty = false;
-        }
-    }
-
-    let n = faces.len();
-    app.face_tab.faces = faces;
-    app.face_tab.embeddings = embeddings;
-    app.face_tab.selected_face = 0;
-    app.face_tab.embedding_preview = first_embedding;
-    app.face_tab.aligned_images = aligned_images;
-    app.face_tab.list_scroll = 0;
-    app.face_tab.selected_face_num = if n > 0 { Some(0) } else { None };
-    app.face_tab.detection_action_open = false;
-
-    // 取第一个非空的 saved_original_image_key 作为原图 key
-    let original_key = resp.faces.iter()
-        .find_map(|f| if !f.saved_original_image_key.is_empty() { Some(f.saved_original_image_key.clone()) } else { None })
-        .unwrap_or_default();
-    app.face_tab.original_image_key = original_key.clone();
-
-    if all_empty && n > 0 {
-        app.set_status(format!("检测到 {} 张人脸，但对齐图片数据为空", n));
-    } else if !original_key.is_empty() {
-        app.set_status(format!("检测到 {} 张人脸，原图已保存: key={}，↑↓ 选择人脸，Enter 打开操作菜单", n, original_key));
-    } else {
-        app.set_status(format!("检测到 {} 张人脸，↑↓ 选择人脸，Enter 打开操作菜单", n));
-    }
-    Ok(())
+    process_detection_results(app, &resp, &source_name)
 }
 
 /// 保存并索引选中的检测结果人脸
@@ -572,4 +549,184 @@ pub async fn search_similar_face(app: &mut App) -> Result<()> {
     app.face_tab.show_face_search_results = true;
     app.set_status(format!("人脸 #{} 检索到 {} 条相似人脸", face_num, n));
     Ok(())
+}
+
+/// 处理检测结果，更新 app 状态（提取为公共函数供多来源复用）
+fn process_detection_results(
+    app: &mut App,
+    resp: &laoflchdb_face_service_proto::proto::ExtractFaceFeaturesResponse,
+    source_name: &str,
+) -> Result<()> {
+    let mut faces = Vec::new();
+    let mut embeddings = Vec::new();
+    let mut first_embedding = Vec::new();
+    let mut aligned_images = Vec::new();
+    let mut all_empty = true;
+    for (i, f) in resp.faces.iter().enumerate() {
+        let score = f.detection.as_ref().map(|d| d.score).unwrap_or(0.0);
+        let bbox = f.detection.as_ref().map(|d| d.bbox.clone()).unwrap_or_default();
+        faces.push((i + 1, score, bbox, String::new(), 0u64));
+        embeddings.push(f.embedding.clone());
+        if i == 0 {
+            first_embedding = f.embedding.clone();
+        }
+        aligned_images.push(f.aligned_image.clone());
+        if !f.aligned_image.is_empty() {
+            all_empty = false;
+        }
+    }
+
+    let n = faces.len();
+    app.face_tab.faces = faces;
+    app.face_tab.embeddings = embeddings;
+    app.face_tab.selected_face = 0;
+    app.face_tab.embedding_preview = first_embedding;
+    app.face_tab.aligned_images = aligned_images;
+    app.face_tab.list_scroll = 0;
+    app.face_tab.selected_face_num = if n > 0 { Some(0) } else { None };
+    app.face_tab.detection_action_open = false;
+
+    let original_key = resp.faces.iter()
+        .find_map(|f| if !f.saved_original_image_key.is_empty() { Some(f.saved_original_image_key.clone()) } else { None })
+        .unwrap_or_default();
+    app.face_tab.original_image_key = original_key.clone();
+
+    if all_empty && n > 0 {
+        app.set_status(format!("检测到 {} 张人脸，但对齐图片数据为空", n));
+    } else if !original_key.is_empty() {
+        app.set_status(format!("检测到 {} 张人脸，原图已保存: key={}，↑↓ 选择人脸，Enter 打开操作菜单", n, original_key));
+    } else {
+        app.set_status(format!("检测到 {} 张人脸，↑↓ 选择人脸，Enter 打开操作菜单", n));
+    }
+    Ok(())
+}
+
+/// 从 URL 下载图片
+async fn download_image_from_url(url: &str) -> Result<Vec<u8>> {
+    let resp = reqwest::get(url).await.map_err(|e| anyhow!("下载图片失败: {}", e))?;
+    if !resp.status().is_success() {
+        return Err(anyhow!("下载图片失败: HTTP {}", resp.status()));
+    }
+    let data = resp.bytes().await.map_err(|e| anyhow!("读取图片数据失败: {}", e))?;
+    Ok(data.to_vec())
+}
+
+/// 列出图片库中的图片（从 image_service 获取）
+pub async fn list_image_library(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+
+    let bucket = app.face_tab.bucket.value.clone();
+    if bucket.is_empty() {
+        app.set_error("请先设置 bucket 名称");
+        return Ok(());
+    }
+
+    app.face_tab.image_library_loading = true;
+    app.face_tab.show_image_library = true;
+    app.set_status("正在获取图片库列表...");
+
+    let req = ListImagesRequest {
+        bucket,
+        prefix: String::new(),
+        max_keys: 1000,
+        marker: String::new(),
+    };
+
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(req);
+        clients
+            .image
+            .list_images(auth_req)
+            .await
+            .map_err(|e| anyhow!("列出图片失败: {}", e))?
+            .into_inner()
+    };
+
+    app.face_tab.image_library_loading = false;
+    if !resp.success {
+        app.set_error(format!("列出图片失败: {}", resp.message));
+        app.face_tab.show_image_library = false;
+        return Ok(());
+    }
+
+    let count = resp.images.len();
+    app.face_tab.image_library_images = resp.images;
+    app.face_tab.image_library_scroll = 0;
+    app.face_tab.image_library_selected = if count > 0 { Some(0) } else { None };
+    app.set_status(format!("图片库: {} 张图片，↑↓ 选择，Enter 确认检测", count));
+    Ok(())
+}
+
+/// 从图片库下载选中图片并检测人脸
+pub async fn extract_features_from_image_service(app: &mut App, key: &str) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+
+    // 从 image_service 下载图片
+    let req = laoflchdb_image_service_proto::proto::GetImageRequest {
+        bucket: app.face_tab.bucket.value.clone(),
+        key: key.to_string(),
+    };
+
+    app.set_status(format!("正在从图片库下载图片: {}...", key));
+    let resp = {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(req);
+        clients
+            .image
+            .get_image(auth_req)
+            .await
+            .map_err(|e| anyhow!("下载图片失败: {}", e))?
+            .into_inner()
+    };
+
+    if !resp.success {
+        app.set_error(format!("下载图片失败: {}", resp.message));
+        return Ok(());
+    }
+
+    let image_data = resp.data;
+    let source_name = format!("image_service:{}", key);
+
+    let det_threshold: f32 = app.face_tab.det_threshold.value.parse().unwrap_or(0.5);
+    let max_faces: i32 = app.face_tab.max_faces.value.parse().unwrap_or(0);
+    let image_bucket = app.face_tab.bucket.value.clone();
+
+    let req = ExtractFaceFeaturesRequest {
+        image_data,
+        det_threshold,
+        max_faces,
+        save_aligned_images: false,
+        image_bucket,
+        return_aligned_images: true,
+        index_embedding: false,
+        save_original_image: app.face_tab.save_original,
+        original_image_name: source_name.clone(),
+    };
+
+    app.set_status("正在检测人脸...");
+    let resp = match {
+        let clients = app.clients.as_mut().unwrap();
+        let auth_req = clients.auth_request(req);
+        clients
+            .face
+            .extract_face_features(auth_req)
+            .await
+    } {
+        Ok(r) => r.into_inner(),
+        Err(e) => {
+            app.set_error(format!("检测失败: {}", e));
+            return Ok(());
+        }
+    };
+    if !resp.success {
+        app.set_error(format!("检测失败: {}", resp.message));
+        return Ok(());
+    }
+
+    process_detection_results(app, &resp, &source_name)
 }
