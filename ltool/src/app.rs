@@ -301,29 +301,10 @@ impl Default for ImageTabState {
     }
 }
 
-/// 人脸图片来源
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FaceSource {
-    LocalFile,
-    Url,
-    ImageLibrary,
-}
-
 /// 人脸 Tab 状态
 pub struct FaceTabState {
     pub focus: FaceFocus,
-    /// 图片来源选择
-    pub source: FaceSource,
     pub file_path: InputState,
-    /// URL 输入
-    pub url_input: InputState,
-    /// 图片库列表
-    pub image_library_images: Vec<laoflchdb_image_service_proto::proto::ImageMetadata>,
-    pub image_library_scroll: usize,
-    pub image_library_selected: Option<usize>,
-    /// 是否显示图片库弹窗
-    pub show_image_library: bool,
-    pub image_library_loading: bool,
     pub det_threshold: InputState,
     pub max_faces: InputState,
     pub bucket: InputState,
@@ -373,9 +354,7 @@ pub struct FaceTabState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaceFocus {
-    Source,
     FilePath,
-    Url,
     DetThreshold,
     MaxFaces,
     Bucket,
@@ -391,15 +370,8 @@ impl Default for FaceTabState {
             .unwrap_or_else(|| std::path::PathBuf::from("./faces"));
         
         Self {
-            source: FaceSource::LocalFile,
-            focus: FaceFocus::Source,
+            focus: FaceFocus::FilePath,
             file_path: InputState::new(),
-            url_input: InputState::new(),
-            image_library_images: Vec::new(),
-            image_library_scroll: 0,
-            image_library_selected: None,
-            show_image_library: false,
-            image_library_loading: false,
             det_threshold: InputState::with_value("0.5"),
             max_faces: InputState::with_value("0"),
             bucket: InputState::with_value("faces"),

@@ -127,11 +127,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         draw_face_search_results_popup(f, app);
     }
 
-    // ── 人脸 Tab 图片库弹窗 ──
-    if app.current_tab == Tab::Face && app.face_tab.show_image_library {
-        draw_face_image_library_popup(f, app);
-    }
-
     // ── 人脸 Tab 已保存人脸列表弹窗 ──
     if app.current_tab == Tab::Face && app.face_tab.show_saved {
         draw_face_saved_list(f, app);
@@ -421,83 +416,17 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
 // ── 人脸 Tab ──────────────────────────────────────
 
 fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
-    use crate::app::{FaceFocus, FaceSource};
+    use crate::app::FaceFocus;
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(10), Constraint::Min(5)])
+        .constraints([Constraint::Length(9), Constraint::Min(5)])
         .split(area);
 
-    let top_y = chunks[0].y;
+    // 第一行：本地图片路径（独占一行，全宽）
+    let path_area = Rect { x: chunks[0].x, y: chunks[0].y, width: chunks[0].width, height: 3 };
+    draw_input_box(f, path_area, "本地图片路径", &app.face_tab.file_path, app.face_tab.focus == FaceFocus::FilePath);
 
-    // ── 第0行：图片来源选择器（1行，无边框） ──
-    let source_y = top_y;
-    let source_labels = ["本地文件", "URL", "图片库"];
-    let source_width = chunks[0].width / 3;
-    let source_focused = app.face_tab.focus == FaceFocus::Source;
-    for (i, label) in source_labels.iter().enumerate() {
-        let is_selected = match app.face_tab.source {
-            FaceSource::LocalFile => i == 0,
-            FaceSource::Url => i == 1,
-            FaceSource::ImageLibrary => i == 2,
-        };
-        let style = if source_focused && is_selected {
-            Style::default().bg(Color::Yellow).fg(Color::Black).add_modifier(Modifier::BOLD)
-        } else if is_selected {
-            Style::default().bg(Color::Blue).fg(Color::White).add_modifier(Modifier::BOLD)
-        } else if source_focused {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        };
-        let prefix = if is_selected { "▶ " } else { "  " };
-        let cell = Paragraph::new(Line::from(Span::styled(
-            format!("{}{}", prefix, label),
-            style,
-        )));
-        f.render_widget(cell, Rect {
-            x: chunks[0].x + (i as u16) * source_width,
-            y: source_y,
-            width: source_width,
-            height: 1,
-        });
-    }
-
-    // ── 第1行：输入框（3行），根据来源显示不同内容 ──
-    let input_y = top_y + 1;
-    let input_area = Rect { x: chunks[0].x, y: input_y, width: chunks[0].width, height: 3 };
-    let path_area: Option<Rect>;
-    match app.face_tab.source {
-        FaceSource::LocalFile => {
-            draw_input_box(f, input_area, "本地图片路径", &app.face_tab.file_path, app.face_tab.focus == FaceFocus::FilePath);
-            path_area = Some(input_area);
-        }
-        FaceSource::Url => {
-            draw_input_box(f, input_area, "图片URL", &app.face_tab.url_input, app.face_tab.focus == FaceFocus::Url);
-            path_area = None;
-        }
-        FaceSource::ImageLibrary => {
-            // 图片库：显示 bucket 和状态信息
-            let bucket_focused = app.face_tab.focus == FaceFocus::Bucket;
-            let bucket_style = if bucket_focused {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .title("图片库")
-                .style(bucket_style);
-            let bucket_name = app.face_tab.bucket.value.clone();
-            let bucket_text = format!("bucket: {}  |  Enter 列出图片  |  F1 检测选中", bucket_name);
-            let para = Paragraph::new(Line::from(Span::raw(bucket_text)))
-                .block(block);
-            f.render_widget(para, input_area);
-            path_area = None;
-        }
-    }
-
-    // ── 第2行：参数（det_threshold, max_faces, bucket, 保存原图）共用一行 ──
-    let param_y = input_y + 3;
+    // 第二行：参数（det_threshold, max_faces, bucket）共用一行
     let row2 = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -508,7 +437,7 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
         ])
         .split(Rect {
             x: chunks[0].x,
-            y: param_y,
+            y: chunks[0].y + 3,
             width: chunks[0].width,
             height: 3,
         });
@@ -517,7 +446,12 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     draw_input_box(f, row2[1], "max_faces", &app.face_tab.max_faces, app.face_tab.focus == FaceFocus::MaxFaces);
     draw_input_box(f, row2[2], "bucket", &app.face_tab.bucket, app.face_tab.focus == FaceFocus::Bucket);
 
-    // 保存原图复选框
+    // 第二行第四部分：保存原图复选框（与输入框同款样式）
+    let check_label = if app.face_tab.save_original {
+        "[x] 保存原图"
+    } else {
+        "[ ] 保存原图"
+    };
     let check_focused = app.face_tab.focus == FaceFocus::SaveOriginal;
     let check_style = if check_focused {
         Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
@@ -529,9 +463,9 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
         .title("保存原图")
         .style(check_style);
     let check_text = if app.face_tab.save_original {
-        "[x] 保存原图"
+        format!("[x] 保存原图")
     } else {
-        "[ ] 保存原图"
+        format!("[ ] 保存原图")
     };
     let check_para = Paragraph::new(Line::from(vec![
         Span::styled(check_text, if app.face_tab.save_original {
@@ -543,12 +477,11 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     .block(check_block);
     f.render_widget(check_para, row2[3]);
 
-    // ── 第3行：导出路径（3行） ──
-    let export_y = param_y + 3;
-    let row3 = Rect { x: chunks[0].x, y: export_y, width: chunks[0].width, height: 3 };
+    // 第三行：导出路径（独占一行，全宽，和本地路径一致）
+    let row3 = Rect { x: chunks[0].x, y: chunks[0].y + 6, width: chunks[0].width, height: 3 };
     draw_input_box(f, row3, "导出路径", &app.face_tab.export_path, app.face_tab.focus == FaceFocus::ExportPath);
 
-    // ── 结果区 ──
+    // 结果区
     let rows: Vec<Row> = app
         .face_tab
         .faces
@@ -605,7 +538,7 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
 
     f.render_widget(table, chunks[1]);
 
-    path_area
+    Some(path_area)
 }
 
 /// 绘制检测结果操作弹窗
@@ -652,89 +585,6 @@ fn draw_face_detection_action_popup(f: &mut Frame, app: &mut App) {
             height: 1,
         });
     }
-}
-
-/// 绘制图片库选择弹窗
-fn draw_face_image_library_popup(f: &mut Frame, app: &mut App) {
-    let area = f.size();
-    let width = area.width.saturating_sub(4).min(80);
-    let height = (area.height.saturating_sub(4)).min(30);
-    let x = (area.width - width) / 2;
-    let y = (area.height - height) / 2;
-    let dialog_area = Rect { x, y, width, height };
-
-    f.render_widget(Clear, dialog_area);
-
-    let count = app.face_tab.image_library_images.len();
-    let title = if app.face_tab.image_library_loading {
-        "图片库列表  (加载中...)  Enter 刷新  Esc 关闭".to_string()
-    } else {
-        format!("图片库列表 (共 {} 张)  ↑↓选择 Enter确认 Esc关闭", count)
-    };
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(title)
-        .style(Style::default().bg(Color::Black).fg(Color::White));
-    f.render_widget(block, dialog_area);
-
-    let inner = Rect {
-        x: dialog_area.x + 1,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(2),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    let header = Row::new(vec![
-        Cell::from("key"),
-        Cell::from("name"),
-        Cell::from("size"),
-        Cell::from("WxH"),
-        Cell::from("format"),
-        Cell::from("上传时间"),
-    ])
-    .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
-
-    let rows: Vec<Row> = app
-        .face_tab
-        .image_library_images
-        .iter()
-        .skip(app.face_tab.image_library_scroll)
-        .take(50)
-        .enumerate()
-        .map(|(i, meta)| {
-            let abs_idx = i + app.face_tab.image_library_scroll;
-            let selected = app.face_tab.image_library_selected == Some(abs_idx);
-            let cells = vec![
-                Cell::from(meta.key.clone()),
-                Cell::from(meta.name.clone()),
-                Cell::from(meta.content_length.to_string()),
-                Cell::from(format!("{}x{}", meta.width, meta.height)),
-                Cell::from(meta.format.clone()),
-                Cell::from(format_timestamp(&meta.last_modified)),
-            ];
-            if selected {
-                Row::new(cells).style(Style::default().bg(Color::Green).fg(Color::Black))
-            } else {
-                Row::new(cells)
-            }
-        })
-        .collect();
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(30),
-            Constraint::Length(20),
-            Constraint::Length(10),
-            Constraint::Length(12),
-            Constraint::Length(10),
-            Constraint::Length(20),
-        ],
-    )
-    .header(header);
-
-    f.render_widget(table, inner);
 }
 
 /// 绘制检索相似人脸结果弹窗

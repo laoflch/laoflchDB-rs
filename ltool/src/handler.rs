@@ -736,8 +736,6 @@ fn auto_scroll_face_saved(tab: &mut crate::app::FaceTabState) {
 
 /// 处理人脸 Tab 的事件
 async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
-    use crate::app::FaceSource;
-
     // ── 检测结果操作弹窗 ──
     if app.face_tab.detection_action_open {
         const DETECTION_ACTION_OPTIONS: &[&str] = &["保存人脸并索引", "检索相似人脸"];
@@ -810,71 +808,6 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         }
     }
 
-    // ── 图片库弹窗（选择图片库中的图片进行人脸检测）──
-    if app.face_tab.show_image_library {
-        match event.code {
-            KeyCode::Up => {
-                let cur = app.face_tab.image_library_selected.unwrap_or(0);
-                if cur > 0 {
-                    app.face_tab.image_library_selected = Some(cur - 1);
-                    if cur - 1 < app.face_tab.image_library_scroll {
-                        app.face_tab.image_library_scroll = cur - 1;
-                    }
-                }
-                return true;
-            }
-            KeyCode::Down => {
-                let max = app.face_tab.image_library_images.len().saturating_sub(1);
-                let cur = app.face_tab.image_library_selected.unwrap_or(0);
-                if cur < max {
-                    app.face_tab.image_library_selected = Some(cur + 1);
-                    if cur + 1 >= app.face_tab.image_library_scroll + 20 {
-                        app.face_tab.image_library_scroll = cur + 1 - 19;
-                    }
-                }
-                return true;
-            }
-            KeyCode::PageUp => {
-                let cur = app.face_tab.image_library_selected.unwrap_or(0);
-                app.face_tab.image_library_selected = Some(cur.saturating_sub(10));
-                return true;
-            }
-            KeyCode::PageDown => {
-                let max = app.face_tab.image_library_images.len().saturating_sub(1);
-                let cur = app.face_tab.image_library_selected.unwrap_or(0);
-                app.face_tab.image_library_selected = Some((cur + 10).min(max));
-                return true;
-            }
-            KeyCode::Enter if !app.face_tab.image_library_loading => {
-                if let Some(sel) = app.face_tab.image_library_selected {
-                    if sel < app.face_tab.image_library_images.len() {
-                        let key = app.face_tab.image_library_images[sel].key.clone();
-                        app.face_tab.show_image_library = false;
-                        app.set_status(format!("正在从图片库获取图片: {}...", key));
-                        // 从图片服务下载图片并检测人脸
-                        let _ = crate::tab_face::extract_features_from_image_service(app, &key).await;
-                    }
-                }
-                return true;
-            }
-            KeyCode::Enter => {
-                // 加载中时 Enter 无操作
-                return true;
-            }
-            KeyCode::F(2) | KeyCode::Char('r') => {
-                // 刷新列表
-                let _ = crate::tab_face::list_image_library(app).await;
-                return true;
-            }
-            KeyCode::Esc => {
-                app.face_tab.show_image_library = false;
-                app.set_status("已关闭图片库");
-                return true;
-            }
-            _ => {}
-        }
-    }
-
     // ── 已保存人脸操作弹窗 ──
     if app.face_tab.saved_action_open {
         const FACE_ACTION_OPTIONS: &[&str] = &["导出人脸", "删除人脸"];
@@ -941,16 +874,9 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
     // 快捷键
     match event.code {
         KeyCode::F(1) => {
-            // F1: 检测人脸
+            // F1: 检测人脸（仅检测，不保存/索引）
             let _ = crate::tab_face::extract_features(app).await;
             return true;
-        }
-        KeyCode::F(2) => {
-            // F2: 打开图片库（仅当 source 为 ImageLibrary 时，否则继续往下传递）
-            if app.face_tab.source == FaceSource::ImageLibrary {
-                let _ = crate::tab_face::list_image_library(app).await;
-                return true;
-            }
         }
         KeyCode::F(3) => {
             // F3: 列出已保存人脸
@@ -966,8 +892,8 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         _ => {}
     }
 
-    // ── 路径补全弹窗（仅在 LocalFile 来源时）──
-    if app.face_tab.source == FaceSource::LocalFile && app.face_tab.path_popup.is_active() {
+    // ── 路径补全弹窗（必须在检测结果列表之前，避免 Enter 被拦截）──
+    if app.face_tab.path_popup.is_active() {
         match event.code {
             KeyCode::Up => {
                 app.face_tab.path_popup.prev();
@@ -1003,40 +929,7 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         }
     }
 
-    // ── 图片来源选择器：←/→ 切换 ──
-    if app.face_tab.focus == FaceFocus::Source {
-        match event.code {
-            KeyCode::Left => {
-                app.face_tab.source = match app.face_tab.source {
-                    FaceSource::LocalFile => FaceSource::ImageLibrary,
-                    FaceSource::Url => FaceSource::LocalFile,
-                    FaceSource::ImageLibrary => FaceSource::Url,
-                };
-                app.set_status(format!("图片来源: {}", match app.face_tab.source {
-                    FaceSource::LocalFile => "本地文件",
-                    FaceSource::Url => "URL",
-                    FaceSource::ImageLibrary => "图片库",
-                }));
-                return true;
-            }
-            KeyCode::Right => {
-                app.face_tab.source = match app.face_tab.source {
-                    FaceSource::LocalFile => FaceSource::Url,
-                    FaceSource::Url => FaceSource::ImageLibrary,
-                    FaceSource::ImageLibrary => FaceSource::LocalFile,
-                };
-                app.set_status(format!("图片来源: {}", match app.face_tab.source {
-                    FaceSource::LocalFile => "本地文件",
-                    FaceSource::Url => "URL",
-                    FaceSource::ImageLibrary => "图片库",
-                }));
-                return true;
-            }
-            _ => {}
-        }
-    }
-
-    // ── 保存原图复选框：Enter 切换选中状态 ──
+    // ── 保存原图复选框：Enter 切换选中状态（必须在检测结果列表导航之前，避免 Enter 被拦截）──
     if app.face_tab.focus == FaceFocus::SaveOriginal && event.code == KeyCode::Enter {
         app.face_tab.save_original = !app.face_tab.save_original;
         if app.face_tab.save_original {
@@ -1047,13 +940,8 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         return true;
     }
 
-    // ── 图片库来源：输入框区域 Enter 打开图片库 ──
-    if app.face_tab.source == FaceSource::ImageLibrary && event.code == KeyCode::Enter {
-        let _ = crate::tab_face::list_image_library(app).await;
-        return true;
-    }
-
     // ── 检测结果列表导航 ──
+    // 仅在未显示已保存人脸列表时启用，避免与 F3 弹窗导航冲突
     if !app.face_tab.show_saved && !app.face_tab.faces.is_empty() {
         match event.code {
             KeyCode::Up => {
@@ -1139,25 +1027,16 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         }
     }
 
-    // ── 焦点导航 ──
     match event.code {
         KeyCode::Tab => {
             app.face_tab.path_popup.close();
             app.face_tab.focus = match app.face_tab.focus {
-                FaceFocus::Source => {
-                    match app.face_tab.source {
-                        FaceSource::LocalFile => FaceFocus::FilePath,
-                        FaceSource::Url => FaceFocus::Url,
-                        FaceSource::ImageLibrary => FaceFocus::DetThreshold,
-                    }
-                }
                 FaceFocus::FilePath => FaceFocus::DetThreshold,
-                FaceFocus::Url => FaceFocus::DetThreshold,
                 FaceFocus::DetThreshold => FaceFocus::MaxFaces,
                 FaceFocus::MaxFaces => FaceFocus::Bucket,
                 FaceFocus::Bucket => FaceFocus::SaveOriginal,
                 FaceFocus::SaveOriginal => FaceFocus::ExportPath,
-                FaceFocus::ExportPath => FaceFocus::Source,
+                FaceFocus::ExportPath => FaceFocus::FilePath,
             };
             if app.face_tab.focus == FaceFocus::FilePath {
                 let cs = crate::path_complete::list_candidates(&app.face_tab.file_path.value);
@@ -1165,39 +1044,11 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
             }
             return true;
         }
-        KeyCode::BackTab => {
-            app.face_tab.path_popup.close();
-            app.face_tab.focus = match app.face_tab.focus {
-                FaceFocus::Source => FaceFocus::ExportPath,
-                FaceFocus::FilePath => FaceFocus::Source,
-                FaceFocus::Url => FaceFocus::Source,
-                FaceFocus::DetThreshold => {
-                    match app.face_tab.source {
-                        FaceSource::LocalFile => FaceFocus::FilePath,
-                        FaceSource::Url => FaceFocus::Url,
-                        FaceSource::ImageLibrary => FaceFocus::Source,
-                    }
-                }
-                FaceFocus::MaxFaces => FaceFocus::DetThreshold,
-                FaceFocus::Bucket => FaceFocus::MaxFaces,
-                FaceFocus::SaveOriginal => FaceFocus::Bucket,
-                FaceFocus::ExportPath => FaceFocus::SaveOriginal,
-            };
-            return true;
-        }
         KeyCode::Up if app.face_tab.focus != FaceFocus::FilePath || !app.face_tab.path_popup.is_active() => {
             app.face_tab.path_popup.close();
             app.face_tab.focus = match app.face_tab.focus {
-                FaceFocus::Source => FaceFocus::ExportPath,
-                FaceFocus::FilePath => FaceFocus::Source,
-                FaceFocus::Url => FaceFocus::Source,
-                FaceFocus::DetThreshold => {
-                    match app.face_tab.source {
-                        FaceSource::LocalFile => FaceFocus::FilePath,
-                        FaceSource::Url => FaceFocus::Url,
-                        FaceSource::ImageLibrary => FaceFocus::Source,
-                    }
-                }
+                FaceFocus::FilePath => FaceFocus::ExportPath,
+                FaceFocus::DetThreshold => FaceFocus::FilePath,
                 FaceFocus::MaxFaces => FaceFocus::DetThreshold,
                 FaceFocus::Bucket => FaceFocus::MaxFaces,
                 FaceFocus::SaveOriginal => FaceFocus::Bucket,
@@ -1208,20 +1059,12 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         KeyCode::Down if app.face_tab.focus != FaceFocus::FilePath || !app.face_tab.path_popup.is_active() => {
             app.face_tab.path_popup.close();
             app.face_tab.focus = match app.face_tab.focus {
-                FaceFocus::Source => {
-                    match app.face_tab.source {
-                        FaceSource::LocalFile => FaceFocus::FilePath,
-                        FaceSource::Url => FaceFocus::Url,
-                        FaceSource::ImageLibrary => FaceFocus::DetThreshold,
-                    }
-                }
                 FaceFocus::FilePath => FaceFocus::DetThreshold,
-                FaceFocus::Url => FaceFocus::DetThreshold,
                 FaceFocus::DetThreshold => FaceFocus::MaxFaces,
                 FaceFocus::MaxFaces => FaceFocus::Bucket,
                 FaceFocus::Bucket => FaceFocus::SaveOriginal,
                 FaceFocus::SaveOriginal => FaceFocus::ExportPath,
-                FaceFocus::ExportPath => FaceFocus::Source,
+                FaceFocus::ExportPath => FaceFocus::FilePath,
             };
             return true;
         }
@@ -1239,11 +1082,8 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
         _ => {}
     }
 
-    // ── 输入框处理 ──
     let input = match app.face_tab.focus {
-        FaceFocus::Source => return false,
         FaceFocus::FilePath => &mut app.face_tab.file_path,
-        FaceFocus::Url => &mut app.face_tab.url_input,
         FaceFocus::DetThreshold => &mut app.face_tab.det_threshold,
         FaceFocus::MaxFaces => &mut app.face_tab.max_faces,
         FaceFocus::Bucket => &mut app.face_tab.bucket,
