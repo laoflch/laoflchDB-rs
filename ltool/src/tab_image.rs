@@ -287,18 +287,19 @@ pub async fn upload_with_duplicate_action(app: &mut App, action: &str) -> Result
     Ok(())
 }
 
-/// 列出 bucket 中的图片
+/// 列出 bucket 中的图片（使用分页状态）
 pub async fn list_images(app: &mut App) -> Result<()> {
     if !app.require_login() {
         return Ok(());
     }
     let bucket = app.image_tab.bucket.value.clone();
+    let pagination = &app.image_tab.pagination;
 
     let req = ListImagesRequest {
         bucket,
         prefix: String::new(),
-        max_keys: 100,
-        marker: String::new(),
+        max_keys: pagination.page_size,
+        marker: pagination.marker.clone(),
     };
 
     app.set_status("正在列出图片...");
@@ -318,11 +319,39 @@ pub async fn list_images(app: &mut App) -> Result<()> {
     }
 
     let count = resp.images.len();
+    app.image_tab.pagination.on_response(&resp.next_marker, resp.is_truncated, count);
     app.image_tab.images = resp.images;
     app.image_tab.selected_index = if count > 0 { Some(0) } else { None };
     app.image_tab.list_scroll = 0;
-    app.set_status(format!("列出 {} 张图片", count));
+    let page = app.image_tab.pagination.current_page();
+    app.set_status(format!("列出 {} 张图片 (第 {} 页)", count, page));
     Ok(())
+}
+
+/// 列出 bucket 中图片的下一页
+pub async fn list_images_next(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+    if !app.image_tab.pagination.has_next {
+        app.set_status("已经是最后一页了");
+        return Ok(());
+    }
+    app.image_tab.pagination.next();
+    list_images(app).await
+}
+
+/// 列出 bucket 中图片的上一页
+pub async fn list_images_prev(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+    if app.image_tab.pagination.prev_markers.is_empty() {
+        app.set_status("已经是第一页了");
+        return Ok(());
+    }
+    app.image_tab.pagination.prev();
+    list_images(app).await
 }
 
 /// 查看选中图片的元数据详情

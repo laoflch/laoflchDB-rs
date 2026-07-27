@@ -677,6 +677,15 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
             app.image_tab.action_popup_open = false;
             return true;
         }
+        // , 上一页  . 下一页
+        KeyCode::Char(',') => {
+            let _ = crate::tab_image::list_images_prev(app).await;
+            return true;
+        }
+        KeyCode::Char('.') => {
+            let _ = crate::tab_image::list_images_next(app).await;
+            return true;
+        }
         _ => {}
     }
 
@@ -1021,6 +1030,15 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
                     app.face_tab.show_saved = false;
                     app.set_status("已关闭已保存人脸列表");
                 }
+                return true;
+            }
+            // , 上一页  . 下一页
+            KeyCode::Char(',') => {
+                let _ = crate::tab_face::list_saved_faces_prev(app).await;
+                return true;
+            }
+            KeyCode::Char('.') => {
+                let _ = crate::tab_face::list_saved_faces_next(app).await;
                 return true;
             }
             _ => {}

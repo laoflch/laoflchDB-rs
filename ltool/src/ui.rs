@@ -356,10 +356,26 @@ fn draw_image_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     ])
     .style(Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan));
 
-    let title = if let Some(ref r) = app.image_tab.upload_result {
-        format!("图片列表  | 上传结果: {}", truncate_str(r, 60))
+    let page = app.image_tab.pagination.current_page();
+    let has_prev = !app.image_tab.pagination.prev_markers.is_empty();
+    let has_next = app.image_tab.pagination.has_next;
+    let page_info = if app.image_tab.pagination.page_count > 0 {
+        if has_prev && has_next {
+            format!("  | 第 {} 页  |  ,上一页  .下一页", page)
+        } else if has_next {
+            format!("  | 第 {} 页  |  .下一页", page)
+        } else if has_prev {
+            format!("  | 第 {} 页  |  ,上一页", page)
+        } else {
+            format!("  | 第 {} 页", page)
+        }
     } else {
-        "图片列表".to_string()
+        String::new()
+    };
+    let title = if let Some(ref r) = app.image_tab.upload_result {
+        format!("图片列表  | 上传结果: {}{}", truncate_str(r, 40), page_info)
+    } else {
+        format!("图片列表{}", page_info)
     };
 
     let table = Table::new(
@@ -743,7 +759,18 @@ fn draw_face_saved_list(f: &mut Frame, app: &mut App) {
     f.render_widget(Clear, dialog_area);
 
     let count = app.face_tab.saved_faces.len();
-    let title = format!("已保存人脸列表 (共 {} 张)  ↑↓导航 Enter菜单 Esc关闭", count);
+    let page = app.face_tab.saved_pagination.current_page();
+    let has_prev = !app.face_tab.saved_pagination.prev_markers.is_empty();
+    let has_next = app.face_tab.saved_pagination.has_next;
+    let title = if has_prev && has_next {
+        format!("已保存人脸列表 (共 {} 张, 第 {} 页)  ↑↓导航 ,上一页 .下一页 Enter菜单 Esc关闭", count, page)
+    } else if has_next {
+        format!("已保存人脸列表 (共 {} 张, 第 {} 页)  ↑↓导航 .下一页 Enter菜单 Esc关闭", count, page)
+    } else if has_prev {
+        format!("已保存人脸列表 (共 {} 张, 第 {} 页)  ↑↓导航 ,上一页 Enter菜单 Esc关闭", count, page)
+    } else {
+        format!("已保存人脸列表 (共 {} 张, 第 {} 页)  ↑↓导航 Enter菜单 Esc关闭", count, page)
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)

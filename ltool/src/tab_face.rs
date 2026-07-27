@@ -338,7 +338,7 @@ pub async fn export_faces(app: &mut App, output_dir: &str) -> Result<()> {
 
 /// 列出所有已保存的人脸（F3）
 ///
-/// 调用 image_service.ListImages(bucket="faces", prefix="face_") 获取所有已保存的人脸图片。
+/// 调用 image_service.ListImages(bucket="faces") 获取已保存的人脸图片（分页）。
 pub async fn list_saved_faces(app: &mut App) -> Result<()> {
     if !app.require_login() {
         return Ok(());
@@ -350,11 +350,12 @@ pub async fn list_saved_faces(app: &mut App) -> Result<()> {
         return Ok(());
     }
 
+    let pagination = &app.face_tab.saved_pagination;
     let req = ListImagesRequest {
         bucket,
         prefix: String::new(),
-        max_keys: 1000,
-        marker: String::new(),
+        max_keys: pagination.page_size,
+        marker: pagination.marker.clone(),
     };
 
     app.set_status("正在获取已保存人脸列表...");
@@ -375,12 +376,40 @@ pub async fn list_saved_faces(app: &mut App) -> Result<()> {
     }
 
     let count = resp.images.len();
+    app.face_tab.saved_pagination.on_response(&resp.next_marker, resp.is_truncated, count);
     app.face_tab.saved_faces = resp.images;
     app.face_tab.saved_scroll = 0;
     app.face_tab.saved_selected = if count > 0 { Some(0) } else { None };
     app.face_tab.show_saved = true;
-    app.set_status(format!("已保存人脸: {} 张", count));
+    let page = app.face_tab.saved_pagination.current_page();
+    app.set_status(format!("已保存人脸: {} 张 (第 {} 页)", count, page));
     Ok(())
+}
+
+/// 已保存人脸列表下一页
+pub async fn list_saved_faces_next(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+    if !app.face_tab.saved_pagination.has_next {
+        app.set_status("已经是最后一页了");
+        return Ok(());
+    }
+    app.face_tab.saved_pagination.next();
+    list_saved_faces(app).await
+}
+
+/// 已保存人脸列表上一页
+pub async fn list_saved_faces_prev(app: &mut App) -> Result<()> {
+    if !app.require_login() {
+        return Ok(());
+    }
+    if app.face_tab.saved_pagination.prev_markers.is_empty() {
+        app.set_status("已经是第一页了");
+        return Ok(());
+    }
+    app.face_tab.saved_pagination.prev();
+    list_saved_faces(app).await
 }
 
 /// 删除已保存的人脸（图片 + 向量）

@@ -209,6 +209,65 @@ pub struct ImageTabState {
     pub search_selected: Option<usize>,
     /// 搜索时使用的索引名称（用于弹窗标题展示）
     pub search_index_name: String,
+    /// 图片列表分页状态
+    pub pagination: PaginationState,
+}
+
+/// 分页状态
+#[derive(Debug, Clone)]
+pub struct PaginationState {
+    /// 当前页的 marker（第一页为空）
+    pub marker: String,
+    /// 用于返回上一页的 marker 历史栈
+    pub prev_markers: Vec<String>,
+    /// 是否有下一页
+    pub has_next: bool,
+    /// 下一页的 marker
+    pub next_marker: String,
+    /// 页面大小
+    pub page_size: i32,
+    /// 当前页条目数
+    pub page_count: usize,
+}
+
+impl PaginationState {
+    pub fn new(page_size: i32) -> Self {
+        Self {
+            marker: String::new(),
+            prev_markers: Vec::new(),
+            has_next: false,
+            next_marker: String::new(),
+            page_size,
+            page_count: 0,
+        }
+    }
+
+    /// 当前页码（第 1 页起）
+    pub fn current_page(&self) -> usize {
+        self.prev_markers.len() + 1
+    }
+
+    /// 请求下一页后调用
+    pub fn next(&mut self) {
+        if self.has_next {
+            self.prev_markers.push(self.marker.clone());
+            self.marker = self.next_marker.clone();
+        }
+    }
+
+    /// 请求上一页后调用
+    pub fn prev(&mut self) {
+        if let Some(prev_marker) = self.prev_markers.pop() {
+            self.marker = prev_marker;
+        }
+    }
+
+    /// 响应回来后调用
+    pub fn on_response(&mut self, next_marker: &str, is_truncated: bool, count: usize) {
+        self.next_marker = next_marker.to_string();
+        self.has_next = is_truncated;
+        self.page_count = count;
+    }
 }
 
 /// 图片重复确认弹窗
@@ -297,6 +356,7 @@ impl Default for ImageTabState {
             search_results_scroll: 0,
             search_selected: None,
             search_index_name: String::new(),
+            pagination: PaginationState::new(20),
         }
     }
 }
@@ -350,6 +410,8 @@ pub struct FaceTabState {
     pub show_face_search_results: bool,
     pub face_search_results: Vec<SearchResultItem>,
     pub face_search_scroll: usize,
+    /// 已保存人脸列表分页状态
+    pub saved_pagination: PaginationState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -400,6 +462,7 @@ impl Default for FaceTabState {
             show_face_search_results: false,
             face_search_results: Vec::new(),
             face_search_scroll: 0,
+            saved_pagination: PaginationState::new(20),
         }
     }
 }
