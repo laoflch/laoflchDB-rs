@@ -57,6 +57,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         "",          // key 为空，服务端自动生成 Snowflake ID
         &content_type,
         &file_path,   // name 保存为本地路径
+        app.face_tab.save_original, // auto_index：仅 save_original 时向量索引
     )
     .await
     {
@@ -106,7 +107,16 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
     };
     if !resp.success {
         app.set_error(format!("检测失败: {}", resp.message));
+        // 检测失败时删除已上传的图片
+        if !app.face_tab.save_original && !image_key.is_empty() {
+            let _ = delete_image_from_service(app, &image_key, &bucket).await;
+        }
         return Ok(());
+    }
+
+    // 检测完成后，如果不需要保存原图，删除已上传的图片
+    if !app.face_tab.save_original && !image_key.is_empty() {
+        let _ = delete_image_from_service(app, &image_key, &bucket).await;
     }
 
     let mut faces = Vec::new();
@@ -644,4 +654,30 @@ pub async fn search_similar_face(app: &mut App) -> Result<()> {
     app.face_tab.show_face_search_results = true;
     app.set_status(format!("人脸 #{} 检索到 {} 条相似人脸", face_num, n));
     Ok(())
+}
+
+/// 从 image_service 删除指定图片
+///
+/// 在检测人脸后，如果不需要保存原图，调用此函数清理已上传的图片。
+async fn delete_image_from_service(app: &mut App, key: &str, bucket: &str) -> Result<()> {
+    let req = DeleteImageRequest {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+    };
+    let clients = app.clients.as_mut().unwrap();
+    let auth_req = clients.auth_request(req);
+    match clients.image.delete_image(auth_req).await {
+        Ok(r) => {
+            if r.into_inner().success {
+                Ok(())
+            } else {
+                warn!("删除图片失败: key={}", key);
+                Ok(())
+            }
+        }
+        Err(e) => {
+            warn!("删除图片请求失败: {} (key={})", e, key);
+            Ok(())
+        }
+    }
 }

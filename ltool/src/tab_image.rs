@@ -31,12 +31,14 @@ pub async fn upload_and_index_file(
     key: &str,
     content_type: &str,
     name: &str,
+    auto_index: bool,
 ) -> Result<String> {
     let data = std::fs::read(file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
 
-    // ── 上传（设置 auto_index=true，服务端自动完成向量化） ──
+    // ── 上传 ──
     let resp_key = if data.len() > CHUNK_SIZE {
-        upload_file_chunked(app, &data, bucket, key, content_type, name, true, "jina-clip-v2").await?
+        let model = if auto_index { "jina-clip-v2" } else { "" };
+        upload_file_chunked(app, &data, bucket, key, content_type, name, auto_index, model).await?
     } else {
         let req = UploadImageRequest {
             bucket: bucket.to_string(),
@@ -45,8 +47,8 @@ pub async fn upload_and_index_file(
             content_type: content_type.to_string(),
             metadata: Default::default(),
             name: name.to_string(),
-            auto_index: true,
-            auto_index_model: "jina-clip-v2".to_string(),
+            auto_index,
+            auto_index_model: if auto_index { "jina-clip-v2".to_string() } else { String::new() },
             duplicate_action: String::new(),
         };
         let resp = {
