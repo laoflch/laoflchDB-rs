@@ -10,6 +10,8 @@ message EmbeddingRequest {
   repeated string texts = 2;
   int32 dim = 3;
   repeated bytes images = 4;  // 图片原始字节数据（PNG/JPEG）
+  repeated string image_keys = 5;  // 图片 key（从 image_service 获取图片数据）
+  string image_bucket = 6;         // 图片 key 所在的 bucket
 }
 
 message EmbeddingResponse {

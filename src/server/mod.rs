@@ -202,6 +202,30 @@ impl LaoflchDBServer {
             }
         };
 
+        // 设置图片获取回调（VectorService 通过 image_key 获取图片数据时需要）
+        if let Some(ref img_svc) = image_service {
+            use laoflchdb_image_service::proto::GetImageRequest;
+            use laoflchdb_image_service::proto::image_service_server::ImageService;
+            let img_svc = img_svc.clone();
+            let fetcher: laoflchdb_vector_service::ImageFetcher = std::sync::Arc::new(move |bucket: &str, key: &str| -> Result<Vec<u8>, String> {
+                let rt = tokio::runtime::Handle::current();
+                let img = img_svc.clone();
+                let bucket = bucket.to_string();
+                let key = key.to_string();
+                rt.block_on(async move {
+                    let req = tonic::Request::new(GetImageRequest { bucket, key });
+                    let resp = img.get_image(req).await.map_err(|e| e.to_string())?;
+                    let resp = resp.into_inner();
+                    if resp.success {
+                        Ok(resp.data)
+                    } else {
+                        Err(resp.message)
+                    }
+                })
+            });
+            vector_service.set_image_fetcher(fetcher);
+        }
+
         // 创建人脸服务（如果配置启用）
         let face_service = match (&config.face_service, &image_service) {
             (Some(face_cfg), Some(img_svc)) if face_cfg.enabled => {

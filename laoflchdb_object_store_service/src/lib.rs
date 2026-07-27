@@ -351,10 +351,18 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
 
         let mut engine = self.engine.lock().await;
         let data_prefix = format!("{}{}", OBJECT_DATA_PREFIX, prefix);
+        // marker 是上一页最后一个对象的 key（不含 __obj__ 前缀）
+        // 需要拼接 __obj__ 前缀作为 seek 起始位置
+        let start_key = if !req.marker.is_empty() {
+            Some(format!("{}{}", OBJECT_DATA_PREFIX, req.marker).into_bytes())
+        } else {
+            None
+        };
         let keys = engine
             .list_keys(
                 &req.bucket,
                 Some(data_prefix.as_bytes()),
+                start_key.as_deref(),
                 Some(max_keys),
             )
             .map_err(|e| Status::internal(format!("Failed to list objects: {}", e)))?;

@@ -541,6 +541,8 @@ pub async fn search_similar_image(app: &mut App, model_name: &str, index_name: &
                     data: data_owned[start..end].to_vec(),
                     chunk_index: i as i32,
                     total_chunks: total_chunks as i32,
+                    image_key: String::new(),
+                    bucket: String::new(),
                 };
                 if tx.send(chunk).await.is_err() {
                     break;

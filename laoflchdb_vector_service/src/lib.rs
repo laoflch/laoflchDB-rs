@@ -10,9 +10,14 @@ use candle_nn::{VarBuilder, Dropout, Module, ModuleT};
 use log::{info, warn};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::Mutex;
 use tokio::sync::RwLock as AsyncRwLock;
 use proto::*;
 use tonic::{Request, Response, Status};
+
+/// 图片获取回调：通过 bucket 和 key 获取图片原始字节数据
+pub type ImageFetcher = Arc<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
 
 /// 向量化服务实现
 /// 使用 Candle 引擎在本地 GPU (RTX 2070S) 上运行模型推理
@@ -20,6 +25,8 @@ pub struct VectorServiceImpl {
     models: AsyncRwLock<HashMap<String, ModelInstance>>,
     default_device: Device,
     model_dir: String,
+    /// 图片获取回调（用于通过 image_key 获取图片数据）
+    image_fetcher: Mutex<Option<ImageFetcher>>,
 }
 
 struct ModelInstance {
@@ -68,6 +75,7 @@ impl VectorServiceImpl {
             models: AsyncRwLock::new(models),
             default_device: device,
             model_dir,
+            image_fetcher: Mutex::new(None),
         }
     }
 
@@ -267,6 +275,11 @@ impl VectorServiceImpl {
         }
         embedding.iter().map(|x| x / norm).collect()
     }
+
+    /// 设置图片获取回调（用于通过 image_key 获取图片数据）
+    pub fn set_image_fetcher(&self, fetcher: ImageFetcher) {
+        *self.image_fetcher.lock().unwrap() = Some(fetcher);
+    }
 }
 
 #[tonic::async_trait]
@@ -277,6 +290,32 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
     ) -> Result<Response<EmbeddingResponse>, Status> {
         let req = request.into_inner();
         let model_name = req.model_name.as_str();
+
+        let mut results = Vec::new();
+        let target_dim = if req.dim > 0 { req.dim as usize } else { 0 };
+
+        // ── 收集所有图片数据 ──
+        // 先复制已有的 images，再通过 image_keys 获取更多图片
+        let mut all_images = req.images;
+
+        // 如果有 image_keys，通过 fetcher 获取图片数据（在获取锁之前完成，避免阻塞）
+        if !req.image_keys.is_empty() {
+            let bucket = if req.image_bucket.is_empty() {
+                "images"
+            } else {
+                &req.image_bucket
+            };
+            let fetcher_guard = self.image_fetcher.lock().unwrap();
+            let fetcher = fetcher_guard.as_ref().ok_or_else(|| {
+                Status::internal("图片获取回调未设置（image_fetcher），无法通过 image_key 获取图片")
+            })?;
+            for key in &req.image_keys {
+                let data = fetcher(bucket, key).map_err(|e| {
+                    Status::internal(format!("获取图片失败 (key={}): {}", key, e))
+                })?;
+                all_images.push(data);
+            }
+        }
 
         let models = self.models.read().await;
         let model = models.get(model_name).ok_or_else(|| {
@@ -290,13 +329,10 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
             )));
         }
 
-        let mut results = Vec::new();
-        let target_dim = if req.dim > 0 { req.dim as usize } else { 0 };
-
         // 如果有视觉模型，处理图片输入
         if let Some(ref vision_model) = model.vision_model {
-            if !req.images.is_empty() {
-                for image_bytes in &req.images {
+            if !all_images.is_empty() {
+                for image_bytes in &all_images {
                     match vision_model.embed_image(image_bytes) {
                         Ok(mut embedding) => {
                             // 如果请求指定了维度且小于模型输出，截断
@@ -381,7 +417,9 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
         let mut model_name = String::new();
         let mut dim = 0i32;
         let mut all_data: Vec<u8> = Vec::new();
+        let mut image_keys: Vec<(String, String)> = Vec::new(); // (bucket, key)
         let mut chunk_count = 0;
+        let mut has_image_key = false;
 
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
@@ -389,7 +427,18 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                 model_name = chunk.model_name;
                 dim = chunk.dim;
             }
-            all_data.extend_from_slice(&chunk.data);
+            if !chunk.image_key.is_empty() {
+                has_image_key = true;
+                let bucket = if chunk.bucket.is_empty() {
+                    "images"
+                } else {
+                    &chunk.bucket
+                };
+                image_keys.push((bucket.to_string(), chunk.image_key));
+            }
+            if !chunk.data.is_empty() {
+                all_data.extend_from_slice(&chunk.data);
+            }
             chunk_count += 1;
         }
 
@@ -397,12 +446,37 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
             return Err(Status::invalid_argument("空的上传流"));
         }
 
-        // 使用累积的数据调用常规 create_embedding
+        // ── 收集所有图片数据 ──
+        let mut images: Vec<Vec<u8>> = Vec::new();
+
+        // 如果有 image_key，通过 fetcher 获取图片数据
+        if has_image_key {
+            let fetcher_guard = self.image_fetcher.lock().unwrap();
+            let fetcher = fetcher_guard.as_ref().ok_or_else(|| {
+                Status::internal("图片获取回调未设置（image_fetcher），无法通过 image_key 获取图片")
+            })?;
+            for (bucket, key) in &image_keys {
+                let data = fetcher(bucket, key).map_err(|e| {
+                    Status::internal(format!("获取图片失败 (key={}): {}", key, e))
+                })?;
+                images.push(data);
+            }
+            // 如果有原始数据，也作为额外图片加入
+            if !all_data.is_empty() {
+                images.push(all_data);
+            }
+        } else {
+            // 没有 image_key：兼容旧协议，所有数据累积为一张图片
+            images.push(all_data);
+        }
+
         let req = EmbeddingRequest {
             model_name,
             texts: vec![],
             dim,
-            images: vec![all_data],
+            images,
+            image_keys: vec![],
+            image_bucket: String::new(),
         };
         self.create_embedding(Request::new(req)).await
     }
@@ -1469,7 +1543,7 @@ mod tests {
             return; // 模型文件不存在，跳过测试
         }
 
-        let device = VectorServiceImpl::detect_device();
+        let device = VectorServiceImpl::detect_device(true);
         let bert_model = crate::try_load_bert_model(
             &model_path.to_string_lossy(),
             &device,
@@ -1607,6 +1681,8 @@ mod tests {
             texts: vec!["hello".to_string()],
             dim: 128,
             images: vec![],
+            image_keys: vec![],
+            image_bucket: String::new(),
         });
         let result = service.create_embedding(req).await;
         assert!(result.is_err());
@@ -1636,6 +1712,8 @@ mod tests {
             texts: vec!["hello world".to_string(), "test text".to_string()],
             dim: 512,
             images: vec![],
+            image_keys: vec![],
+            image_bucket: String::new(),
         });
         let resp = service.create_embedding(req).await.unwrap();
         let results = resp.into_inner().results;
@@ -1646,7 +1724,7 @@ mod tests {
 
     #[test]
     fn test_device_detection() {
-        let _device = VectorServiceImpl::detect_device();
+        let _device = VectorServiceImpl::detect_device(true);
         // 至少能返回一个设备（CPU）
     }
 

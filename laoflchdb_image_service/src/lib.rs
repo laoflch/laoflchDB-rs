@@ -361,6 +361,8 @@ impl ImageServiceImpl {
             texts: vec![],
             dim: index_dim,
             images: vec![image_data.to_vec()],
+            image_keys: vec![],
+            image_bucket: String::new(),
         });
         let emb_resp = vector_svc.create_embedding(emb_req).await
             .map_err(|e| format!("向量化失败: {}", e))?;
