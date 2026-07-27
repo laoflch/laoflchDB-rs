@@ -32,7 +32,6 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
 
     // ── 1. 先上传图片到 image_service ──
     app.set_status("正在上传图片到 image_service...");
-    let bucket = app.face_tab.bucket.value.clone();
 
     // 根据扩展名推断 content_type
     let path = std::path::Path::new(&file_path);
@@ -50,10 +49,18 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         .unwrap_or("application/octet-stream")
         .to_string();
 
+    // save_original 为 true 时原图上传到 images bucket（服务端复用 key 不重复保存），
+    // 为 false 时使用 tmp bucket 避免污染持久化存储
+    let upload_bucket = if app.face_tab.save_original {
+        "images".to_string()
+    } else {
+        "tmp".to_string()
+    };
+
     let image_key = match crate::tab_image::upload_and_index_file(
         app,
         &file_path,
-        &bucket,
+        &upload_bucket,
         "",          // key 为空，服务端自动生成 Snowflake ID
         &content_type,
         &file_path,   // name 保存为本地路径
@@ -87,7 +94,7 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         save_original_image: app.face_tab.save_original,
         original_image_name: file_path.clone(),
         image_key: image_key.clone(),
-        bucket: bucket.clone(),
+        bucket: upload_bucket.clone(),
     };
 
     app.set_status("正在检测人脸...");
@@ -109,14 +116,14 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         app.set_error(format!("检测失败: {}", resp.message));
         // 检测失败时删除已上传的图片
         if !app.face_tab.save_original && !image_key.is_empty() {
-            let _ = delete_image_from_service(app, &image_key, &bucket).await;
+            let _ = delete_image_from_service(app, &image_key, &upload_bucket).await;
         }
         return Ok(());
     }
 
     // 检测完成后，如果不需要保存原图，删除已上传的图片
     if !app.face_tab.save_original && !image_key.is_empty() {
-        let _ = delete_image_from_service(app, &image_key, &bucket).await;
+        let _ = delete_image_from_service(app, &image_key, &upload_bucket).await;
     }
 
     let mut faces = Vec::new();

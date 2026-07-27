@@ -273,9 +273,26 @@ impl FaceServiceImpl {
 
     /// 解码图片二进制为 DynamicImage
     fn decode_image(image_data: &[u8]) -> Result<image::DynamicImage, Status> {
-        image::load_from_memory(image_data).map_err(|e| {
+        log::info!("decode_image: 尝试解码图片, 大小={} bytes", image_data.len());
+        
+        if image_data.len() < 4 {
+            log::error!("decode_image: 图片数据太小 ({} bytes)", image_data.len());
+            return Err(Status::invalid_argument(format!("图片数据太小 ({} bytes)", image_data.len())));
+        }
+        
+        let header = &image_data[0..4];
+        log::info!("decode_image: 图片前4字节={:02X?}", header);
+        
+        let result = image::load_from_memory(image_data).map_err(|e| {
+            log::error!("decode_image: 图片解码失败: {}", e);
             Status::invalid_argument(format!("图片解码失败: {}", e))
-        })
+        });
+        
+        if let Ok(img) = &result {
+            log::info!("decode_image: 解码成功, 尺寸={}x{}", img.width(), img.height());
+        }
+        
+        result
     }
 
     /// 生成人脸图片保存的 key（基于 Snowflake ID，同时返回 ID 用于向量索引）
@@ -1301,6 +1318,8 @@ async fn fetch_image_from_service(
     use laoflchdb_image_service::proto::image_service_server::ImageService;
     use laoflchdb_image_service::proto::GetImageRequest;
 
+    log::info!("fetch_image_from_service: 正在从 bucket={}, key={} 获取图片", bucket, key);
+    
     let request = tonic::Request::new(GetImageRequest {
         bucket: bucket.to_string(),
         key: key.to_string(),
@@ -1311,8 +1330,24 @@ async fn fetch_image_from_service(
         .map_err(|e| format!("获取图片失败: {}", e))?;
     let resp = resp.into_inner();
     if !resp.success {
+        log::warn!("fetch_image_from_service: 获取图片失败: {}", resp.message);
         return Err(format!("获取图片失败: {}", resp.message).into());
     }
+    
+    log::info!("fetch_image_from_service: 成功获取图片, 大小={} bytes, content_type={}", resp.data.len(), resp.content_type);
+    
+    // 简单验证：检查前几个字节是否是常见图片格式
+    if resp.data.len() >= 4 {
+        let header = &resp.data[0..4];
+        if header[0] == 0xFF && header[1] == 0xD8 {
+            log::info!("fetch_image_from_service: 识别为 JPEG 格式");
+        } else if header[0] == 0x89 && header[1] == b'P' && header[2] == b'N' && header[3] == b'G' {
+            log::info!("fetch_image_from_service: 识别为 PNG 格式");
+        } else {
+            log::warn!("fetch_image_from_service: 无法识别图片格式, 前4字节={:02X?}", header);
+        }
+    }
+    
     Ok(resp.data)
 }
 
