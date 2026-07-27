@@ -895,8 +895,29 @@ impl FaceService for FaceServiceImpl {
             self.config.max_faces
         };
 
+        // 获取图片数据：优先通过 image_key 从 image_service 获取
+        let image_data = if !req.image_key.is_empty() {
+            let bucket = if req.bucket.is_empty() { "images" } else { &req.bucket };
+            match self.image_service.as_ref() {
+                Some(img_svc) => {
+                    fetch_image_from_service(img_svc, bucket, &req.image_key)
+                        .await
+                        .map_err(|e| Status::internal(format!("从 image_service 获取图片失败: {}", e)))?
+                }
+                None => {
+                    return Err(Status::failed_precondition(
+                        "image_key 非空但 image_service 未启用",
+                    ));
+                }
+            }
+        } else if !req.image_data.is_empty() {
+            req.image_data.clone()
+        } else {
+            return Err(Status::invalid_argument("image_data 和 image_key 均为空"));
+        };
+
         // 解码图片
-        let img = Self::decode_image(&req.image_data)?;
+        let img = Self::decode_image(&image_data)?;
 
         // 检查 SCRFD 模型
         let mut scrfd_guard = self.scrfd.lock().map_err(|e| {
@@ -948,8 +969,29 @@ impl FaceService for FaceServiceImpl {
             20
         };
 
+        // 获取图片数据：优先通过 image_key 从 image_service 获取
+        let image_data = if !req.image_key.is_empty() {
+            let bucket = if req.bucket.is_empty() { "images" } else { &req.bucket };
+            match self.image_service.as_ref() {
+                Some(img_svc) => {
+                    fetch_image_from_service(img_svc, bucket, &req.image_key)
+                        .await
+                        .map_err(|e| Status::internal(format!("从 image_service 获取图片失败: {}", e)))?
+                }
+                None => {
+                    return Err(Status::failed_precondition(
+                        "image_key 非空但 image_service 未启用",
+                    ));
+                }
+            }
+        } else if !req.image_data.is_empty() {
+            req.image_data.clone()
+        } else {
+            return Err(Status::invalid_argument("image_data 和 image_key 均为空"));
+        };
+
         // 解码图片
-        let img = Self::decode_image(&req.image_data)?;
+        let img = Self::decode_image(&image_data)?;
 
         // 在同步块中完成检测 + 对齐 + 特征提取（避免 MutexGuard 跨 await）
         let detected_and_embeddings: Vec<(DetectedFaceInfo, image::DynamicImage, Vec<f32>)>;
@@ -989,9 +1031,14 @@ impl FaceService for FaceServiceImpl {
 
         // ── 保存原图（如果请求了 save_original_image）──
         // 原图保存在 images bucket，不经过 face_ 前缀
+        // 如果已有 image_key，说明客户端已上传原图，直接复用 key
         let mut original_image_key = String::new();
         if req.save_original_image {
-            if let Some(ref img_svc) = self.image_service {
+            if !req.image_key.is_empty() {
+                // 客户端已上传原图到 image_service，直接复用 key
+                original_image_key = req.image_key.clone();
+                info!("原图已由客户端上传，直接复用 key={}", original_image_key);
+            } else if let Some(ref img_svc) = self.image_service {
                 let (orig_key, _orig_id) = self.make_face_image_key();
                 let orig_bucket = "images".to_string();
                 // 编码原图为 JPEG 并上传
@@ -1245,6 +1292,30 @@ async fn save_aligned_to_image_service(
         .map_err(|e| format!("image_service 上传失败: {}", e).into())
 }
 
+/// 从 image_service 获取图片数据（通过 image_key）
+async fn fetch_image_from_service(
+    img_svc: &Arc<laoflchdb_image_service::ImageServiceImpl>,
+    bucket: &str,
+    key: &str,
+) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+    use laoflchdb_image_service::proto::image_service_server::ImageService;
+    use laoflchdb_image_service::proto::GetImageRequest;
+
+    let request = tonic::Request::new(GetImageRequest {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+    });
+    let resp = img_svc
+        .get_image(request)
+        .await
+        .map_err(|e| format!("获取图片失败: {}", e))?;
+    let resp = resp.into_inner();
+    if !resp.success {
+        return Err(format!("获取图片失败: {}", resp.message).into());
+    }
+    Ok(resp.data)
+}
+
 /// 保存原图到 image_service（直接使用原始图片字节数据）
 /// 自动向量化索引到 image 索引，遇重复自动跳过返回已有 key
 async fn save_original_image_to_service(
@@ -1410,6 +1481,8 @@ async fn detect_faces_handler(
         image_data: body.to_vec(),
         det_threshold: query.det_threshold.unwrap_or(0.0),
         max_faces: query.max_faces.unwrap_or(0),
+        image_key: String::new(),
+        bucket: String::new(),
     };
 
     match service
@@ -1480,6 +1553,8 @@ async fn extract_features_handler(
         index_embedding: query.index_embedding.unwrap_or(false),
         save_original_image: query.save_original_image.unwrap_or(false),
         original_image_name: String::new(),
+        image_key: String::new(),
+        bucket: String::new(),
     };
 
     match service

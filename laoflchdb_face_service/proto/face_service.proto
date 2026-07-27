@@ -33,6 +33,10 @@ message DetectFacesRequest {
   float det_threshold = 2;
   // 最大检测人脸数量（0=不限，默认 0）
   int32 max_faces = 3;
+  // 图片 key（从 image_service 获取图片数据，替代 image_data 字段）
+  string image_key = 4;
+  // 图片 key 所在的 bucket（留空用 "images"）
+  string bucket = 5;
 }
 
 // 人脸检测结果
@@ -77,6 +81,10 @@ message ExtractFaceFeaturesRequest {
   bool save_original_image = 8;
   // 原图在本地的文件名/路径，保存为 image_service 中图片的 name 元数据
   string original_image_name = 9;
+  // 图片 key（从 image_service 获取图片数据，替代 image_data 字段）
+  string image_key = 10;
+  // 图片 key 所在的 bucket（留空用 "images"）
+  string bucket = 11;
 }
 
 // 人脸特征提取结果

@@ -1,7 +1,8 @@
 //! 人脸 Tab 业务逻辑
 //!
 //! 提取人脸特征（Detect + Align + Embed）。
-//! F1 仅检测人脸不保存/索引，用户可在检测结果中选择人脸后通过菜单保存和索引。
+//! F1 流程：先上传图片到 image_service → 获取 key → 用 key 调用 face service 检测。
+//! 用户可在检测结果中选择人脸后通过菜单保存和索引。
 
 use anyhow::{anyhow, Result};
 use log::warn;
@@ -14,9 +15,11 @@ use crate::app::{App, SearchResultItem};
 
 /// 提取人脸特征（仅检测，不保存/索引）
 ///
-/// 从 `face_tab.file_path` 读取本地图片，调用 FaceService.ExtractFaceFeatures，
-/// 始终设置 save_aligned_images=false, index_embedding=false，
-/// 仅返回检测结果和对齐图片、embedding 数据。
+/// 流程：
+/// 1. 先通过 image_service 上传图片（流式上传，自动向量索引）
+/// 2. 获取返回的图片 key
+/// 3. 将 key 传给 face service 进行人脸检测
+/// 这样避免了直接将大图片 gRPC 传给 face service（有 4MB 限制）。
 pub async fn extract_features(app: &mut App) -> Result<()> {
     if !app.require_login() {
         return Ok(());
@@ -27,15 +30,53 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         return Ok(());
     }
 
-    let image_data = std::fs::read(&file_path).map_err(|e| anyhow!("读取文件失败: {}", e))?;
+    // ── 1. 先上传图片到 image_service ──
+    app.set_status("正在上传图片到 image_service...");
+    let bucket = app.face_tab.bucket.value.clone();
 
+    // 根据扩展名推断 content_type
+    let path = std::path::Path::new(&file_path);
+    let content_type = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| match ext.to_lowercase().as_str() {
+            "jpg" | "jpeg" => "image/jpeg",
+            "png" => "image/png",
+            "gif" => "image/gif",
+            "webp" => "image/webp",
+            "bmp" => "image/bmp",
+            _ => "application/octet-stream",
+        })
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
+    let image_key = match crate::tab_image::upload_and_index_file(
+        app,
+        &file_path,
+        &bucket,
+        "",          // key 为空，服务端自动生成 Snowflake ID
+        &content_type,
+        &file_path,   // name 保存为本地路径
+    )
+    .await
+    {
+        Ok(key) => {
+            app.set_status(format!("图片已上传: key={}，正在检测人脸...", key));
+            key
+        }
+        Err(e) => {
+            app.set_error(format!("上传图片失败: {}", e));
+            return Ok(());
+        }
+    };
+
+    // ── 2. 用 image_key 调用 face service ──
     let det_threshold: f32 = app.face_tab.det_threshold.value.parse().unwrap_or(0.5);
     let max_faces: i32 = app.face_tab.max_faces.value.parse().unwrap_or(0);
     let image_bucket = app.face_tab.bucket.value.clone();
 
-    // 仅检测，不保存/索引；若开启保存原图，由服务端串行完成（人脸检测→释放锁→原图向量化）
     let req = ExtractFaceFeaturesRequest {
-        image_data,
+        image_data: vec![], // 已通过 image_key 上传，无需传原始数据
         det_threshold,
         max_faces,
         save_aligned_images: false,
@@ -43,7 +84,9 @@ pub async fn extract_features(app: &mut App) -> Result<()> {
         return_aligned_images: true,
         index_embedding: false,
         save_original_image: app.face_tab.save_original,
-        original_image_name: app.face_tab.file_path.value.clone(),
+        original_image_name: file_path.clone(),
+        image_key: image_key.clone(),
+        bucket: bucket.clone(),
     };
 
     app.set_status("正在检测人脸...");
