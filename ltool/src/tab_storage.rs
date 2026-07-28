@@ -244,3 +244,60 @@ pub async fn delete_object(app: &mut App, key: &str) -> Result<()> {
     app.set_status(format!("对象 '{}' 已删除", key));
     Ok(())
 }
+
+/// 从本地文件上传到对象存储
+pub async fn upload_file(app: &mut App, local_path: &str, object_key: &str) -> Result<()> {
+    let data = std::fs::read(local_path)
+        .map_err(|e| anyhow!("读取文件失败: {}", e))?;
+
+    // 推断 content_type
+    let ext = std::path::Path::new(local_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("bin")
+        .to_lowercase();
+    let content_type = match ext.as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "png" => "image/png",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "pdf" => "application/pdf",
+        "txt" | "md" => "text/plain",
+        "json" => "application/json",
+        "csv" => "text/csv",
+        "yaml" | "yml" => "application/x-yaml",
+        "mp4" => "video/mp4",
+        "mp3" => "audio/mpeg",
+        "zip" => "application/zip",
+        "tar" => "application/x-tar",
+        "gz" => "application/gzip",
+        _ => "application/octet-stream",
+    };
+
+    put_object(app, object_key, data, content_type).await
+}
+
+/// 下载对象到本地文件
+pub async fn download_object(app: &mut App, key: &str, local_path: &str) -> Result<()> {
+    let data = get_object(app, key).await?;
+
+    // 确保父目录存在
+    if let Some(parent) = std::path::Path::new(local_path).parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    std::fs::write(local_path, &data)
+        .map_err(|e| anyhow!("写入文件失败: {}", e))?;
+
+    let size_str = if data.len() > 1024 * 1024 {
+        format!("{:.1} MB", data.len() as f64 / (1024.0 * 1024.0))
+    } else if data.len() > 1024 {
+        format!("{:.1} KB", data.len() as f64 / 1024.0)
+    } else {
+        format!("{} B", data.len())
+    };
+
+    app.set_status(format!("已下载 '{}' 到 '{}'（{}）", key, local_path, size_str));
+    Ok(())
+}

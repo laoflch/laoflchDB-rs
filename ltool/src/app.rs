@@ -840,6 +840,27 @@ pub struct StorageTabState {
     pub pagination: PaginationState,
     /// 是否已登录（获取 token）
     pub logged_in: bool,
+    /// 焦点位置：0=endpoint, 1=bucket, 2=prefix, 3=upload_path, 4=download_path
+    pub focus: usize,
+    // ── 弹窗状态 ──
+    /// 详情弹窗
+    pub show_detail: bool,
+    /// 删除确认弹窗
+    pub confirm_delete: bool,
+    /// 删除确认中的 key
+    pub delete_key: String,
+    /// 上传路径输入框
+    pub upload_path: InputState,
+    /// 上传对话框
+    pub show_upload_dialog: bool,
+    /// 下载保存路径输入框
+    pub download_path: InputState,
+    /// 下载对话框
+    pub show_download_dialog: bool,
+    /// 下载的数据缓存
+    pub download_data: Vec<u8>,
+    /// 下载的文件名
+    pub download_key: String,
 }
 
 /// 存储对象信息
@@ -863,6 +884,16 @@ impl Default for StorageTabState {
             list_scroll: 0,
             pagination: PaginationState::new(50),
             logged_in: false,
+            focus: 0,
+            show_detail: false,
+            confirm_delete: false,
+            delete_key: String::new(),
+            upload_path: InputState::new(),
+            show_upload_dialog: false,
+            download_path: InputState::new(),
+            show_download_dialog: false,
+            download_data: Vec::new(),
+            download_key: String::new(),
         }
     }
 }

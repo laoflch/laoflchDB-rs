@@ -265,7 +265,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Vector => "F2/Enter查看详情 F3列出条目 F4清空 F5一致性 F6重建 Tab展开菜单 ↑↓条目导航 Enter操作 Esc关闭 | ",
         Tab::Sql => "F1列表Schema F2列表表 F3描述表 F4版本 F5执行 Ctrl+L清空 | ",
         Tab::Index => "F1列表索引 F2查看详情 F3统计 F4搜索 Enter查看详情 | ",
-        Tab::Storage => "F1列出对象 ↑↓导航 | ",
+        Tab::Storage => "F1列出对象 F2上传 ↑↓←→导航 Enter详情 Delete删除 Esc关闭 | ",
     };
     let help_span = Span::styled(help_text, Style::default().fg(Color::Gray));
 
@@ -1814,10 +1814,12 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
         .split(chunks[0]);
 
     // 端点 URL
+    let focus = app.storage_tab.focus;
+    let endpoint_border = if focus == 0 { Color::Yellow } else { Color::Cyan };
     let endpoint_block = Block::default()
         .borders(Borders::ALL)
         .title("端点 URL")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(endpoint_border).add_modifier(if focus == 0 { Modifier::BOLD } else { Modifier::empty() }));
     let endpoint_input = Paragraph::new(app.storage_tab.endpoint.value.as_str())
         .block(endpoint_block)
         .style(Style::default().fg(Color::White));
@@ -1825,7 +1827,8 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
 
     // 登录状态
     let status_text = if app.storage_tab.logged_in {
-        format!("✓ 已登录（token: {}...）", &app.storage_tab.token[..8.min(app.storage_tab.token.len())])
+        let t = &app.storage_tab.token;
+        format!("✓ 已登录（token: {}...）", &t[..8.min(t.len())])
     } else {
         "✗ 未登录，将使用登录凭据自动登录".to_string()
     };
@@ -1844,19 +1847,21 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(input_chunks[2]);
 
+    let bucket_border = if focus == 1 { Color::Yellow } else { Color::Cyan };
     let bucket_block = Block::default()
         .borders(Borders::ALL)
         .title("Bucket")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(bucket_border).add_modifier(if focus == 1 { Modifier::BOLD } else { Modifier::empty() }));
     let bucket_input = Paragraph::new(app.storage_tab.bucket.value.as_str())
         .block(bucket_block)
         .style(Style::default().fg(Color::White));
     f.render_widget(bucket_input, bucket_prefix[0]);
 
+    let prefix_border = if focus == 2 { Color::Yellow } else { Color::Cyan };
     let prefix_block = Block::default()
         .borders(Borders::ALL)
         .title("Prefix")
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(prefix_border).add_modifier(if focus == 2 { Modifier::BOLD } else { Modifier::empty() }));
     let prefix_input = Paragraph::new(app.storage_tab.prefix.value.as_str())
         .block(prefix_block)
         .style(Style::default().fg(Color::White));
@@ -1871,80 +1876,207 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(list_block, chunks[1]);
 
     if app.storage_tab.objects.is_empty() {
-        let empty_text = Paragraph::new("按 F1 列出对象")
+        let empty_text = Paragraph::new("按 F1 列出对象 ｜ F2 上传 ｜ Enter 查看详情 ｜ Delete 删除")
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center);
         f.render_widget(empty_text, list_inner);
+    } else {
+        // 表头
+        let header = Row::new(vec![
+            Cell::from(Span::styled("Key", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Cell::from(Span::styled("Size", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Cell::from(Span::styled("Last Modified", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+            Cell::from(Span::styled("Type", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+        ]);
+
+        let visible_rows = list_inner.height.saturating_sub(2) as usize;
+        let scroll = app.storage_tab.list_scroll;
+
+        let rows: Vec<Row> = app.storage_tab.objects
+            .iter()
+            .skip(scroll)
+            .take(visible_rows)
+            .enumerate()
+            .map(|(i, obj)| {
+                let is_selected = app.storage_tab.selected_index
+                    .map(|idx| idx == scroll + i)
+                    .unwrap_or(false);
+                let style = if is_selected {
+                    Style::default().bg(Color::Green).fg(Color::Black)
+                } else {
+                    Style::default()
+                };
+
+                let size_str = if obj.size > 1024 * 1024 {
+                    format!("{:.1} MB", obj.size as f64 / (1024.0 * 1024.0))
+                } else if obj.size > 1024 {
+                    format!("{:.1} KB", obj.size as f64 / 1024.0)
+                } else {
+                    format!("{} B", obj.size)
+                };
+
+                Row::new(vec![
+                    Cell::from(Span::styled(&obj.key, style)),
+                    Cell::from(Span::styled(size_str, style)),
+                    Cell::from(Span::styled(&obj.last_modified, style)),
+                    Cell::from(Span::styled(&obj.content_type, style)),
+                ])
+                .style(style)
+            })
+            .collect();
+
+        let widths = [
+            Constraint::Percentage(45),
+            Constraint::Length(12),
+            Constraint::Length(22),
+            Constraint::Length(20),
+        ];
+
+        let table = Table::new(rows, widths).header(header);
+        f.render_widget(table, list_inner);
+
+        // 垂直滚动条
+        let total = app.storage_tab.objects.len();
+        let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(1))
+            .position(scroll.min(total.saturating_sub(1)));
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            list_inner,
+            &mut scrollbar_state,
+        );
+    }
+
+    // ── 弹窗 ──
+
+    // 详情弹窗
+    if app.storage_tab.show_detail {
+        if let Some(idx) = app.storage_tab.selected_index {
+            if let Some(obj) = app.storage_tab.objects.get(idx) {
+                let area = f.size();
+                let width = 65.min(area.width.saturating_sub(4));
+                let height = 14;
+                let x = (area.width - width) / 2;
+                let y = (area.height - height) / 2;
+                let dialog = Rect { x, y, width, height };
+
+                f.render_widget(Clear, dialog);
+
+                let size_str = if obj.size > 1024 * 1024 {
+                    format!("{:.1} MB ({} bytes)", obj.size as f64 / (1024.0 * 1024.0), obj.size)
+                } else if obj.size > 1024 {
+                    format!("{:.1} KB ({} bytes)", obj.size as f64 / 1024.0, obj.size)
+                } else {
+                    format!("{} B", obj.size)
+                };
+
+                let lines = vec![
+                    Line::from(vec![Span::styled("对象详情", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))]),
+                    Line::from(""),
+                    Line::from(vec![Span::styled("Key:    ", Style::default().fg(Color::Gray)), Span::styled(&obj.key, Style::default().fg(Color::White))]),
+                    Line::from(vec![Span::styled("Size:   ", Style::default().fg(Color::Gray)), Span::styled(size_str, Style::default().fg(Color::White))]),
+                    Line::from(vec![Span::styled("Type:   ", Style::default().fg(Color::Gray)), Span::styled(&obj.content_type, Style::default().fg(Color::White))]),
+                    Line::from(vec![Span::styled("Modify: ", Style::default().fg(Color::Gray)), Span::styled(&obj.last_modified, Style::default().fg(Color::White))]),
+                    Line::from(""),
+                    Line::from(vec![Span::styled("Enter: 下载对象  |  Esc: 关闭", Style::default().fg(Color::DarkGray))]),
+                ];
+
+                let detail_para = Paragraph::new(lines)
+                    .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)));
+                f.render_widget(detail_para, dialog);
+                return;
+            }
+        }
+    }
+
+    // 删除确认弹窗
+    if app.storage_tab.confirm_delete {
+        let area = f.size();
+        let width = 50.min(area.width.saturating_sub(4));
+        let height = 7;
+        let x = (area.width - width) / 2;
+        let y = (area.height - height) / 2;
+        let dialog = Rect { x, y, width, height };
+
+        f.render_widget(Clear, dialog);
+
+        let lines = vec![
+            Line::from(vec![Span::styled("确认删除", Style::default().add_modifier(Modifier::BOLD).fg(Color::Red))]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("确认删除对象 ", Style::default().fg(Color::White)),
+                Span::styled(&app.storage_tab.delete_key, Style::default().fg(Color::Yellow)),
+                Span::styled(" ?", Style::default().fg(Color::White)),
+            ]),
+            Line::from(""),
+            Line::from(vec![Span::styled("Enter: 确认删除  |  Esc: 取消", Style::default().fg(Color::DarkGray))]),
+        ];
+
+        let confirm_para = Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Red)));
+        f.render_widget(confirm_para, dialog);
         return;
     }
 
-    // 表头
-    let header = Row::new(vec![
-        Cell::from(Span::styled("Key", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
-        Cell::from(Span::styled("Size", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
-        Cell::from(Span::styled("Last Modified", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
-        Cell::from(Span::styled("Type", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
-    ]);
+    // 上传对话框
+    if app.storage_tab.show_upload_dialog {
+        let area = f.size();
+        let width = 60.min(area.width.saturating_sub(4));
+        let height = 7;
+        let x = (area.width - width) / 2;
+        let y = (area.height - height) / 2;
+        let dialog = Rect { x, y, width, height };
 
-    // 可见行数
-    let visible_rows = list_inner.height.saturating_sub(2) as usize; // 表头 + 边框
-    let scroll = app.storage_tab.list_scroll;
+        f.render_widget(Clear, dialog);
 
-    let rows: Vec<Row> = app.storage_tab.objects
-        .iter()
-        .skip(scroll)
-        .take(visible_rows)
-        .enumerate()
-        .map(|(i, obj)| {
-            let is_selected = app.storage_tab.selected_index
-                .map(|idx| idx == scroll + i)
-                .unwrap_or(false);
-            let style = if is_selected {
-                Style::default().bg(Color::Green).fg(Color::Black)
-            } else {
-                Style::default()
-            };
+        let border_style = if focus == 3 {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
 
-            // 格式化大小
-            let size_str = if obj.size > 1024 * 1024 {
-                format!("{:.1} MB", obj.size as f64 / (1024.0 * 1024.0))
-            } else if obj.size > 1024 {
-                format!("{:.1} KB", obj.size as f64 / 1024.0)
-            } else {
-                format!("{} B", obj.size)
-            };
+        let input = Paragraph::new(app.storage_tab.upload_path.value.as_str())
+            .block(Block::default().borders(Borders::ALL).title("本地文件路径").border_style(border_style))
+            .style(Style::default().fg(Color::White));
+        f.render_widget(input, dialog);
 
-            Row::new(vec![
-                Cell::from(Span::styled(&obj.key, style)),
-                Cell::from(Span::styled(size_str, style)),
-                Cell::from(Span::styled(&obj.last_modified, style)),
-                Cell::from(Span::styled(&obj.content_type, style)),
-            ])
-            .style(style)
-        })
-        .collect();
+        let help_text = Paragraph::new("Enter 上传  |  Esc 取消")
+            .style(Style::default().fg(Color::DarkGray));
+        let help_area = Rect { x, y: y + height, width, height: 1 };
+        f.render_widget(help_text, help_area);
+        return;
+    }
 
-    let widths = [
-        Constraint::Percentage(45),
-        Constraint::Length(12),
-        Constraint::Length(22),
-        Constraint::Length(20),
-    ];
+    // 下载对话框
+    if app.storage_tab.show_download_dialog {
+        let area = f.size();
+        let width = 65.min(area.width.saturating_sub(4));
+        let height = 7;
+        let x = (area.width - width) / 2;
+        let y = (area.height - height) / 2;
+        let dialog = Rect { x, y, width, height };
 
-    let table = Table::new(rows, widths).header(header);
-    f.render_widget(table, list_inner);
+        f.render_widget(Clear, dialog);
 
-    // 垂直滚动条
-    let total = app.storage_tab.objects.len();
-    let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(1))
-        .position(scroll.min(total.saturating_sub(1)));
-    f.render_stateful_widget(
-        Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(None)
-            .end_symbol(None),
-        list_inner,
-        &mut scrollbar_state,
-    );
+        let border_style = if focus == 4 {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+
+        let title = format!("下载: {}", app.storage_tab.download_key);
+        let input = Paragraph::new(app.storage_tab.download_path.value.as_str())
+            .block(Block::default().borders(Borders::ALL).title(title).border_style(border_style))
+            .style(Style::default().fg(Color::White));
+        f.render_widget(input, dialog);
+
+        let help_text = Paragraph::new("Enter 下载  |  Esc 取消")
+            .style(Style::default().fg(Color::DarkGray));
+        let help_area = Rect { x, y: y + height, width, height: 1 };
+        f.render_widget(help_text, help_area);
+        return;
+    }
 }
 
 /// 绘制表列表弹出窗

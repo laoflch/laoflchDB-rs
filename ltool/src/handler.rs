@@ -1846,6 +1846,135 @@ fn handle_input_event(input: &mut InputState, event: KeyEvent) -> bool {
 
 /// 处理存储 Tab 的事件
 async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
+    // ── 弹窗优先处理 ──
+
+    // 删除确认弹窗
+    if app.storage_tab.confirm_delete {
+        match event.code {
+            KeyCode::Enter => {
+                let key = app.storage_tab.delete_key.clone();
+                app.storage_tab.confirm_delete = false;
+                app.storage_tab.delete_key.clear();
+                let _ = crate::tab_storage::delete_object(app, &key).await;
+                let _ = crate::tab_storage::list_objects(app).await;
+                return true;
+            }
+            KeyCode::Esc => {
+                app.storage_tab.confirm_delete = false;
+                app.storage_tab.delete_key.clear();
+                return true;
+            }
+            _ => {}
+        }
+        return true; // 弹窗打开时拦截所有其他事件
+    }
+
+    // 详情弹窗
+    if app.storage_tab.show_detail {
+        match event.code {
+            KeyCode::Esc => {
+                app.storage_tab.show_detail = false;
+                return true;
+            }
+            KeyCode::Enter => {
+                // Enter 下载
+                if let Some(idx) = app.storage_tab.selected_index {
+                    if let Some(obj) = app.storage_tab.objects.get(idx) {
+                        app.storage_tab.show_detail = false;
+                        app.storage_tab.show_download_dialog = true;
+                        app.storage_tab.download_key = obj.key.clone();
+                        // 默认下载路径
+                        let filename = std::path::Path::new(&obj.key)
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or(&obj.key);
+                        let default_path = format!("~/Pictures/{}", filename);
+                        if app.storage_tab.download_path.value.is_empty() {
+                            app.storage_tab.download_path = InputState::with_value(&default_path);
+                        }
+                        app.storage_tab.focus = 4;
+                    }
+                }
+                return true;
+            }
+            _ => {}
+        }
+        return true;
+    }
+
+    // 上传对话框
+    if app.storage_tab.show_upload_dialog {
+        match event.code {
+            KeyCode::Esc => {
+                app.storage_tab.show_upload_dialog = false;
+                app.storage_tab.upload_path.value.clear();
+                return true;
+            }
+            KeyCode::Enter => {
+                let path = app.storage_tab.upload_path.value.clone();
+                if !path.is_empty() {
+                    // 使用文件名作为 object key
+                    let key = std::path::Path::new(&path)
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("uploaded_file");
+                    let _ = crate::tab_storage::upload_file(app, &path, key).await;
+                    app.storage_tab.show_upload_dialog = false;
+                    app.storage_tab.upload_path.value.clear();
+                    let _ = crate::tab_storage::list_objects(app).await;
+                }
+                return true;
+            }
+            KeyCode::Char(c) => {
+                app.storage_tab.upload_path.value.push(c);
+                return true;
+            }
+            KeyCode::Backspace => {
+                app.storage_tab.upload_path.value.pop();
+                return true;
+            }
+            _ => {}
+        }
+        return true;
+    }
+
+    // 下载对话框
+    if app.storage_tab.show_download_dialog {
+        match event.code {
+            KeyCode::Esc => {
+                app.storage_tab.show_download_dialog = false;
+                app.storage_tab.download_path.value.clear();
+                app.storage_tab.download_data.clear();
+                app.storage_tab.download_key.clear();
+                return true;
+            }
+            KeyCode::Enter => {
+                let path = app.storage_tab.download_path.value.clone();
+                let key = app.storage_tab.download_key.clone();
+                if !path.is_empty() && !key.is_empty() {
+                    let _ = crate::tab_storage::download_object(app, &key, &path).await;
+                    app.storage_tab.show_download_dialog = false;
+                    app.storage_tab.download_path.value.clear();
+                    app.storage_tab.download_data.clear();
+                    app.storage_tab.download_key.clear();
+                }
+                return true;
+            }
+            KeyCode::Char(c) => {
+                app.storage_tab.download_path.value.push(c);
+                return true;
+            }
+            KeyCode::Backspace => {
+                app.storage_tab.download_path.value.pop();
+                return true;
+            }
+            _ => {}
+        }
+        return true;
+    }
+
+    // ── 无弹窗时的处理 ──
+
     // 对象列表导航
     if !app.storage_tab.objects.is_empty() {
         match event.code {
@@ -1853,6 +1982,10 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                 let cur = app.storage_tab.selected_index.unwrap_or(0);
                 if cur > 0 {
                     app.storage_tab.selected_index = Some(cur - 1);
+                    // 调整滚动
+                    if cur - 1 < app.storage_tab.list_scroll {
+                        app.storage_tab.list_scroll = cur - 1;
+                    }
                 }
                 return true;
             }
@@ -1861,8 +1994,45 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                 let cur = app.storage_tab.selected_index.unwrap_or(0);
                 if cur < max {
                     app.storage_tab.selected_index = Some(cur + 1);
+                    // 调整滚动
+                    let visible: usize = 20;
+                    if cur + 1 >= app.storage_tab.list_scroll + visible {
+                        app.storage_tab.list_scroll = cur + 1 - visible + 1;
+                    }
                 }
                 return true;
+            }
+            KeyCode::PageUp => {
+                let cur = app.storage_tab.selected_index.unwrap_or(0);
+                let new = cur.saturating_sub(10);
+                app.storage_tab.selected_index = Some(new);
+                app.storage_tab.list_scroll = app.storage_tab.list_scroll.saturating_sub(10);
+                return true;
+            }
+            KeyCode::PageDown => {
+                let max = app.storage_tab.objects.len().saturating_sub(1);
+                let cur = app.storage_tab.selected_index.unwrap_or(0);
+                let new = (cur + 10).min(max);
+                app.storage_tab.selected_index = Some(new);
+                app.storage_tab.list_scroll = (app.storage_tab.list_scroll + 10).min(max.saturating_sub(1));
+                return true;
+            }
+            KeyCode::Enter => {
+                if let Some(idx) = app.storage_tab.selected_index {
+                    if app.storage_tab.objects.get(idx).is_some() {
+                        app.storage_tab.show_detail = true;
+                        return true;
+                    }
+                }
+            }
+            KeyCode::Delete => {
+                if let Some(idx) = app.storage_tab.selected_index {
+                    if let Some(obj) = app.storage_tab.objects.get(idx) {
+                        app.storage_tab.confirm_delete = true;
+                        app.storage_tab.delete_key = obj.key.clone();
+                        return true;
+                    }
+                }
             }
             _ => {}
         }
@@ -1873,6 +2043,74 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
         KeyCode::F(1) => {
             // F1: 列出对象
             let _ = crate::tab_storage::list_objects(app).await;
+            return true;
+        }
+        KeyCode::F(2) => {
+            // F2: 上传对话框
+            app.storage_tab.show_upload_dialog = true;
+            app.storage_tab.upload_path.value.clear();
+            app.storage_tab.focus = 3;
+            return true;
+        }
+        _ => {}
+    }
+
+    // Tab/Shift+Tab 切换焦点
+    match event.code {
+        KeyCode::Tab => {
+            let max_focus = if app.storage_tab.show_upload_dialog {
+                3
+            } else if app.storage_tab.show_download_dialog {
+                4
+            } else {
+                2
+            };
+            app.storage_tab.focus = (app.storage_tab.focus + 1) % (max_focus + 1);
+            return true;
+        }
+        KeyCode::BackTab => {
+            let max_focus = if app.storage_tab.show_upload_dialog {
+                3
+            } else if app.storage_tab.show_download_dialog {
+                4
+            } else {
+                2
+            };
+            app.storage_tab.focus = if app.storage_tab.focus == 0 {
+                max_focus
+            } else {
+                app.storage_tab.focus - 1
+            };
+            return true;
+        }
+        _ => {}
+    }
+
+    // 字符输入
+    match event.code {
+        KeyCode::Char(c) => {
+            match app.storage_tab.focus {
+                0 => app.storage_tab.endpoint.value.push(c),
+                1 => app.storage_tab.bucket.value.push(c),
+                2 => app.storage_tab.prefix.value.push(c),
+                _ => {}
+            }
+            return true;
+        }
+        KeyCode::Backspace => {
+            match app.storage_tab.focus {
+                0 => { app.storage_tab.endpoint.value.pop(); }
+                1 => { app.storage_tab.bucket.value.pop(); }
+                2 => { app.storage_tab.prefix.value.pop(); }
+                _ => {}
+            }
+            return true;
+        }
+        KeyCode::Enter => {
+            // 无选中对象时按 Enter 列出对象
+            if app.storage_tab.selected_index.is_none() {
+                let _ = crate::tab_storage::list_objects(app).await;
+            }
             return true;
         }
         _ => {}
