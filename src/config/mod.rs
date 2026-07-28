@@ -293,6 +293,9 @@ pub struct ObjectStoreConfig {
     /// 对象存储数据路径
     #[serde(default = "default_object_store_db_path")]
     pub db_path: String,
+    /// BlobDB 配置（大对象存储）
+    #[serde(default)]
+    pub blob_db: laoflchdb_kv_rocksdb_engine::BlobDBConfig,
     /// S3 协议访问密钥（用于 S3 端口认证）
     #[serde(default = "default_s3_access_key")]
     pub s3_access_key: String,

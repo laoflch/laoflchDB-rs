@@ -589,7 +589,7 @@ pub struct SqlTabState {
 /// 路径补全下拉菜单状态
 ///
 /// 当路径输入框获得焦点且有候选时显示。Up/Down 导航，Enter 选中，Esc 关闭。
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct PathPopup {
     /// 是否显示
     pub active: bool,
@@ -836,6 +836,8 @@ pub struct StorageTabState {
     pub list_scroll: usize,
     /// 分页状态
     pub pagination: PaginationState,
+    /// 排序方向：asc=正序（旧到新），desc=倒序（新到旧）
+    pub sort_order: String,
     /// 是否已通过 S3 认证
     pub s3_logged_in: bool,
     /// 焦点位置：0=endpoint, 1=bucket, 2=prefix, 3=upload_path, 4=download_path, 5=access_key, 6=secret_key, 7=region
@@ -847,6 +849,10 @@ pub struct StorageTabState {
     /// S3 Region
     pub region: InputState,
     // ── 弹窗状态 ──
+    /// 操作弹窗是否打开
+    pub action_popup_open: bool,
+    /// 操作弹窗选中项索引
+    pub action_popup_selected: usize,
     /// 详情弹窗
     pub show_detail: bool,
     /// 删除确认弹窗
@@ -865,6 +871,8 @@ pub struct StorageTabState {
     pub download_data: Vec<u8>,
     /// 下载的文件名
     pub download_key: String,
+    /// 路径补全弹窗
+    pub path_popup: PathPopup,
 }
 
 /// 存储对象信息
@@ -886,11 +894,14 @@ impl Default for StorageTabState {
             selected_index: None,
             list_scroll: 0,
             pagination: PaginationState::new(50),
+            sort_order: "asc".to_string(),
             s3_logged_in: false,
             focus: 0,
-            access_key: InputState::new(),
-            secret_key: InputState::new(),
+            access_key: InputState::with_value("admin"),
+            secret_key: InputState::with_value("laoflchdb"),
             region: InputState::with_value("us-east-1"),
+            action_popup_open: false,
+            action_popup_selected: 0,
             show_detail: false,
             confirm_delete: false,
             delete_key: String::new(),
@@ -900,6 +911,7 @@ impl Default for StorageTabState {
             show_download_dialog: false,
             download_data: Vec::new(),
             download_key: String::new(),
+            path_popup: PathPopup::default(),
         }
     }
 }

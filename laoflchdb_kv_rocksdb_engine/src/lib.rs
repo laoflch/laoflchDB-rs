@@ -12,13 +12,20 @@ use laoflchdb_engines::{
     META_SCHEMA_PREFIX, META_TABLE_PREFIX, META_COLUMN_PREFIX,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
 pub struct BlobDBConfig {
+    #[serde(default)]
     pub enabled: bool,
+    #[serde(default)]
     pub min_blob_size: u64,
+    #[serde(default)]
     pub blob_file_size: u64,
+    #[serde(default)]
     pub blob_compression_type: String,
+    #[serde(default)]
     pub enable_blob_garbage_collection: bool,
+    #[serde(default)]
     pub blob_garbage_collection_age_cutoff: f64,
 }
 

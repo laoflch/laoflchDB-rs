@@ -54,6 +54,14 @@ embedding_index:
 object_store:
   enabled: true
   db_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_oss
+  # BlobDB 配置（大对象存储）
+  blob_db:
+    enabled: true
+    min_blob_size: 32768          # 大于此值的数据存到 BlobDB（0=全部存 BlobDB）　32KB
+    blob_file_size: 268435456  # 每个 Blob 文件最大 256MB
+    blob_compression_type: zstd
+    #enable_blob_garbage_collection: true
+    #blob_garbage_collection_age_cutoff: 0.25
   # S3 协议访问密钥（用于标准 S3 端口认证）
   s3_access_key: admin
   s3_secret_key: laoflchdb

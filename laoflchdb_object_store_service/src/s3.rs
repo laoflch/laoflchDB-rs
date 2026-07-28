@@ -669,13 +669,13 @@ async fn normalize_path_middleware(
     parts.extensions.insert(OriginalUri(original_uri.clone()));
 
     // 去除路径尾部斜杠（但保留根路径 "/"）
-    let path = parts.uri.path();
+    let path_str = parts.uri.path().to_string(); // 先复制到 String，避免借用
     let query = parts.uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
-    if path != "/" && path.ends_with('/') {
-        let new_path = path.trim_end_matches('/');
+    if path_str != "/" && path_str.ends_with('/') {
+        let new_path = path_str.trim_end_matches('/');
         if let Ok(new_uri) = format!("{}{}", new_path, query).parse::<Uri>() {
             parts.uri = new_uri;
-            log::debug!("S3 标准化路径: {} -> {}", path, new_path);
+            log::debug!("S3 标准化路径: {} -> {}", path_str, new_path);
         }
     }
 
@@ -1117,48 +1117,388 @@ pub fn create_s3_router(
         config: Arc::new(s3_config),
     });
 
-    // 创建内部路由（带认证）
-    let inner_router = Router::new()
-        // GET / - ListBuckets
-        .route("/", get(list_buckets_handler))
-        // PUT /{bucket} - CreateBucket
-        .route("/{bucket}", put(create_bucket_handler))
-        // DELETE /{bucket} - DeleteBucket
-        .route("/{bucket}", delete(delete_bucket_handler))
-        // GET /{bucket} - ListObjects
-        .route("/{bucket}", get(list_objects_handler))
-        // HEAD /{bucket} - HeadBucket
-        .route("/{bucket}", head(head_bucket_handler))
-        // PUT /{bucket}/{key} - PutObject
-        .route("/{bucket}/{key}", put(put_object_handler))
-        // GET /{bucket}/{key} - GetObject
-        .route("/{bucket}/{key}", get(get_object_handler))
-        // HEAD /{bucket}/{key} - HeadObject
-        .route("/{bucket}/{key}", head(head_object_handler))
-        // DELETE /{bucket}/{key} - DeleteObject
-        .route("/{bucket}/{key}", delete(delete_object_handler))
-        // 添加 fallback 记录未匹配路由
-        .fallback(|req: Request<axum::body::Body>| async move {
-            log::warn!("S3 路由未匹配: method={}, uri={}", req.method(), req.uri());
-            let body = axum::body::to_bytes(req.into_body(), 1024 * 1024).await.unwrap_or_default();
-            let body_str = String::from_utf8_lossy(&body);
-            let xml = format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?>
-<Error>
-    <Code>NoSuchKey</Code>
-    <Message>路由未匹配</Message>
-    <Resource>{}</Resource>
-</Error>"#,
-                body_str
-            );
-            (StatusCode::NOT_FOUND, [("Content-Type", "application/xml")], xml)
-        })
-        // 应用认证中间件
-        .layer(middleware::from_fn_with_state(state.clone(), s3_auth))
-        .with_state(state);
-
-    // 外层路由：先应用路径标准化，再转发到内部路由
+    // 统一使用 fallback 处理所有请求，手动解析路径和方法进行分发
+    // 这样可以完全控制路径解析（包括尾部斜杠）和签名验证顺序
     Router::new()
-        .fallback_service(inner_router)
-        .layer(middleware::from_fn(normalize_path_middleware))
+        .fallback(s3_dispatch)
+        .with_state(state)
+}
+
+/// 统一 S3 请求分发
+async fn s3_dispatch(
+    State(state): State<Arc<S3State>>,
+    req: Request<axum::body::Body>,
+) -> Response {
+    let (parts, body) = req.into_parts();
+    let method = parts.method.clone();
+    let uri = parts.uri.clone();
+
+    // 读取 body
+    let body_bytes = axum::body::to_bytes(body, 50 * 1024 * 1024) // 50MB 限制
+        .await
+        .unwrap_or_default();
+
+    log::debug!("S3 请求: method={}, uri={}", method, uri);
+
+    // 验证签名（使用原始 URI）
+    if let Err(e) = verify_aws_v4_signature(
+        &state.config,
+        &method,
+        &uri,
+        &parts.headers,
+        &body_bytes,
+    ) {
+        log::warn!("S3 签名验证失败: {}", e);
+        return s3_error_response("SignatureDoesNotMatch", &e, StatusCode::FORBIDDEN);
+    }
+
+    log::debug!("S3 签名验证通过");
+
+    // 解析路径（去除尾部斜杠，但不包含根路径）
+    let path = uri.path();
+    let normalized_path = if path != "/" && path.ends_with('/') {
+        path.trim_end_matches('/')
+    } else {
+        path
+    };
+
+    // 解析查询参数
+    let query_str = uri.query().unwrap_or("");
+
+    // 分发请求
+    if normalized_path == "/" || normalized_path.is_empty() {
+        // GET / - ListBuckets
+        if method == Method::GET {
+            return list_buckets_handler(State(state)).await.into_response();
+        }
+        return method_not_allowed(&method);
+    }
+
+    // 解析路径段: /{bucket} 或 /{bucket}/{key...}
+    let path_segments: Vec<&str> = normalized_path.trim_start_matches('/')
+        .splitn(2, '/')
+        .collect();
+
+    let bucket = path_segments[0].to_string();
+    if bucket.is_empty() {
+        return s3_error_response("InvalidRequest", "Bucket 名称不能为空", StatusCode::BAD_REQUEST);
+    }
+
+    // /{bucket} - 没有 key
+    if path_segments.len() == 1 {
+        match method {
+            Method::GET => {
+                // ListObjects
+                return list_objects_handler_inner(&state, &bucket, query_str).await;
+            }
+            Method::HEAD => {
+                // HeadBucket
+                return head_bucket_handler_inner(&state, &bucket).await;
+            }
+            Method::PUT => {
+                // CreateBucket
+                return create_bucket_handler_inner(&state, &bucket).await;
+            }
+            Method::DELETE => {
+                // DeleteBucket
+                return delete_bucket_handler_inner(&state, &bucket).await;
+            }
+            _ => return method_not_allowed(&method),
+        }
+    }
+
+    // /{bucket}/{key} - 有 key
+    let key = path_segments[1].to_string();
+    match method {
+        Method::GET => {
+            // GetObject
+            return get_object_handler_inner(&state, &bucket, &key).await;
+        }
+        Method::HEAD => {
+            // HeadObject
+            return head_object_handler_inner(&state, &bucket, &key).await;
+        }
+        Method::PUT => {
+            // PutObject
+            return put_object_handler_inner(&state, &bucket, &key, &parts.headers, &body_bytes).await;
+        }
+        Method::DELETE => {
+            // DeleteObject
+            return delete_object_handler_inner(&state, &bucket, &key).await;
+        }
+        _ => return method_not_allowed(&method),
+    }
+}
+
+/// 返回 Method Not Allowed
+fn method_not_allowed(method: &Method) -> Response {
+    s3_error_response(
+        "MethodNotAllowed",
+        &format!("不支持的 HTTP 方法: {}", method),
+        StatusCode::METHOD_NOT_ALLOWED,
+    )
+}
+
+// ── 内部处理函数（直接调用，不经过 axum 路由提取器） ──
+
+async fn list_objects_handler_inner(
+    state: &Arc<S3State>,
+    bucket: &str,
+    query_str: &str,
+) -> Response {
+    // 解析查询参数
+    let query_params = parse_query_string(query_str);
+    let prefix = query_params.get("prefix").cloned().unwrap_or_default();
+    let delimiter = query_params.get("delimiter").cloned().unwrap_or_default();
+    let max_keys: i32 = query_params.get("max-keys")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000)
+        .max(1).min(1000);
+    let marker = query_params.get("continuation-token").cloned()
+        .or_else(|| query_params.get("marker").cloned())
+        .unwrap_or_default();
+
+    let req = tonic::Request::new(ListObjectsRequest {
+        bucket: bucket.to_string(),
+        prefix: prefix.clone(),
+        delimiter: delimiter.clone(),
+        max_keys,
+        marker: marker.clone(),
+        reverse: false,
+    });
+
+    match state.service.list_objects(req).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            let contents: Vec<ObjectContent> = resp
+                .objects
+                .iter()
+                .map(|o| ObjectContent {
+                    key: o.key.clone(),
+                    last_modified: timestamp_to_iso(&o.last_modified),
+                    etag: o.etag.clone(),
+                    size: o.size,
+                    storage_class: Some("STANDARD".to_string()),
+                    owner: None,
+                })
+                .collect();
+
+            let common_prefixes: Vec<CommonPrefix> = resp
+                .common_prefixes
+                .iter()
+                .map(|p| CommonPrefix {
+                    prefix: p.clone(),
+                })
+                .collect();
+
+            let result = ListBucketResult {
+                name: resp.bucket.clone(),
+                prefix,
+                max_keys,
+                is_truncated: resp.is_truncated,
+                contents,
+                common_prefixes,
+                marker: if marker.is_empty() { None } else { Some(marker) },
+                next_marker: if resp.is_truncated && !resp.next_marker.is_empty() {
+                    Some(resp.next_marker)
+                } else {
+                    None
+                },
+                delimiter: if delimiter.is_empty() { None } else { Some(delimiter) },
+            };
+
+            match to_xml(&result) {
+                Ok(xml) => (
+                    StatusCode::OK,
+                    [("Content-Type", "application/xml")],
+                    xml,
+                ).into_response(),
+                Err(_) => (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    [("Content-Type", "application/xml")],
+                    String::new(),
+                ).into_response(),
+            }
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            [("Content-Type", "application/xml")],
+            format!("<Error><Code>InternalError</Code><Message>{}</Message></Error>", e.message()),
+        ).into_response(),
+    }
+}
+
+async fn head_bucket_handler_inner(state: &Arc<S3State>, bucket: &str) -> Response {
+    log::debug!("head_bucket_handler 被调用: bucket={}", bucket);
+    let req = tonic::Request::new(ListObjectsRequest {
+        bucket: bucket.to_string(),
+        prefix: String::new(),
+        delimiter: String::new(),
+        max_keys: 1,
+        marker: String::new(),
+        reverse: false,
+    });
+    match state.service.list_objects(req).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            let mut headers = HeaderMap::new();
+            headers.insert("x-amz-bucket-region", state.config.region.parse().unwrap());
+            headers.insert("Content-Length", "0".parse().unwrap());
+            log::debug!("HeadBucket 成功: bucket={}, 对象数={}", bucket, resp.objects.len());
+            (StatusCode::OK, headers).into_response()
+        }
+        Err(e) => {
+            log::warn!("HeadBucket 失败: bucket={}, error={}", bucket, e.message());
+            let mut headers = HeaderMap::new();
+            headers.insert("Content-Type", "application/xml".parse().unwrap());
+            (StatusCode::NOT_FOUND, headers).into_response()
+        }
+    }
+}
+
+async fn create_bucket_handler_inner(state: &Arc<S3State>, bucket: &str) -> Response {
+    if bucket.is_empty() || bucket.len() > 63 {
+        return s3_error_response("InvalidBucketName", "Bucket 名称无效", StatusCode::BAD_REQUEST);
+    }
+    let req = tonic::Request::new(CreateBucketRequest { bucket: bucket.to_string() });
+    match state.service.create_bucket(req).await {
+        Ok(resp) => {
+            if resp.into_inner().success {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            } else {
+                s3_error_response("InternalError", "创建 Bucket 失败", StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+        Err(e) => s3_error_response("InternalError", &e.message(), StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn delete_bucket_handler_inner(state: &Arc<S3State>, bucket: &str) -> Response {
+    let req = tonic::Request::new(DeleteBucketRequest { bucket: bucket.to_string() });
+    match state.service.delete_bucket(req).await {
+        Ok(resp) => {
+            if resp.into_inner().success {
+                Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            } else {
+                s3_error_response("InternalError", "删除 Bucket 失败", StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+        Err(e) => s3_error_response("InternalError", &e.message(), StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn put_object_handler_inner(
+    state: &Arc<S3State>,
+    bucket: &str,
+    key: &str,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> Response {
+    let content_type = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("application/octet-stream")
+        .to_string();
+
+    let req = tonic::Request::new(PutObjectRequest {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+        data: body.to_vec(),
+        content_type,
+        metadata: HashMap::new(),
+    });
+
+    match state.service.put_object(req).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            if resp.success {
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("ETag", resp.etag.clone())
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            } else {
+                s3_error_response("InternalError", &resp.message, StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+        Err(e) => s3_error_response("InternalError", &e.message(), StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+async fn get_object_handler_inner(state: &Arc<S3State>, bucket: &str, key: &str) -> Response {
+    let req = tonic::Request::new(GetObjectRequest {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+    });
+
+    match state.service.get_object(req).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            let mut headers = HeaderMap::new();
+            headers.insert("Content-Type", resp.content_type.parse().unwrap_or("application/octet-stream".parse().unwrap()));
+            headers.insert("Content-Length", resp.content_length.to_string().parse().unwrap());
+            headers.insert("ETag", resp.etag.parse().unwrap_or("\"\"".parse().unwrap()));
+            headers.insert("Last-Modified", resp.content_length.to_string().parse().unwrap_or("0".parse().unwrap()));
+            (StatusCode::OK, headers, resp.data).into_response()
+        }
+        Err(e) => {
+            let error = S3Error {
+                code: "NoSuchKey".to_string(),
+                message: e.message().to_string(),
+                resource: None,
+                request_id: None,
+            };
+            let xml = to_xml(&error).unwrap_or_default();
+            let mut headers = HeaderMap::new();
+            headers.insert("Content-Type", "application/xml".parse().unwrap());
+            (StatusCode::NOT_FOUND, headers, xml.into_bytes()).into_response()
+        }
+    }
+}
+
+async fn head_object_handler_inner(state: &Arc<S3State>, bucket: &str, key: &str) -> Response {
+    let req = tonic::Request::new(HeadObjectRequest {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+    });
+
+    match state.service.head_object(req).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            let mut headers = HeaderMap::new();
+            headers.insert("Content-Type", resp.content_type.parse().unwrap_or("application/octet-stream".parse().unwrap()));
+            headers.insert("Content-Length", resp.content_length.to_string().parse().unwrap());
+            headers.insert("ETag", resp.etag.parse().unwrap_or("\"\"".parse().unwrap()));
+            headers.insert("Last-Modified", resp.last_modified.parse().unwrap_or("0".parse().unwrap()));
+            (StatusCode::OK, headers).into_response()
+        }
+        Err(_) => (StatusCode::NOT_FOUND, HeaderMap::new()).into_response(),
+    }
+}
+
+async fn delete_object_handler_inner(state: &Arc<S3State>, bucket: &str, key: &str) -> Response {
+    let req = tonic::Request::new(DeleteObjectRequest {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+    });
+
+    match state.service.delete_object(req).await {
+        Ok(resp) => {
+            if resp.into_inner().success {
+                Response::builder()
+                    .status(StatusCode::NO_CONTENT)
+                    .body(axum::body::Body::empty())
+                    .unwrap()
+            } else {
+                s3_error_response("InternalError", "删除对象失败", StatusCode::INTERNAL_SERVER_ERROR)
+            }
+        }
+        Err(e) => s3_error_response("InternalError", &e.message(), StatusCode::INTERNAL_SERVER_ERROR),
+    }
 }

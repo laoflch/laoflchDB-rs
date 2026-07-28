@@ -157,7 +157,7 @@ impl LaoflchDBServer {
                     enabled: true,
                     db_path: obj_cfg.db_path.clone(),
                     schema_name: "object_store".to_string(),
-                    blob_db: laoflchdb_kv_rocksdb_engine::BlobDBConfig::default(),
+                    blob_db: obj_cfg.blob_db.clone(),
                     s3_access_key: obj_cfg.s3_access_key.clone(),
                     s3_secret_key: obj_cfg.s3_secret_key.clone(),
                     s3_region: obj_cfg.s3_region.clone(),

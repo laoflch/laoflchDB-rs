@@ -195,7 +195,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
 /// 绘制顶部 Tab 栏
 fn draw_tabs(f: &mut Frame, app: &mut App, area: Rect) {
-    let titles = vec!["1:图片", "2:人脸", "3:向量", "4:SQL", "5:索引"];
+    let titles = vec!["1:图片", "2:人脸", "3:向量", "4:SQL", "5:索引", "6:S3"];
     let selected = app.current_tab.index();
 
     let spans: Vec<Span> = titles
@@ -260,12 +260,12 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     );
     // 当前 Tab 的快捷键提示
     let help_text = match app.current_tab {
-        Tab::Image => "F1上传 F2列出 :bucket/:key设置 ↑↓选路径 Enter确认 Esc取消 | ",
-        Tab::Face => "F1检测 F3列表 F6导出 ↑↓选中人脸 Enter保存并索引 Esc取消 | ",
+        Tab::Image => "F1上传 F2列出 F7排序 ,上页 .下页 ↑↓选路径 Enter确认 Esc取消 | ",
+        Tab::Face => "F1检测 F3列表 F6导出 F7排序 ,上页 .下页 ↑↓选中人脸 Enter保存并索引 Esc取消 | ",
         Tab::Vector => "F2/Enter查看详情 F3列出条目 F4清空 F5一致性 F6重建 Tab展开菜单 ↑↓条目导航 Enter操作 Esc关闭 | ",
         Tab::Sql => "F1列表Schema F2列表表 F3描述表 F4版本 F5执行 Ctrl+L清空 | ",
         Tab::Index => "F1列表索引 F2查看详情 F3统计 F4搜索 Enter查看详情 | ",
-        Tab::Storage => "F1列出 F2上传 F3认证 ↑↓导航 Enter详情 Delete删除 | ",
+        Tab::Storage => "F1列出 F2上传 F3认证 F5上页 F6下页 F7排序 ,上页 .下页 ↑↓导航 Enter详情 Delete删除 | ",
     };
     let help_span = Span::styled(help_text, Style::default().fg(Color::Gray));
 
@@ -1794,8 +1794,8 @@ fn draw_sql_schema_list_popup(f: &mut Frame, app: &mut App) {
 
 /// 绘制存储 Tab（S3 兼容对象存储浏览器）
 fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
-    // 输入区高度：21行（endpoint + access_key + secret_key + region + 认证状态 + bucket+prefix + 模式指示）
-    let input_height: u16 = 21;
+    // 输入区高度：12行（endpoint+protocol + access_key+secret_key+region + 认证状态 + bucket+prefix）
+    let input_height: u16 = 12;
 
     // 上下分区：输入区 + 列表区
     let chunks = Layout::default()
@@ -1809,7 +1809,8 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let focus = app.storage_tab.focus;
 
     // ── 输入区 ──
-    let input_rows = 7;
+    // 输入区行数：4行
+    let input_rows = 4;
     let input_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
@@ -1819,20 +1820,12 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
         )
         .split(chunks[0]);
 
-    // 模式指示行
-    let mode_text = "S3 协议（AWS Signature V4）";
-    let mode_block = Block::default()
-        .borders(Borders::ALL)
-        .title("协议")
-        .border_style(Style::default().fg(Color::Green));
-    let mode_para = Paragraph::new(mode_text)
-        .block(mode_block)
-        .style(Style::default().fg(Color::Gray));
-    f.render_widget(mode_para, input_chunks[0]);
+    // 第0行：端点 URL（左）+ 协议（右）
+    let endpoint_protocol = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .split(input_chunks[0]);
 
-    let mut row = 1; // 当前输入行索引
-
-    // 端点 URL
     let endpoint_border = if focus == 0 { Color::Yellow } else { Color::Cyan };
     let endpoint_block = Block::default()
         .borders(Borders::ALL)
@@ -1841,28 +1834,40 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let endpoint_input = Paragraph::new(app.storage_tab.endpoint.value.as_str())
         .block(endpoint_block)
         .style(Style::default().fg(Color::White));
-    f.render_widget(endpoint_input, input_chunks[row]);
-    row += 1;
+    f.render_widget(endpoint_input, endpoint_protocol[0]);
+
+    let mode_block = Block::default()
+        .borders(Borders::ALL)
+        .title("协议")
+        .border_style(Style::default().fg(Color::Green));
+    let mode_para = Paragraph::new("S3 协议（AWS Signature V4）")
+        .block(mode_block)
+        .style(Style::default().fg(Color::Gray));
+    f.render_widget(mode_para, endpoint_protocol[1]);
+
+    // 第1行：Access Key + Secret Key + Region
+    let creds_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(33), Constraint::Percentage(34), Constraint::Percentage(33)])
+        .split(input_chunks[1]);
 
     // Access Key
-    let ak_border = if focus == 5 { Color::Yellow } else { Color::Cyan };
+    let ak_border = if focus == 3 { Color::Yellow } else { Color::Cyan };
     let ak_block = Block::default()
         .borders(Borders::ALL)
         .title("Access Key")
-        .border_style(Style::default().fg(ak_border).add_modifier(if focus == 5 { Modifier::BOLD } else { Modifier::empty() }));
+        .border_style(Style::default().fg(ak_border).add_modifier(if focus == 3 { Modifier::BOLD } else { Modifier::empty() }));
     let ak_input = Paragraph::new(app.storage_tab.access_key.value.as_str())
         .block(ak_block)
         .style(Style::default().fg(Color::White));
-    f.render_widget(ak_input, input_chunks[row]);
-    row += 1;
+    f.render_widget(ak_input, creds_chunks[0]);
 
     // Secret Key
-    let sk_border = if focus == 6 { Color::Yellow } else { Color::Cyan };
+    let sk_border = if focus == 4 { Color::Yellow } else { Color::Cyan };
     let sk_block = Block::default()
         .borders(Borders::ALL)
         .title("Secret Key")
-        .border_style(Style::default().fg(sk_border).add_modifier(if focus == 6 { Modifier::BOLD } else { Modifier::empty() }));
-    // 显示为 *** 保护密钥
+        .border_style(Style::default().fg(sk_border).add_modifier(if focus == 4 { Modifier::BOLD } else { Modifier::empty() }));
     let masked = std::iter::repeat('*')
         .take(app.storage_tab.secret_key.value.len().min(40))
         .collect::<String>();
@@ -1874,22 +1879,20 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let sk_input = Paragraph::new(sk_display.as_str())
         .block(sk_block)
         .style(Style::default().fg(Color::White));
-    f.render_widget(sk_input, input_chunks[row]);
-    row += 1;
+    f.render_widget(sk_input, creds_chunks[1]);
 
     // Region
-    let region_border = if focus == 7 { Color::Yellow } else { Color::Cyan };
+    let region_border = if focus == 5 { Color::Yellow } else { Color::Cyan };
     let region_block = Block::default()
         .borders(Borders::ALL)
         .title("Region")
-        .border_style(Style::default().fg(region_border).add_modifier(if focus == 7 { Modifier::BOLD } else { Modifier::empty() }));
+        .border_style(Style::default().fg(region_border).add_modifier(if focus == 5 { Modifier::BOLD } else { Modifier::empty() }));
     let region_input = Paragraph::new(app.storage_tab.region.value.as_str())
         .block(region_block)
         .style(Style::default().fg(Color::White));
-    f.render_widget(region_input, input_chunks[row]);
-    row += 1;
+    f.render_widget(region_input, creds_chunks[2]);
 
-    // 认证状态
+    // 第2行：认证状态
     let s3_status_text = if app.storage_tab.s3_logged_in {
         format!("✓ 已认证（{}）", app.storage_tab.access_key.value)
     } else {
@@ -1902,14 +1905,13 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let s3_status_para = Paragraph::new(s3_status_text)
         .block(s3_status_block)
         .style(Style::default().fg(Color::Gray));
-    f.render_widget(s3_status_para, input_chunks[row]);
-    row += 1;
+    f.render_widget(s3_status_para, input_chunks[2]);
 
-    // bucket + prefix
+    // 第3行：bucket + prefix
     let bucket_prefix = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
-        .split(input_chunks[row]);
+        .split(input_chunks[3]);
 
     let bucket_border = if focus == 1 { Color::Yellow } else { Color::Cyan };
     let bucket_block = Block::default()
@@ -1932,15 +1934,38 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(prefix_input, bucket_prefix[1]);
 
     // ── 对象列表 ──
+    let sort_indicator = if app.storage_tab.sort_order == "asc" { "↑" } else { "↓" };
+    let page = app.storage_tab.pagination.current_page();
+    let has_prev = !app.storage_tab.pagination.prev_markers.is_empty();
+    let has_next = app.storage_tab.pagination.has_next;
+    let page_info = if app.storage_tab.pagination.page_count > 0 {
+        if has_prev && has_next {
+            format!("第{}页 ↑/↓", page)
+        } else if has_next {
+            format!("第{}页 ↑", page)
+        } else if has_prev {
+            format!("第{}页 ↓", page)
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    let list_title = if page_info.is_empty() {
+        format!("对象列表 [{}]", sort_indicator)
+    } else {
+        format!("对象列表 [{}] {}", sort_indicator, page_info)
+    };
+
     let list_block = Block::default()
         .borders(Borders::ALL)
-        .title("对象列表")
+        .title(list_title)
         .border_style(Style::default().fg(Color::Cyan));
     let list_inner = list_block.inner(chunks[1]);
     f.render_widget(list_block, chunks[1]);
 
     if app.storage_tab.objects.is_empty() {
-        let empty_text = Paragraph::new("按 F1 列出对象 ｜ F2 上传 ｜ F3 认证 ｜ Enter 查看详情 ｜ Delete 删除")
+        let empty_text = Paragraph::new("F1列出 F2上传 F3认证 F5上页 F6下页 F7排序 ｜ Enter详情 ｜ Delete删除")
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center);
         f.render_widget(empty_text, list_inner);
@@ -2109,6 +2134,13 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
             .style(Style::default().fg(Color::DarkGray));
         let help_area = Rect { x, y: y + height, width, height: 1 };
         f.render_widget(help_text, help_area);
+
+        // 路径补全弹窗
+        if app.storage_tab.path_popup.is_active() {
+            let content_bottom = area.height;
+            draw_path_popup(f, &app.storage_tab.path_popup, dialog, content_bottom);
+        }
+
         return;
     }
 
@@ -2140,6 +2172,52 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
         let help_area = Rect { x, y: y + height, width, height: 1 };
         f.render_widget(help_text, help_area);
         return;
+    }
+
+    // 操作弹窗
+    if app.storage_tab.action_popup_open {
+        const STORAGE_ACTION_OPTIONS: &[&str] = &["查看详情", "下载对象", "删除对象"];
+        let area = f.size();
+        let width = 30;
+        let height = STORAGE_ACTION_OPTIONS.len() as u16 + 3;
+        let x = (area.width.saturating_sub(width)) / 2;
+        let y = (area.height.saturating_sub(height)) / 2;
+        let dialog_area = Rect { x, y, width, height };
+
+        f.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("对象操作")
+            .style(Style::default().bg(Color::Black).fg(Color::White));
+        f.render_widget(block, dialog_area);
+
+        let inner = Rect {
+            x: dialog_area.x + 1,
+            y: dialog_area.y + 1,
+            width: dialog_area.width.saturating_sub(2),
+            height: dialog_area.height.saturating_sub(2),
+        };
+
+        for (i, opt) in STORAGE_ACTION_OPTIONS.iter().enumerate() {
+            let selected = i == app.storage_tab.action_popup_selected;
+            let style = if selected {
+                Style::default().bg(Color::Green).fg(Color::Black)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            let prefix = if selected { "▶ " } else { "  " };
+            let line = Paragraph::new(Line::from(Span::styled(
+                format!("{}{}", prefix, opt),
+                style,
+            )));
+            f.render_widget(line, Rect {
+                x: inner.x,
+                y: inner.y + i as u16,
+                width: inner.width,
+                height: 1,
+            });
+        }
     }
 }
 

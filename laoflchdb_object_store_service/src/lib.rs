@@ -14,7 +14,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{delete, get, head, put},
+    routing::{get, put},
 };
 use laoflchdb_engines::{EngineOptions, StorageEngine};
 use laoflchdb_kv_rocksdb_engine::{BlobDBConfig, KVRocksDBEngine};
@@ -90,8 +90,14 @@ impl ObjectStoreServiceImpl {
         };
         let engine = KVRocksDBEngine::new_with_blob_db(&options, &config.blob_db)?;
         info!(
-            "ObjectStoreService 初始化完成: db_path='{}'",
-            config.db_path
+            "ObjectStoreService 初始化完成: db_path='{}', blob_db={{ enabled={}, min_blob_size={}, blob_file_size={}, compression={}, gc={}, gc_age_cutoff={} }}",
+            config.db_path,
+            config.blob_db.enabled,
+            config.blob_db.min_blob_size,
+            config.blob_db.blob_file_size,
+            config.blob_db.blob_compression_type,
+            config.blob_db.enable_blob_garbage_collection,
+            config.blob_db.blob_garbage_collection_age_cutoff,
         );
         Ok(Self {
             engine: Mutex::new(engine),

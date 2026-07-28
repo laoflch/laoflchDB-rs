@@ -182,24 +182,43 @@ pub async fn login(app: &mut App) -> Result<()> {
 pub async fn list_objects(app: &mut App) -> Result<()> {
     let (bucket, credentials) = get_s3_client(app)?;
     let prefix = app.storage_tab.prefix.value.trim().to_string();
+    let reverse = app.storage_tab.sort_order == "desc";
 
     let mut action = bucket.list_objects_v2(Some(&credentials));
     if !prefix.is_empty() {
         action.query_mut().insert("prefix", prefix.clone());
     }
+    // 自定义 reverse 参数
+    if reverse {
+        action.query_mut().insert("reverse", "true");
+    }
+    // 分页：传递 continuation-token
+    let marker = app.storage_tab.pagination.marker.clone();
+    if !marker.is_empty() {
+        action.query_mut().insert("continuation-token", marker.clone());
+    }
 
     let xml = s3_request(&action).await?;
     let (mut objects, is_truncated, next_token) = parse_s3_list_response(&xml)?;
 
-    // 排序：按 key 排序
-    objects.sort_by(|a, b| a.key.cmp(&b.key));
+    // 客户端排序（兼容不支持 reverse 的 S3 服务端）
+    if reverse {
+        objects.sort_by(|a, b| b.key.cmp(&a.key));
+    } else {
+        objects.sort_by(|a, b| a.key.cmp(&b.key));
+    }
 
     let count = objects.len();
     app.storage_tab.objects = objects;
     app.storage_tab.selected_index = if count > 0 { Some(0) } else { None };
     app.storage_tab.list_scroll = 0;
     app.storage_tab.pagination.on_response(&next_token, is_truncated, count);
-    app.set_status(format!("bucket '{}' 下有 {} 个对象", app.storage_tab.bucket.value.trim(), count));
+    app.set_status(format!(
+        "bucket '{}' 下有 {} 个对象（{}）",
+        app.storage_tab.bucket.value.trim(),
+        count,
+        if reverse { "从新到旧" } else { "从旧到新" },
+    ));
     Ok(())
 }
 
