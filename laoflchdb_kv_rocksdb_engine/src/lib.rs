@@ -246,33 +246,39 @@ impl KVRocksDBEngine {
             .ok_or_else(|| KVRocksDBError::Engine(format!("Table '{}' not found", cf_name)))?;
 
         let mut keys = Vec::new();
+
+        // 创建 prefix_end 用于反向迭代的 seek_for_prev（在 prefix 生命期内有效）
+        let prefix_end = prefix.map(|p| {
+            let mut end = p.to_vec();
+            end.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0xFF]);
+            end
+        });
+
         let mut iter = match prefix {
             Some(p) => {
                 let mut it = db.raw_iterator_cf(cf);
                 if reverse {
-                    // 反向迭代：从 start 处向前搜
+                    // 反向迭代
                     if let Some(s) = start {
                         if s >= p {
                             it.seek(s);
-                            // 跳过 start 自身（marker 已在上一页返回）
                             if it.valid() && it.key().map(|k| k == s).unwrap_or(false) {
                                 it.prev();
                             }
                         } else {
                             // start 在 prefix 之前，从 prefix 末尾开始
-                            it.seek_for_prev(p);
-                            if !it.valid() {
-                                it.seek_to_last();
+                            if let Some(pe) = &prefix_end {
+                                it.seek_for_prev(pe);
                             }
                         }
                     } else {
                         // 没有 start，从 prefix 末尾开始
-                        it.seek_for_prev(p);
-                        if !it.valid() {
-                            it.seek_to_last();
+                        if let Some(pe) = &prefix_end {
+                            it.seek_for_prev(pe);
                         }
                     }
                 } else {
+                    // 正向迭代
                     if let Some(s) = start {
                         if s >= p {
                             it.seek(s);

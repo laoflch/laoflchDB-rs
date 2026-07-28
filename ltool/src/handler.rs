@@ -541,6 +541,17 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
             let _ = crate::tab_image::list_images(app).await;
             return true;
         }
+        KeyCode::F(7) => {
+            app.image_tab.sort_order = if app.image_tab.sort_order == "asc" {
+                "desc".to_string()
+            } else {
+                "asc".to_string()
+            };
+            app.image_tab.pagination = PaginationState::new(20);
+            app.set_status(format!("排序已切换为：{}", if app.image_tab.sort_order == "asc" { "从旧到新" } else { "从新到旧" }));
+            let _ = crate::tab_image::list_images(app).await;
+            return true;
+        }
         _ => {}
     }
 
@@ -686,18 +697,7 @@ async fn handle_image_tab(app: &mut App, event: KeyEvent) -> bool {
             let _ = crate::tab_image::list_images_next(app).await;
             return true;
         }
-        // s 切换排序方向
-        KeyCode::Char('s') if event.modifiers.is_empty() && !app.image_tab.path_popup.is_active() => {
-            app.image_tab.sort_order = if app.image_tab.sort_order == "asc" {
-                "desc".to_string()
-            } else {
-                "asc".to_string()
-            };
-            app.image_tab.pagination = PaginationState::new(20);
-            app.set_status(format!("排序已切换为：{}", if app.image_tab.sort_order == "asc" { "从旧到新" } else { "从新到旧" }));
-            let _ = crate::tab_image::list_images(app).await;
-            return true;
-        }
+        // F7 切换排序方向（已在上面处理，此处不再重复）
         _ => {}
     }
 
@@ -910,6 +910,17 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
             let _ = crate::tab_face::export_faces(app, &export_path).await;
             return true;
         }
+        KeyCode::F(7) => {
+            app.face_tab.sort_order = if app.face_tab.sort_order == "asc" {
+                "desc".to_string()
+            } else {
+                "asc".to_string()
+            };
+            app.face_tab.saved_pagination = PaginationState::new(20);
+            app.set_status(format!("排序已切换为：{}", if app.face_tab.sort_order == "asc" { "从旧到新" } else { "从新到旧" }));
+            let _ = crate::tab_face::list_saved_faces(app).await;
+            return true;
+        }
         _ => {}
     }
 
@@ -1053,18 +1064,7 @@ async fn handle_face_tab(app: &mut App, event: KeyEvent) -> bool {
                 let _ = crate::tab_face::list_saved_faces_next(app).await;
                 return true;
             }
-            // s 切换排序方向
-            KeyCode::Char('s') if event.modifiers.is_empty() => {
-                app.face_tab.sort_order = if app.face_tab.sort_order == "asc" {
-                    "desc".to_string()
-                } else {
-                    "asc".to_string()
-                };
-                app.face_tab.saved_pagination = PaginationState::new(20);
-                app.set_status(format!("排序已切换为：{}", if app.face_tab.sort_order == "asc" { "从旧到新" } else { "从新到旧" }));
-                let _ = crate::tab_face::list_saved_faces(app).await;
-                return true;
-            }
+            // F7 切换排序方向（已在上面处理，此处不再重复）
             _ => {}
         }
     }
