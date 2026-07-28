@@ -18,6 +18,7 @@ use axum::{
     routing::{delete, get, head, put},
 };
 use hmac::{Hmac, Mac};
+use log;
 use sha2::{Digest, Sha256};
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -237,6 +238,10 @@ fn compute_signature(signing_key: &[u8], string_to_sign: &str) -> String {
 }
 
 /// 验证 AWS Signature V4 签名
+///
+/// 支持两种模式：
+/// 1. Authorization 头认证（标准 HTTP 请求）
+/// 2. 预签名 URL 认证（查询参数中的 X-Amz-Signature，rusty-s3 使用此方式）
 fn verify_aws_v4_signature(
     config: &S3Config,
     method: &Method,
@@ -253,11 +258,29 @@ fn verify_aws_v4_signature(
     }
     log::debug!("Body 长度: {}", body.len());
 
-    let auth_header = headers
-        .get("authorization")
-        .or_else(|| headers.get("Authorization"))
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| "缺少 Authorization 头".to_string())?;
+    // 检查是否有 Authorization 头
+    if let Some(auth_value) = headers.get("authorization").or_else(|| headers.get("Authorization")) {
+        if let Ok(auth_str) = auth_value.to_str() {
+            log::debug!("使用 Authorization 头认证");
+            return verify_header_auth(config, method, uri, headers, body, auth_str);
+        }
+    }
+
+    // 否则尝试预签名 URL 认证（查询参数中的 X-Amz-Signature）
+    let query = uri.query().unwrap_or("");
+    log::debug!("使用预签名 URL 认证，查询字符串: {}", query);
+    verify_query_auth(config, method, uri, headers, body, query)
+}
+
+/// 验证 Authorization 头认证
+fn verify_header_auth(
+    config: &S3Config,
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    body: &[u8],
+    auth_header: &str,
+) -> Result<(), String> {
     log::debug!("Authorization 头: {}", auth_header);
 
     let auth = parse_authorization_header(auth_header)?;
@@ -271,7 +294,7 @@ fn verify_aws_v4_signature(
     let timestamp = get_timestamp(headers)?;
     log::debug!("请求时间戳: {}", timestamp);
 
-    // 构建 credential scope (使用客户端的 region 和 service，而不是硬编码！)
+    // 构建 credential scope
     let credential_scope = format!(
         "{}/{}/{}/aws4_request",
         auth.date, auth.region, auth.service
@@ -296,7 +319,7 @@ fn verify_aws_v4_signature(
     let string_to_sign = build_string_to_sign(&timestamp, &credential_scope, &canonical_request);
     log::debug!("StringToSign:\n{}\n", string_to_sign);
 
-    // 计算签名密钥 (使用客户端的 region 和 service)
+    // 计算签名密钥（使用客户端的 region 和 service）
     let signing_key = compute_signing_key(&config.secret_key, &auth.date, &auth.region, &auth.service);
     log::debug!("Signing Key: {}", hex::encode(&signing_key));
 
@@ -305,13 +328,200 @@ fn verify_aws_v4_signature(
     log::debug!("期望签名: {}", expected_signature);
     log::debug!("实际签名: {}", auth.signature);
 
-    // 比较签名（常量时间比较）
     if expected_signature != auth.signature {
         return Err(format!("签名验证失败 (期望={}, 实际={})", expected_signature, auth.signature));
     }
 
-    log::debug!("=== S3 签名验证通过 ===");
+    log::debug!("=== S3 签名验证通过（Authorization 头） ===");
     Ok(())
+}
+
+/// 验证预签名 URL 认证（查询参数中的 X-Amz-Signature）
+fn verify_query_auth(
+    config: &S3Config,
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+    _body: &[u8],
+    query: &str,
+) -> Result<(), String> {
+    // 解析查询参数
+    let params = parse_query_string(query);
+
+    let signature = params.get("X-Amz-Signature")
+        .ok_or_else(|| "缺少 X-Amz-Signature".to_string())?;
+    let credential = params.get("X-Amz-Credential")
+        .ok_or_else(|| "缺少 X-Amz-Credential".to_string())?;
+    let signed_headers_str = params.get("X-Amz-SignedHeaders")
+        .ok_or_else(|| "缺少 X-Amz-SignedHeaders".to_string())?;
+    let date = params.get("X-Amz-Date")
+        .ok_or_else(|| "缺少 X-Amz-Date".to_string())?;
+    let algorithm = params.get("X-Amz-Algorithm")
+        .ok_or_else(|| "缺少 X-Amz-Algorithm".to_string())?;
+
+    log::debug!("预签名 URL 参数: algorithm={}, credential={}, date={}, signed_headers={}",
+        algorithm, credential, date, signed_headers_str);
+
+    // 解析 Credential = access_key/date/region/service/aws4_request
+    let cred_parts: Vec<&str> = credential.split('/').collect();
+    if cred_parts.len() < 5 {
+        return Err("X-Amz-Credential 格式无效".to_string());
+    }
+    let access_key = cred_parts[0];
+    let cred_date = cred_parts[1];
+    let region = cred_parts[2];
+    let service = cred_parts[3];
+
+    log::debug!("解析凭据: access_key={}, date={}, region={}, service={}", access_key, cred_date, region, service);
+
+    // 验证 access key
+    if access_key != config.access_key {
+        return Err(format!("Access Key 无效 (期望={}, 实际={})", config.access_key, access_key));
+    }
+
+    // 验证算法
+    if algorithm != "AWS4-HMAC-SHA256" {
+        return Err(format!("不支持的签名算法: {}", algorithm));
+    }
+
+    // 构建规范查询字符串（移除 X-Amz-Signature）
+    let canonical_querystring = build_canonical_query_string(query, &params);
+
+    // 构建规范头
+    let signed_headers_list: Vec<String> = signed_headers_str.split(';')
+        .map(|s| s.trim().to_string())
+        .collect();
+    let mut canonical_headers = String::new();
+    for h in &signed_headers_list {
+        let h_lower = h.to_lowercase();
+        if let Some(value) = headers.get(&h_lower) {
+            if let Ok(v) = value.to_str() {
+                canonical_headers.push_str(&format!("{}:{}\n", h_lower, v.trim()));
+            }
+        }
+    }
+    let signed_headers_str_joined = signed_headers_list.iter()
+        .map(|h| h.to_lowercase())
+        .collect::<Vec<_>>()
+        .join(";");
+
+    // 预签名 URL 使用 "UNSIGNED-PAYLOAD" 作为 payload hash
+    let payload_hash = "UNSIGNED-PAYLOAD";
+
+    // 构建规范请求
+    let canonical_uri = uri.path();
+    let canonical_request = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        method.as_str(),
+        canonical_uri,
+        canonical_querystring,
+        canonical_headers,
+        signed_headers_str_joined,
+        payload_hash,
+    );
+    log::debug!("Canonical Request:\n{}\n", canonical_request);
+
+    // 构建 credential scope
+    let credential_scope = format!(
+        "{}/{}/{}/aws4_request",
+        cred_date, region, service
+    );
+
+    // 构建待签名字符串
+    let string_to_sign = build_string_to_sign(date, &credential_scope, &canonical_request);
+    log::debug!("StringToSign:\n{}\n", string_to_sign);
+
+    // 计算签名密钥
+    let signing_key = compute_signing_key(&config.secret_key, cred_date, region, service);
+    log::debug!("Signing Key: {}", hex::encode(&signing_key));
+
+    // 计算期望签名
+    let expected_signature = compute_signature(&signing_key, &string_to_sign);
+    log::debug!("期望签名: {}", expected_signature);
+    log::debug!("实际签名: {}", signature);
+
+    if expected_signature != *signature {
+        return Err(format!("签名验证失败 (期望={}, 实际={})", expected_signature, signature));
+    }
+
+    log::debug!("=== S3 签名验证通过（预签名 URL） ===");
+    Ok(())
+}
+
+/// 解析查询字符串为 KV 对
+fn parse_query_string(query: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for pair in query.split('&') {
+        if let Some(idx) = pair.find('=') {
+            let key = url_decode(&pair[..idx]);
+            let value = url_decode(&pair[idx + 1..]);
+            map.insert(key, value);
+        } else {
+            map.insert(url_decode(pair), String::new());
+        }
+    }
+    map
+}
+
+/// 简单的 URL 解码
+fn url_decode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '%' {
+            let hex: String = chars.by_ref().take(2).collect();
+            if let Ok(byte) = u8::from_str_radix(&hex, 16) {
+                result.push(byte as char);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
+/// 构建规范查询字符串（移除 X-Amz-Signature，按 key 排序，URL 编码）
+fn build_canonical_query_string(query: &str, params: &std::collections::HashMap<String, String>) -> String {
+    let mut pairs: Vec<(String, String)> = params.iter()
+        .filter(|(k, _)| *k != "X-Amz-Signature")
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+
+    pairs.iter()
+        .map(|(k, v)| {
+            // URL 编码 key
+            let encoded_k = percent_encode(k);
+            let encoded_v = percent_encode(v);
+            format!("{}={}", encoded_k, encoded_v)
+        })
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+/// 简单的百分比编码（只编码需要编码的字符）
+fn percent_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '~' | '.' => result.push(c),
+            ' ' => result.push_str("%20"),
+            '/' => result.push_str("%2F"),
+            ':' => result.push_str("%3A"),
+            '=' => result.push_str("%3D"),
+            '&' => result.push_str("%26"),
+            '%' => result.push_str("%25"),
+            '@' => result.push_str("%40"),
+            '+' => result.push_str("%2B"),
+            ',' => result.push_str("%2C"),
+            other => {
+                for byte in other.to_string().as_bytes() {
+                    result.push_str(&format!("%{:02X}", byte));
+                }
+            }
+        }
+    }
+    result
 }
 
 // ── XML 响应结构 ──
