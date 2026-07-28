@@ -824,7 +824,7 @@ impl Default for CommandMode {
 pub struct StorageTabState {
     /// S3 端点 URL
     pub endpoint: InputState,
-    /// 认证 token
+    /// 认证 token（laoflchdb REST 模式）
     pub token: String,
     /// 当前 bucket
     pub bucket: InputState,
@@ -838,10 +838,19 @@ pub struct StorageTabState {
     pub list_scroll: usize,
     /// 分页状态
     pub pagination: PaginationState,
-    /// 是否已登录（获取 token）
+    /// 是否已登录（laoflchdb REST 模式）
     pub logged_in: bool,
-    /// 焦点位置：0=endpoint, 1=bucket, 2=prefix, 3=upload_path, 4=download_path
+    /// 焦点位置：0=endpoint, 1=bucket, 2=prefix, 3=upload_path, 4=download_path, 5=access_key, 6=secret_key, 7=region
     pub focus: usize,
+    // ── S3 协议模式 ──
+    /// 是否使用标准 S3 协议
+    pub use_s3: bool,
+    /// S3 Access Key
+    pub access_key: InputState,
+    /// S3 Secret Key
+    pub secret_key: InputState,
+    /// S3 Region
+    pub region: InputState,
     // ── 弹窗状态 ──
     /// 详情弹窗
     pub show_detail: bool,
@@ -885,6 +894,10 @@ impl Default for StorageTabState {
             pagination: PaginationState::new(50),
             logged_in: false,
             focus: 0,
+            use_s3: false,
+            access_key: InputState::new(),
+            secret_key: InputState::new(),
+            region: InputState::with_value("us-east-1"),
             show_detail: false,
             confirm_delete: false,
             delete_key: String::new(),

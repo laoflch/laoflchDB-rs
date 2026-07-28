@@ -2052,6 +2052,16 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
             app.storage_tab.focus = 3;
             return true;
         }
+        KeyCode::F(3) => {
+            // F3: 切换 S3/REST 模式
+            app.storage_tab.use_s3 = !app.storage_tab.use_s3;
+            app.storage_tab.logged_in = false;
+            app.storage_tab.token.clear();
+            app.storage_tab.objects.clear();
+            app.storage_tab.selected_index = None;
+            app.set_status(format!("已切换到 {} 模式", if app.storage_tab.use_s3 { "S3 协议" } else { "REST API" }));
+            return true;
+        }
         _ => {}
     }
 
@@ -2062,10 +2072,18 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                 3
             } else if app.storage_tab.show_download_dialog {
                 4
+            } else if app.storage_tab.use_s3 {
+                7  // 0=endpoint, 1=bucket, 2=prefix, 5=access_key, 6=secret_key, 7=region
             } else {
                 2
             };
             app.storage_tab.focus = (app.storage_tab.focus + 1) % (max_focus + 1);
+            // 跳过 S3 模式下不存在的焦点（3=upload_path, 4=download_path）
+            if !app.storage_tab.show_upload_dialog && !app.storage_tab.show_download_dialog {
+                if app.storage_tab.focus == 3 || app.storage_tab.focus == 4 {
+                    app.storage_tab.focus = if app.storage_tab.use_s3 { 5 } else { 0 };
+                }
+            }
             return true;
         }
         KeyCode::BackTab => {
@@ -2073,6 +2091,8 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                 3
             } else if app.storage_tab.show_download_dialog {
                 4
+            } else if app.storage_tab.use_s3 {
+                7
             } else {
                 2
             };
@@ -2081,6 +2101,12 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
             } else {
                 app.storage_tab.focus - 1
             };
+            // 跳过 S3 模式下不存在的焦点
+            if !app.storage_tab.show_upload_dialog && !app.storage_tab.show_download_dialog {
+                if app.storage_tab.focus == 3 || app.storage_tab.focus == 4 {
+                    app.storage_tab.focus = if app.storage_tab.use_s3 { 5 } else { 0 };
+                }
+            }
             return true;
         }
         _ => {}
@@ -2093,6 +2119,9 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                 0 => app.storage_tab.endpoint.value.push(c),
                 1 => app.storage_tab.bucket.value.push(c),
                 2 => app.storage_tab.prefix.value.push(c),
+                5 => app.storage_tab.access_key.value.push(c),
+                6 => app.storage_tab.secret_key.value.push(c),
+                7 => app.storage_tab.region.value.push(c),
                 _ => {}
             }
             return true;
@@ -2102,6 +2131,9 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                 0 => { app.storage_tab.endpoint.value.pop(); }
                 1 => { app.storage_tab.bucket.value.pop(); }
                 2 => { app.storage_tab.prefix.value.pop(); }
+                5 => { app.storage_tab.access_key.value.pop(); }
+                6 => { app.storage_tab.secret_key.value.pop(); }
+                7 => { app.storage_tab.region.value.pop(); }
                 _ => {}
             }
             return true;
