@@ -2,6 +2,8 @@ pub mod proto {
     tonic::include_proto!("laoflchdb.object_store");
 }
 
+pub mod s3;
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -31,7 +33,17 @@ pub struct ObjectStoreConfig {
     pub schema_name: String,
     /// BlobDB 配置，用于大对象存储
     pub blob_db: BlobDBConfig,
+    /// S3 协议访问密钥
+    pub s3_access_key: String,
+    /// S3 协议秘密密钥
+    pub s3_secret_key: String,
+    /// S3 协议默认 region
+    pub s3_region: String,
 }
+
+fn default_s3_access_key() -> String { "admin".to_string() }
+fn default_s3_secret_key() -> String { "laoflchdb".to_string() }
+fn default_s3_region() -> String { "us-east-1".to_string() }
 
 impl Default for ObjectStoreConfig {
     fn default() -> Self {
@@ -47,6 +59,9 @@ impl Default for ObjectStoreConfig {
                 enable_blob_garbage_collection: true,
                 blob_garbage_collection_age_cutoff: 0.25,
             },
+            s3_access_key: default_s3_access_key(),
+            s3_secret_key: default_s3_secret_key(),
+            s3_region: default_s3_region(),
         }
     }
 }

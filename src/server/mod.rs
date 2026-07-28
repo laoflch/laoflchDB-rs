@@ -158,6 +158,9 @@ impl LaoflchDBServer {
                     db_path: obj_cfg.db_path.clone(),
                     schema_name: "object_store".to_string(),
                     blob_db: laoflchdb_kv_rocksdb_engine::BlobDBConfig::default(),
+                    s3_access_key: obj_cfg.s3_access_key.clone(),
+                    s3_secret_key: obj_cfg.s3_secret_key.clone(),
+                    s3_region: obj_cfg.s3_region.clone(),
                 };
                 match laoflchdb_object_store_service::ObjectStoreServiceImpl::new(&obj_config).await {
                     Ok(svc) => {
@@ -328,6 +331,42 @@ impl LaoflchDBServer {
                                 log::error!("REST 服务启动失败: {}", e);
                             }
                         });
+                    }
+                    "s3" => {
+                        info!("启动 S3 服务: {} (service_id: {:?})", addr, service_id);
+                        started_protocols.push((protocol.to_string(), addr.to_string()));
+                        if let Some(ref os_svc) = object_store_service {
+                            let s3_config = laoflchdb_object_store_service::s3::S3Config {
+                                access_key: config.object_store.as_ref()
+                                    .map(|c| c.s3_access_key.clone())
+                                    .unwrap_or_else(|| "admin".to_string()),
+                                secret_key: config.object_store.as_ref()
+                                    .map(|c| c.s3_secret_key.clone())
+                                    .unwrap_or_else(|| "laoflchdb".to_string()),
+                                region: config.object_store.as_ref()
+                                    .map(|c| c.s3_region.clone())
+                                    .unwrap_or_else(|| "us-east-1".to_string()),
+                            };
+                            let s3_router = laoflchdb_object_store_service::s3::create_s3_router(
+                                os_svc.clone(),
+                                s3_config,
+                            );
+                            let addr_owned = addr.to_string();
+                            tokio::spawn(async move {
+                                let listener = match tokio::net::TcpListener::bind(&addr_owned).await {
+                                    Ok(l) => l,
+                                    Err(e) => {
+                                        log::error!("S3 服务监听失败: {}", e);
+                                        return;
+                                    }
+                                };
+                                if let Err(e) = axum::serve(listener, s3_router).await {
+                                    log::error!("S3 服务错误: {}", e);
+                                }
+                            });
+                        } else {
+                            log::warn!("S3 协议需要启用对象存储服务");
+                        }
                     }
                     other => {
                         log::warn!("不支持的协议类型: {}", other);

@@ -17,6 +17,12 @@ base64 = "0.22"
 chrono = "0.4"
 axum = "0.7"
 bytes = "1.6"
+# S3 协议支持
+quick-xml = { version = "0.31", features = ["serialize"] }
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+time = { version = "0.3", features = ["formatting", "parsing"] }
 
 [build-dependencies]
 tonic-build = "0.11"

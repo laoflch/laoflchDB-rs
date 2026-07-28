@@ -293,7 +293,20 @@ pub struct ObjectStoreConfig {
     /// 对象存储数据路径
     #[serde(default = "default_object_store_db_path")]
     pub db_path: String,
+    /// S3 协议访问密钥（用于 S3 端口认证）
+    #[serde(default = "default_s3_access_key")]
+    pub s3_access_key: String,
+    /// S3 协议秘密密钥
+    #[serde(default = "default_s3_secret_key")]
+    pub s3_secret_key: String,
+    /// S3 协议默认 region
+    #[serde(default = "default_s3_region")]
+    pub s3_region: String,
 }
+
+fn default_s3_access_key() -> String { "admin".to_string() }
+fn default_s3_secret_key() -> String { "laoflchdb".to_string() }
+fn default_s3_region() -> String { "us-east-1".to_string() }
 
 /// 图片服务配置
 #[derive(Debug, Deserialize, Clone)]
