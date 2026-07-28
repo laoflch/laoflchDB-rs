@@ -265,7 +265,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Vector => "F2/Enter查看详情 F3列出条目 F4清空 F5一致性 F6重建 Tab展开菜单 ↑↓条目导航 Enter操作 Esc关闭 | ",
         Tab::Sql => "F1列表Schema F2列表表 F3描述表 F4版本 F5执行 Ctrl+L清空 | ",
         Tab::Index => "F1列表索引 F2查看详情 F3统计 F4搜索 Enter查看详情 | ",
-        Tab::Storage => "F1列出对象 F2上传 F3切换S3/REST ↑↓导航 Enter详情 Delete删除 | ",
+        Tab::Storage => "F1列出 F2上传 F3认证 ↑↓导航 Enter详情 Delete删除 | ",
     };
     let help_span = Span::styled(help_text, Style::default().fg(Color::Gray));
 
@@ -1794,9 +1794,8 @@ fn draw_sql_schema_list_popup(f: &mut Frame, app: &mut App) {
 
 /// 绘制存储 Tab（S3 兼容对象存储浏览器）
 fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
-    let use_s3 = app.storage_tab.use_s3;
-    // 输入区高度：REST模式 9行，S3模式 18行（endpoint + 模式指示 + access_key + secret_key + region + bucket+prefix）
-    let input_height: u16 = if use_s3 { 18 } else { 9 };
+    // 输入区高度：21行（endpoint + access_key + secret_key + region + 认证状态 + bucket+prefix + 模式指示）
+    let input_height: u16 = 21;
 
     // 上下分区：输入区 + 列表区
     let chunks = Layout::default()
@@ -1810,7 +1809,7 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
     let focus = app.storage_tab.focus;
 
     // ── 输入区 ──
-    let input_rows = if use_s3 { 6 } else { 3 };
+    let input_rows = 7;
     let input_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(
@@ -1821,15 +1820,11 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
         .split(chunks[0]);
 
     // 模式指示行
-    let mode_text = if use_s3 {
-        "S3 协议模式（AWS Signature V4）"
-    } else {
-        "REST API 模式（laoflchdb）"
-    };
+    let mode_text = "S3 协议（AWS Signature V4）";
     let mode_block = Block::default()
         .borders(Borders::ALL)
         .title("协议")
-        .border_style(Style::default().fg(if use_s3 { Color::Green } else { Color::Blue }));
+        .border_style(Style::default().fg(Color::Green));
     let mode_para = Paragraph::new(mode_text)
         .block(mode_block)
         .style(Style::default().fg(Color::Gray));
@@ -1849,69 +1844,66 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(endpoint_input, input_chunks[row]);
     row += 1;
 
-    if use_s3 {
-        // S3 模式：Access Key
-        let ak_border = if focus == 5 { Color::Yellow } else { Color::Cyan };
-        let ak_block = Block::default()
-            .borders(Borders::ALL)
-            .title("Access Key")
-            .border_style(Style::default().fg(ak_border).add_modifier(if focus == 5 { Modifier::BOLD } else { Modifier::empty() }));
-        let ak_input = Paragraph::new(app.storage_tab.access_key.value.as_str())
-            .block(ak_block)
-            .style(Style::default().fg(Color::White));
-        f.render_widget(ak_input, input_chunks[row]);
-        row += 1;
+    // Access Key
+    let ak_border = if focus == 5 { Color::Yellow } else { Color::Cyan };
+    let ak_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Access Key")
+        .border_style(Style::default().fg(ak_border).add_modifier(if focus == 5 { Modifier::BOLD } else { Modifier::empty() }));
+    let ak_input = Paragraph::new(app.storage_tab.access_key.value.as_str())
+        .block(ak_block)
+        .style(Style::default().fg(Color::White));
+    f.render_widget(ak_input, input_chunks[row]);
+    row += 1;
 
-        // S3 模式：Secret Key
-        let sk_border = if focus == 6 { Color::Yellow } else { Color::Cyan };
-        let sk_block = Block::default()
-            .borders(Borders::ALL)
-            .title("Secret Key")
-            .border_style(Style::default().fg(sk_border).add_modifier(if focus == 6 { Modifier::BOLD } else { Modifier::empty() }));
-        // 显示为 *** 保护密钥
-        let masked = std::iter::repeat('*')
-            .take(app.storage_tab.secret_key.value.len().min(40))
-            .collect::<String>();
-        let sk_display = if app.storage_tab.secret_key.value.len() > 40 {
-            format!("{}...", masked)
-        } else {
-            masked
-        };
-        let sk_input = Paragraph::new(sk_display.as_str())
-            .block(sk_block)
-            .style(Style::default().fg(Color::White));
-        f.render_widget(sk_input, input_chunks[row]);
-        row += 1;
-
-        // S3 模式：Region
-        let region_border = if focus == 7 { Color::Yellow } else { Color::Cyan };
-        let region_block = Block::default()
-            .borders(Borders::ALL)
-            .title("Region")
-            .border_style(Style::default().fg(region_border).add_modifier(if focus == 7 { Modifier::BOLD } else { Modifier::empty() }));
-        let region_input = Paragraph::new(app.storage_tab.region.value.as_str())
-            .block(region_block)
-            .style(Style::default().fg(Color::White));
-        f.render_widget(region_input, input_chunks[row]);
-        row += 1;
+    // Secret Key
+    let sk_border = if focus == 6 { Color::Yellow } else { Color::Cyan };
+    let sk_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Secret Key")
+        .border_style(Style::default().fg(sk_border).add_modifier(if focus == 6 { Modifier::BOLD } else { Modifier::empty() }));
+    // 显示为 *** 保护密钥
+    let masked = std::iter::repeat('*')
+        .take(app.storage_tab.secret_key.value.len().min(40))
+        .collect::<String>();
+    let sk_display = if app.storage_tab.secret_key.value.len() > 40 {
+        format!("{}...", masked)
     } else {
-        // REST 模式：登录状态
-        let status_text = if app.storage_tab.logged_in {
-            let t = &app.storage_tab.token;
-            format!("✓ 已登录（token: {}...）", &t[..8.min(t.len())])
-        } else {
-            "✗ 未登录，将使用登录凭据自动登录".to_string()
-        };
-        let status_block = Block::default()
-            .borders(Borders::ALL)
-            .title("认证状态")
-            .border_style(Style::default().fg(if app.storage_tab.logged_in { Color::Green } else { Color::Yellow }));
-        let status_para = Paragraph::new(status_text)
-            .block(status_block)
-            .style(Style::default().fg(Color::Gray));
-        f.render_widget(status_para, input_chunks[row]);
-        row += 1;
-    }
+        masked
+    };
+    let sk_input = Paragraph::new(sk_display.as_str())
+        .block(sk_block)
+        .style(Style::default().fg(Color::White));
+    f.render_widget(sk_input, input_chunks[row]);
+    row += 1;
+
+    // Region
+    let region_border = if focus == 7 { Color::Yellow } else { Color::Cyan };
+    let region_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Region")
+        .border_style(Style::default().fg(region_border).add_modifier(if focus == 7 { Modifier::BOLD } else { Modifier::empty() }));
+    let region_input = Paragraph::new(app.storage_tab.region.value.as_str())
+        .block(region_block)
+        .style(Style::default().fg(Color::White));
+    f.render_widget(region_input, input_chunks[row]);
+    row += 1;
+
+    // 认证状态
+    let s3_status_text = if app.storage_tab.s3_logged_in {
+        format!("✓ 已认证（{}）", app.storage_tab.access_key.value)
+    } else {
+        "✗ 未认证，按 F3 验证凭据".to_string()
+    };
+    let s3_status_block = Block::default()
+        .borders(Borders::ALL)
+        .title("S3 认证状态")
+        .border_style(Style::default().fg(if app.storage_tab.s3_logged_in { Color::Green } else { Color::Yellow }));
+    let s3_status_para = Paragraph::new(s3_status_text)
+        .block(s3_status_block)
+        .style(Style::default().fg(Color::Gray));
+    f.render_widget(s3_status_para, input_chunks[row]);
+    row += 1;
 
     // bucket + prefix
     let bucket_prefix = Layout::default()
@@ -1948,7 +1940,7 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(list_block, chunks[1]);
 
     if app.storage_tab.objects.is_empty() {
-        let empty_text = Paragraph::new("按 F1 列出对象 ｜ F2 上传 ｜ Enter 查看详情 ｜ Delete 删除")
+        let empty_text = Paragraph::new("按 F1 列出对象 ｜ F2 上传 ｜ F3 认证 ｜ Enter 查看详情 ｜ Delete 删除")
             .style(Style::default().fg(Color::Gray))
             .alignment(Alignment::Center);
         f.render_widget(empty_text, list_inner);

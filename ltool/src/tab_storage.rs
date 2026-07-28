@@ -1,8 +1,6 @@
-//! 存储 Tab：S3 兼容对象存储浏览器
+//! S3 Tab：标准 S3 协议对象存储浏览器
 //!
-//! 支持两种模式：
-//! - REST 模式：laoflchdb 的 REST API（Bearer Token 认证，JSON 响应）
-//! - S3 模式：标准 S3 协议（AWS Signature V4 签名，XML 响应）
+//! 使用 AWS Signature V4 签名认证，XML 响应格式。
 
 use std::time::Duration;
 
@@ -47,7 +45,7 @@ fn get_s3_client(app: &App) -> Result<(Bucket, Credentials)> {
     Ok((bucket, credentials))
 }
 
-/// 发送 S3 请求并返回响应文本
+/// 发送 S3 GET 请求并返回响应文本
 async fn s3_request<'a, A: S3Action<'a>>(action: &A) -> Result<String> {
     let url = action.sign(Duration::from_secs(3600));
     let client = reqwest::Client::new();
@@ -156,68 +154,32 @@ fn infer_content_type(key: &str) -> String {
 
 // ── 主要 API 函数 ──
 
-/// 登录（仅 REST 模式需要）
+/// S3 认证：通过 HeadBucket 验证凭据
 pub async fn login(app: &mut App) -> Result<()> {
-    if app.storage_tab.use_s3 {
-        // S3 模式不需要登录
-        return Ok(());
-    }
-
-    let endpoint = app.storage_tab.endpoint.value.trim().to_string();
-
-    // 从 endpoint 推导基础 URL
-    let base_url = endpoint
-        .trim_end_matches('/')
-        .trim_end_matches("/api/v1/object-store")
-        .trim_end_matches('/')
-        .to_string();
-
-    let login_url = format!("{}/api/v1/auth/login", base_url);
+    let (bucket, credentials) = get_s3_client(app)?;
+    let action = bucket.head_bucket(Some(&credentials));
+    let url = action.sign(Duration::from_secs(3600));
 
     let client = reqwest::Client::new();
     let resp = client
-        .post(&login_url)
-        .json(&serde_json::json!({
-            "username": app.username,
-            "password": app.password,
-        }))
+        .head(url)
         .send()
         .await
-        .map_err(|e| anyhow!("登录请求失败: {}", e))?;
+        .map_err(|e| anyhow!("S3 认证请求失败: {}", e))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("登录失败 ({}): {}", status, body));
+        return Err(anyhow!("S3 认证失败 ({}): {}", status, body));
     }
 
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| anyhow!("解析登录响应失败: {}", e))?;
-
-    let token = body["token"]
-        .as_str()
-        .ok_or_else(|| anyhow!("登录响应中缺少 token"))?
-        .to_string();
-
-    app.storage_tab.token = token;
-    app.storage_tab.logged_in = true;
-    app.set_status(format!("登录成功（{}）", Local::now().format("%H:%M:%S")));
+    app.storage_tab.s3_logged_in = true;
+    app.set_status(format!("S3 认证成功（{}）", Local::now().format("%H:%M:%S")));
     Ok(())
 }
 
 /// 列出对象
 pub async fn list_objects(app: &mut App) -> Result<()> {
-    if app.storage_tab.use_s3 {
-        s3_list_objects(app).await
-    } else {
-        rest_list_objects(app).await
-    }
-}
-
-/// S3 模式：列出对象
-async fn s3_list_objects(app: &mut App) -> Result<()> {
     let (bucket, credentials) = get_s3_client(app)?;
     let prefix = app.storage_tab.prefix.value.trim().to_string();
 
@@ -241,89 +203,8 @@ async fn s3_list_objects(app: &mut App) -> Result<()> {
     Ok(())
 }
 
-/// REST 模式：列出对象
-async fn rest_list_objects(app: &mut App) -> Result<()> {
-    if !app.storage_tab.logged_in {
-        login(app).await?;
-    }
-
-    let endpoint = app.storage_tab.endpoint.value.trim().to_string();
-    let bucket = app.storage_tab.bucket.value.trim().to_string();
-    let prefix = app.storage_tab.prefix.value.trim().to_string();
-    let marker = app.storage_tab.pagination.marker.clone();
-
-    let list_url = if prefix.is_empty() {
-        format!("{}/{}", endpoint.trim_end_matches('/'), bucket)
-    } else {
-        format!(
-            "{}/{}/{}?delimiter=/",
-            endpoint.trim_end_matches('/'),
-            bucket,
-            prefix
-        )
-    };
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(&list_url)
-        .query(&[("max_keys", "50"), ("marker", &marker)])
-        .header("Authorization", format!("Bearer {}", app.storage_tab.token))
-        .send()
-        .await
-        .map_err(|e| anyhow!("列出对象失败: {}", e))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if status == 401 || status == 403 {
-            app.storage_tab.logged_in = false;
-            return login(app).await;
-        }
-        return Err(anyhow!("列出对象失败 ({}): {}", status, body));
-    }
-
-    let body: serde_json::Value = resp
-        .json()
-        .await
-        .map_err(|e| anyhow!("解析响应失败: {}", e))?;
-
-    let objects: Vec<StorageObject> = body["objects"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .map(|v| StorageObject {
-                    key: v["key"].as_str().unwrap_or("").to_string(),
-                    size: v["size"].as_i64().unwrap_or(0),
-                    last_modified: v["last_modified"].as_str().unwrap_or("").to_string(),
-                    content_type: v["content_type"].as_str().unwrap_or("").to_string(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let is_truncated = body["is_truncated"].as_bool().unwrap_or(false);
-    let next_marker = body["next_marker"].as_str().unwrap_or("").to_string();
-
-    let count = objects.len();
-    app.storage_tab.objects = objects;
-    app.storage_tab.selected_index = if count > 0 { Some(0) } else { None };
-    app.storage_tab.list_scroll = 0;
-    app.storage_tab.pagination.on_response(&next_marker, is_truncated, count);
-    app.set_status(format!("bucket '{}' 下有 {} 个对象", bucket, count));
-    Ok(())
-}
-
 /// 获取对象内容
 pub async fn get_object(app: &mut App, key: &str) -> Result<Vec<u8>> {
-    if app.storage_tab.use_s3 {
-        s3_get_object(app, key).await
-    } else {
-        rest_get_object(app, key).await
-    }
-}
-
-/// S3 模式：获取对象
-async fn s3_get_object(app: &mut App, key: &str) -> Result<Vec<u8>> {
     let (bucket, credentials) = get_s3_client(app)?;
     let action = bucket.get_object(Some(&credentials), key);
     let url = action.sign(Duration::from_secs(3600));
@@ -344,40 +225,8 @@ async fn s3_get_object(app: &mut App, key: &str) -> Result<Vec<u8>> {
     Ok(data.to_vec())
 }
 
-/// REST 模式：获取对象
-async fn rest_get_object(app: &mut App, key: &str) -> Result<Vec<u8>> {
-    let endpoint = app.storage_tab.endpoint.value.trim().to_string();
-    let bucket = app.storage_tab.bucket.value.trim().to_string();
-    let url = format!("{}/{}/{}", endpoint.trim_end_matches('/'), bucket, key);
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(&url)
-        .header("Authorization", format!("Bearer {}", app.storage_tab.token))
-        .send()
-        .await
-        .map_err(|e| anyhow!("获取对象失败: {}", e))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        return Err(anyhow!("获取对象失败 ({}): {}", status, resp.status().canonical_reason().unwrap_or("")));
-    }
-
-    let data = resp.bytes().await.map_err(|e| anyhow!("读取数据失败: {}", e))?;
-    Ok(data.to_vec())
-}
-
 /// 上传对象
 pub async fn put_object(app: &mut App, key: &str, data: Vec<u8>, content_type: &str) -> Result<()> {
-    if app.storage_tab.use_s3 {
-        s3_put_object(app, key, data, content_type).await
-    } else {
-        rest_put_object(app, key, data, content_type).await
-    }
-}
-
-/// S3 模式：上传对象
-async fn s3_put_object(app: &mut App, key: &str, data: Vec<u8>, content_type: &str) -> Result<()> {
     let (bucket, credentials) = get_s3_client(app)?;
     let action = bucket.put_object(Some(&credentials), key);
     s3_put_request(&action, data, content_type).await?;
@@ -385,70 +234,11 @@ async fn s3_put_object(app: &mut App, key: &str, data: Vec<u8>, content_type: &s
     Ok(())
 }
 
-/// REST 模式：上传对象
-async fn rest_put_object(app: &mut App, key: &str, data: Vec<u8>, content_type: &str) -> Result<()> {
-    let endpoint = app.storage_tab.endpoint.value.trim().to_string();
-    let bucket = app.storage_tab.bucket.value.trim().to_string();
-    let url = format!("{}/{}/{}", endpoint.trim_end_matches('/'), bucket, key);
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .put(&url)
-        .header("Content-Type", content_type)
-        .header("Authorization", format!("Bearer {}", app.storage_tab.token))
-        .body(data)
-        .send()
-        .await
-        .map_err(|e| anyhow!("上传对象失败: {}", e))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("上传失败 ({}): {}", status, body));
-    }
-
-    app.set_status(format!("对象 '{}' 上传成功", key));
-    Ok(())
-}
-
 /// 删除对象
 pub async fn delete_object(app: &mut App, key: &str) -> Result<()> {
-    if app.storage_tab.use_s3 {
-        s3_delete_object(app, key).await
-    } else {
-        rest_delete_object(app, key).await
-    }
-}
-
-/// S3 模式：删除对象
-async fn s3_delete_object(app: &mut App, key: &str) -> Result<()> {
     let (bucket, credentials) = get_s3_client(app)?;
     let action = bucket.delete_object(Some(&credentials), key);
     s3_delete_request(&action).await?;
-    app.set_status(format!("对象 '{}' 已删除", key));
-    Ok(())
-}
-
-/// REST 模式：删除对象
-async fn rest_delete_object(app: &mut App, key: &str) -> Result<()> {
-    let endpoint = app.storage_tab.endpoint.value.trim().to_string();
-    let bucket = app.storage_tab.bucket.value.trim().to_string();
-    let url = format!("{}/{}/{}", endpoint.trim_end_matches('/'), bucket, key);
-
-    let client = reqwest::Client::new();
-    let resp = client
-        .delete(&url)
-        .header("Authorization", format!("Bearer {}", app.storage_tab.token))
-        .send()
-        .await
-        .map_err(|e| anyhow!("删除对象失败: {}", e))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("删除失败 ({}): {}", status, body));
-    }
-
     app.set_status(format!("对象 '{}' 已删除", key));
     Ok(())
 }

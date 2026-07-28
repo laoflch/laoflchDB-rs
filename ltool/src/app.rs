@@ -24,7 +24,7 @@ impl Tab {
             Tab::Vector => "3:向量",
             Tab::Sql => "4:SQL",
             Tab::Index => "5:索引",
-            Tab::Storage => "6:存储",
+            Tab::Storage => "6:S3",
         }
     }
 
@@ -824,8 +824,6 @@ impl Default for CommandMode {
 pub struct StorageTabState {
     /// S3 端点 URL
     pub endpoint: InputState,
-    /// 认证 token（laoflchdb REST 模式）
-    pub token: String,
     /// 当前 bucket
     pub bucket: InputState,
     /// 当前前缀（路径）
@@ -838,13 +836,10 @@ pub struct StorageTabState {
     pub list_scroll: usize,
     /// 分页状态
     pub pagination: PaginationState,
-    /// 是否已登录（laoflchdb REST 模式）
-    pub logged_in: bool,
+    /// 是否已通过 S3 认证
+    pub s3_logged_in: bool,
     /// 焦点位置：0=endpoint, 1=bucket, 2=prefix, 3=upload_path, 4=download_path, 5=access_key, 6=secret_key, 7=region
     pub focus: usize,
-    // ── S3 协议模式 ──
-    /// 是否使用标准 S3 协议
-    pub use_s3: bool,
     /// S3 Access Key
     pub access_key: InputState,
     /// S3 Secret Key
@@ -884,17 +879,15 @@ pub struct StorageObject {
 impl Default for StorageTabState {
     fn default() -> Self {
         Self {
-            endpoint: InputState::with_value("http://localhost:8080/api/v1/object-store"),
-            token: String::new(),
+            endpoint: InputState::with_value("http://localhost:9000"),
             bucket: InputState::with_value("images"),
             prefix: InputState::new(),
             objects: Vec::new(),
             selected_index: None,
             list_scroll: 0,
             pagination: PaginationState::new(50),
-            logged_in: false,
+            s3_logged_in: false,
             focus: 0,
-            use_s3: false,
             access_key: InputState::new(),
             secret_key: InputState::new(),
             region: InputState::with_value("us-east-1"),
@@ -940,7 +933,7 @@ impl App {
             username,
             password,
             logged_in: false,
-            status_message: "ltool - LaoflchDB TUI 客户端，Alt+1~5 切换 Tab，Ctrl+Q 退出".to_string(),
+            status_message: "ltool - LaoflchDB TUI 客户端，Alt+1~6 切换 Tab，Ctrl+Q 退出".to_string(),
             status_is_error: false,
             should_quit: false,
             image_tab: ImageTabState::default(),

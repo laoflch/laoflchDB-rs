@@ -244,29 +244,43 @@ fn verify_aws_v4_signature(
     headers: &HeaderMap,
     body: &[u8],
 ) -> Result<(), String> {
+    log::debug!("=== S3 签名验证开始 ===");
+    log::debug!("方法: {:?}", method);
+    log::debug!("URI: {:?}", uri);
+    log::debug!("请求头:");
+    for (k, v) in headers.iter() {
+        log::debug!("  {}: {:?}", k, v);
+    }
+    log::debug!("Body 长度: {}", body.len());
+
     let auth_header = headers
         .get("authorization")
         .or_else(|| headers.get("Authorization"))
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| "缺少 Authorization 头".to_string())?;
+    log::debug!("Authorization 头: {}", auth_header);
 
     let auth = parse_authorization_header(auth_header)?;
+    log::debug!("解析后的 auth: access_key={}, date={}, region={}, service={}, signed_headers={:?}", auth.access_key, auth.date, auth.region, auth.service, auth.signed_headers);
 
     // 验证 access key
     if auth.access_key != config.access_key {
-        return Err("Access Key 无效".to_string());
+        return Err(format!("Access Key 无效 (期望={}, 实际={})", config.access_key, auth.access_key));
     }
 
     let timestamp = get_timestamp(headers)?;
+    log::debug!("请求时间戳: {}", timestamp);
 
-    // 构建 credential scope
+    // 构建 credential scope (使用客户端的 region 和 service，而不是硬编码！)
     let credential_scope = format!(
         "{}/{}/{}/aws4_request",
-        auth.date, config.region, "s3"
+        auth.date, auth.region, auth.service
     );
+    log::debug!("Credential Scope: {}", credential_scope);
 
     // 获取 payload hash
     let payload_hash = get_payload_hash(headers, body);
+    log::debug!("Payload Hash: {}", payload_hash);
 
     // 构建规范请求
     let canonical_request = build_canonical_request(
@@ -276,21 +290,27 @@ fn verify_aws_v4_signature(
         headers,
         &payload_hash,
     );
+    log::debug!("Canonical Request:\n{}\n", canonical_request);
 
     // 构建待签名字符串
     let string_to_sign = build_string_to_sign(&timestamp, &credential_scope, &canonical_request);
+    log::debug!("StringToSign:\n{}\n", string_to_sign);
 
-    // 计算签名密钥
-    let signing_key = compute_signing_key(&config.secret_key, &auth.date, &config.region, "s3");
+    // 计算签名密钥 (使用客户端的 region 和 service)
+    let signing_key = compute_signing_key(&config.secret_key, &auth.date, &auth.region, &auth.service);
+    log::debug!("Signing Key: {}", hex::encode(&signing_key));
 
     // 计算期望签名
     let expected_signature = compute_signature(&signing_key, &string_to_sign);
+    log::debug!("期望签名: {}", expected_signature);
+    log::debug!("实际签名: {}", auth.signature);
 
     // 比较签名（常量时间比较）
     if expected_signature != auth.signature {
-        return Err("签名验证失败".to_string());
+        return Err(format!("签名验证失败 (期望={}, 实际={})", expected_signature, auth.signature));
     }
 
+    log::debug!("=== S3 签名验证通过 ===");
     Ok(())
 }
 
@@ -532,6 +552,36 @@ async fn create_bucket_handler(
             }
         }
         Err(e) => s3_error_response("InternalError", &e.message(), StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
+
+/// 检查 Bucket 是否存在 (HEAD /{bucket})
+async fn head_bucket_handler(
+    State(state): State<Arc<S3State>>,
+    Path(bucket): Path<String>,
+) -> impl IntoResponse {
+    // 通过列出对象检查 bucket 是否存在（max_keys=1，没有 key 表示只检查 bucket）
+    let req = tonic::Request::new(ListObjectsRequest {
+        bucket: bucket.clone(),
+        prefix: String::new(),
+        delimiter: String::new(),
+        max_keys: 1,
+        marker: String::new(),
+        reverse: false,
+    });
+    match state.service.list_objects(req).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            let mut headers = HeaderMap::new();
+            headers.insert("x-amz-bucket-region", state.config.region.parse().unwrap());
+            headers.insert("Content-Length", "0".parse().unwrap());
+            (StatusCode::OK, headers)
+        }
+        Err(_) => {
+            let mut headers = HeaderMap::new();
+            headers.insert("Content-Type", "application/xml".parse().unwrap());
+            (StatusCode::NOT_FOUND, headers)
+        }
     }
 }
 
@@ -824,6 +874,8 @@ pub fn create_s3_router(
         .route("/{bucket}", delete(delete_bucket_handler))
         // GET /{bucket} - ListObjects
         .route("/{bucket}", get(list_objects_handler))
+        // HEAD /{bucket} - HeadBucket
+        .route("/{bucket}", head(head_bucket_handler))
         // PUT /{bucket}/{key} - PutObject
         .route("/{bucket}/{key}", put(put_object_handler))
         // GET /{bucket}/{key} - GetObject

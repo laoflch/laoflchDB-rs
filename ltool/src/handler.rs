@@ -2053,13 +2053,13 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
             return true;
         }
         KeyCode::F(3) => {
-            // F3: 切换 S3/REST 模式
-            app.storage_tab.use_s3 = !app.storage_tab.use_s3;
-            app.storage_tab.logged_in = false;
-            app.storage_tab.token.clear();
-            app.storage_tab.objects.clear();
-            app.storage_tab.selected_index = None;
-            app.set_status(format!("已切换到 {} 模式", if app.storage_tab.use_s3 { "S3 协议" } else { "REST API" }));
+            // F3: 认证
+            match crate::tab_storage::login(app).await {
+                Ok(_) => {}
+                Err(e) => {
+                    app.set_status(format!("S3 认证失败: {}", e));
+                }
+            }
             return true;
         }
         _ => {}
@@ -2072,16 +2072,14 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                 3
             } else if app.storage_tab.show_download_dialog {
                 4
-            } else if app.storage_tab.use_s3 {
-                7  // 0=endpoint, 1=bucket, 2=prefix, 5=access_key, 6=secret_key, 7=region
             } else {
-                2
+                7  // 0=endpoint, 1=bucket, 2=prefix, 5=access_key, 6=secret_key, 7=region
             };
             app.storage_tab.focus = (app.storage_tab.focus + 1) % (max_focus + 1);
-            // 跳过 S3 模式下不存在的焦点（3=upload_path, 4=download_path）
+            // 跳过弹窗对话框焦点（3=upload_path, 4=download_path）
             if !app.storage_tab.show_upload_dialog && !app.storage_tab.show_download_dialog {
                 if app.storage_tab.focus == 3 || app.storage_tab.focus == 4 {
-                    app.storage_tab.focus = if app.storage_tab.use_s3 { 5 } else { 0 };
+                    app.storage_tab.focus = 5;
                 }
             }
             return true;
@@ -2091,20 +2089,18 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                 3
             } else if app.storage_tab.show_download_dialog {
                 4
-            } else if app.storage_tab.use_s3 {
-                7
             } else {
-                2
+                7
             };
             app.storage_tab.focus = if app.storage_tab.focus == 0 {
                 max_focus
             } else {
                 app.storage_tab.focus - 1
             };
-            // 跳过 S3 模式下不存在的焦点
+            // 跳过弹窗对话框焦点
             if !app.storage_tab.show_upload_dialog && !app.storage_tab.show_download_dialog {
                 if app.storage_tab.focus == 3 || app.storage_tab.focus == 4 {
-                    app.storage_tab.focus = if app.storage_tab.use_s3 { 5 } else { 0 };
+                    app.storage_tab.focus = 2;
                 }
             }
             return true;
