@@ -364,6 +364,7 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
                 Some(data_prefix.as_bytes()),
                 start_key.as_deref(),
                 Some(max_keys),
+                req.reverse,
             )
             .map_err(|e| Status::internal(format!("Failed to list objects: {}", e)))?;
 
@@ -767,6 +768,8 @@ struct ListObjectsQuery {
     max_keys: i32,
     #[serde(default)]
     marker: String,
+    #[serde(default)]
+    reverse: bool,
 }
 
 async fn list_objects_handler(
@@ -780,6 +783,7 @@ async fn list_objects_handler(
         delimiter: query.delimiter,
         max_keys: query.max_keys,
         marker: query.marker,
+        reverse: query.reverse,
     });
     match service.list_objects(req).await {
         Ok(resp) => {

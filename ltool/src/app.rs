@@ -209,6 +209,8 @@ pub struct ImageTabState {
     pub search_selected: Option<usize>,
     /// 搜索时使用的索引名称（用于弹窗标题展示）
     pub search_index_name: String,
+    /// 排序方向：asc（从旧到新）或 desc（从新到旧）
+    pub sort_order: String,
     /// 图片列表分页状态
     pub pagination: PaginationState,
 }
@@ -356,6 +358,7 @@ impl Default for ImageTabState {
             search_results_scroll: 0,
             search_selected: None,
             search_index_name: String::new(),
+            sort_order: "asc".to_string(),
             pagination: PaginationState::new(20),
         }
     }
@@ -412,6 +415,8 @@ pub struct FaceTabState {
     pub face_search_scroll: usize,
     /// 已保存人脸列表分页状态
     pub saved_pagination: PaginationState,
+    /// 排序方向：asc（从旧到新）或 desc（从新到旧）
+    pub sort_order: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -463,6 +468,7 @@ impl Default for FaceTabState {
             face_search_results: Vec::new(),
             face_search_scroll: 0,
             saved_pagination: PaginationState::new(20),
+            sort_order: "asc".to_string(),
         }
     }
 }

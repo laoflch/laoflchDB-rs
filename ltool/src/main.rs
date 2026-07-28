@@ -183,6 +183,7 @@ async fn run_check(cli: &Cli) -> Result<()> {
             prefix: String::new(),
             max_keys: 5,
             marker: String::new(),
+            sort_order: String::new(),
         });
         let resp = clients.image.list_images(req).await?.into_inner();
         println!("OK ({} 张图片)", resp.images.len());

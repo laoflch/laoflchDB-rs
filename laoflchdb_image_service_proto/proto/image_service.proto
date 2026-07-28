@@ -155,6 +155,8 @@ message ListImagesRequest {
   string prefix = 2;
   int32 max_keys = 3;
   string marker = 4;
+  // 排序方向：asc（从旧到新，默认）或 desc（从新到旧）
+  string sort_order = 5;
 }
 
 message ListImagesResponse {

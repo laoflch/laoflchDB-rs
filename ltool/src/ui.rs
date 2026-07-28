@@ -261,6 +261,19 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let help_span = Span::styled(help_text, Style::default().fg(Color::Gray));
 
+    // 排序方向显示
+    let sort_span = match app.current_tab {
+        Tab::Image => {
+            let order = if app.image_tab.sort_order == "asc" { "↑旧→新" } else { "↓新→旧" };
+            Span::styled(format!("排序:{} ", order), Style::default().fg(Color::Cyan))
+        }
+        Tab::Face => {
+            let order = if app.face_tab.sort_order == "asc" { "↑旧→新" } else { "↓新→旧" };
+            Span::styled(format!("排序:{} ", order), Style::default().fg(Color::Cyan))
+        }
+        _ => Span::raw(""),
+    };
+
     // 图片 Tab 在状态栏显示 bucket/key（留空表示自动生成）
     let ctx_span = if app.current_tab == Tab::Image {
         Span::styled(
@@ -282,7 +295,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
     };
     let msg_span = Span::styled(&app.status_message, Style::default().fg(msg_color));
 
-    let line = Line::from(vec![login_span, conn_span, tab_span, help_span, ctx_span, msg_span]);
+    let line = Line::from(vec![login_span, conn_span, tab_span, help_span, sort_span, ctx_span, msg_span]);
     let block = Block::default().borders(Borders::ALL);
     let p = Paragraph::new(line).block(block);
     f.render_widget(p, area);

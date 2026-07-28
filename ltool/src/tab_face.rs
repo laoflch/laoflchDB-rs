@@ -416,6 +416,7 @@ pub async fn list_saved_faces(app: &mut App) -> Result<()> {
         prefix: String::new(),
         max_keys: pagination.page_size,
         marker: pagination.marker.clone(),
+        sort_order: app.face_tab.sort_order.clone(),
     };
 
     app.set_status("正在获取已保存人脸列表...");

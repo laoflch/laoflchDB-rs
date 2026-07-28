@@ -78,6 +78,7 @@ message ListObjectsRequest {
   string delimiter = 3;
   int32 max_keys = 4;
   string marker = 5;
+  bool reverse = 6;
 }
 
 message ObjectInfo {

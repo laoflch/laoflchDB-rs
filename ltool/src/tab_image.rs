@@ -302,6 +302,7 @@ pub async fn list_images(app: &mut App) -> Result<()> {
         prefix: String::new(),
         max_keys: pagination.page_size,
         marker: pagination.marker.clone(),
+        sort_order: app.image_tab.sort_order.clone(),
     };
 
     app.set_status("正在列出图片...");

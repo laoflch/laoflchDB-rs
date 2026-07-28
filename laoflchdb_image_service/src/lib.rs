@@ -840,6 +840,7 @@ impl ImageService for ImageServiceImpl {
         let req = request.into_inner();
         let bucket = self.resolve_bucket(&req.bucket);
         let max_keys = if req.max_keys <= 0 { 100 } else { req.max_keys as usize };
+        let reverse = req.sort_order == "desc";
 
         // 列出所有元数据 key
         let meta_prefix = format!("{}{}", IMAGE_META_PREFIX, req.prefix);
@@ -849,6 +850,7 @@ impl ImageService for ImageServiceImpl {
             delimiter: String::new(),
             max_keys: max_keys as i32,
             marker: req.marker.clone(),
+            reverse,
         });
         let resp = self.object_store.list_objects(list_req).await?.into_inner();
         if !resp.success {
@@ -1052,6 +1054,8 @@ struct ListImagesQuery {
     max_keys: i32,
     #[serde(default)]
     marker: String,
+    #[serde(default)]
+    sort_order: String,
 }
 
 async fn list_images_handler(
@@ -1063,6 +1067,7 @@ async fn list_images_handler(
         prefix: query.prefix,
         max_keys: query.max_keys,
         marker: query.marker,
+        sort_order: query.sort_order,
     });
     match service.list_images(req).await {
         Ok(resp) => {

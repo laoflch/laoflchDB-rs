@@ -239,7 +239,7 @@ impl KVRocksDBEngine {
         self.db.read().unwrap().path().to_string_lossy().to_string()
     }
 
-    pub fn list_keys(&self, table: &str, prefix: Option<&[u8]>, start: Option<&[u8]>, limit: Option<usize>) -> Result<Vec<Vec<u8>>, KVRocksDBError> {
+    pub fn list_keys(&self, table: &str, prefix: Option<&[u8]>, start: Option<&[u8]>, limit: Option<usize>, reverse: bool) -> Result<Vec<Vec<u8>>, KVRocksDBError> {
         let cf_name = Self::get_cf_name(table);
         let db = self.db.read().unwrap();
         let cf = db.cf_handle(&cf_name)
@@ -249,37 +249,71 @@ impl KVRocksDBEngine {
         let mut iter = match prefix {
             Some(p) => {
                 let mut it = db.raw_iterator_cf(cf);
-                // 如果指定了 start 且 start >= prefix，则从 start 处开始
-                // 否则从 prefix 处开始
-                if let Some(s) = start {
-                    if s >= p {
-                        it.seek(s);
-                        // 跳过 start 自身（marker 已在上一页返回）
-                        if it.valid() && it.key().map(|k| k == s).unwrap_or(false) {
-                            it.next();
+                if reverse {
+                    // 反向迭代：从 start 处向前搜
+                    if let Some(s) = start {
+                        if s >= p {
+                            it.seek(s);
+                            // 跳过 start 自身（marker 已在上一页返回）
+                            if it.valid() && it.key().map(|k| k == s).unwrap_or(false) {
+                                it.prev();
+                            }
+                        } else {
+                            // start 在 prefix 之前，从 prefix 末尾开始
+                            it.seek_for_prev(p);
+                            if !it.valid() {
+                                it.seek_to_last();
+                            }
+                        }
+                    } else {
+                        // 没有 start，从 prefix 末尾开始
+                        it.seek_for_prev(p);
+                        if !it.valid() {
+                            it.seek_to_last();
+                        }
+                    }
+                } else {
+                    if let Some(s) = start {
+                        if s >= p {
+                            it.seek(s);
+                            if it.valid() && it.key().map(|k| k == s).unwrap_or(false) {
+                                it.next();
+                            }
+                        } else {
+                            it.seek(p);
                         }
                     } else {
                         it.seek(p);
                     }
-                } else {
-                    it.seek(p);
                 }
                 it
             }
             None => {
                 let mut it = db.raw_iterator_cf(cf);
-                if let Some(s) = start {
-                    it.seek(s);
-                    // 跳过 start 自身
-                    if it.valid() && it.key().map(|k| k == s).unwrap_or(false) {
-                        it.next();
+                if reverse {
+                    if let Some(s) = start {
+                        it.seek(s);
+                        if it.valid() && it.key().map(|k| k == s).unwrap_or(false) {
+                            it.prev();
+                        }
+                    } else {
+                        it.seek_to_last();
                     }
                 } else {
-                    it.seek_to_first();
+                    if let Some(s) = start {
+                        it.seek(s);
+                        if it.valid() && it.key().map(|k| k == s).unwrap_or(false) {
+                            it.next();
+                        }
+                    } else {
+                        it.seek_to_first();
+                    }
                 }
                 it
             }
         };
+
+        let advance: fn(&mut rocksdb::DBRawIterator<'_>) = if reverse { |it| it.prev() } else { |it| it.next() };
 
         while iter.valid() {
             if let Some(k) = iter.key() {
@@ -297,7 +331,7 @@ impl KVRocksDBEngine {
                 } else if prefix.is_some() {
                     break;
                 }
-                iter.next();
+                advance(&mut iter);
             } else {
                 break;
             }
