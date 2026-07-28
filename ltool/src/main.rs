@@ -11,6 +11,7 @@ mod tab_face;
 mod tab_image;
 mod tab_index;
 mod tab_sql;
+mod tab_storage;
 mod tab_vector;
 mod ui;
 

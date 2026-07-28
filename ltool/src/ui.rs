@@ -61,6 +61,13 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             face_path_anchor = None;
             vector_input_anchor = None;
         }
+        Tab::Storage => {
+            draw_storage_tab(f, app, chunks[1]);
+            image_path_anchor = None;
+            face_path_anchor = None;
+            vector_input_anchor = None;
+            index_input_anchor = None;
+        }
     };
 
     draw_status_or_command(f, app, chunks[2]);
@@ -258,6 +265,7 @@ fn draw_status_or_command(f: &mut Frame, app: &mut App, area: Rect) {
         Tab::Vector => "F2/Enter查看详情 F3列出条目 F4清空 F5一致性 F6重建 Tab展开菜单 ↑↓条目导航 Enter操作 Esc关闭 | ",
         Tab::Sql => "F1列表Schema F2列表表 F3描述表 F4版本 F5执行 Ctrl+L清空 | ",
         Tab::Index => "F1列表索引 F2查看详情 F3统计 F4搜索 Enter查看详情 | ",
+        Tab::Storage => "F1列出对象 ↑↓导航 | ",
     };
     let help_span = Span::styled(help_text, Style::default().fg(Color::Gray));
 
@@ -1782,6 +1790,161 @@ fn draw_sql_schema_list_popup(f: &mut Frame, app: &mut App) {
             height: 1,
         });
     }
+}
+
+/// 绘制存储 Tab（S3 兼容对象存储浏览器）
+fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
+    // 上下分区：输入区 + 列表区
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(9),  // 输入区：端点 + 认证 + bucket/prefix
+            Constraint::Min(5),     // 对象列表
+        ])
+        .split(area);
+
+    // ── 输入区 ──
+    let input_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),  // 端点 URL
+            Constraint::Length(3),  // 登录状态
+            Constraint::Length(3),  // bucket + prefix
+        ])
+        .split(chunks[0]);
+
+    // 端点 URL
+    let endpoint_block = Block::default()
+        .borders(Borders::ALL)
+        .title("端点 URL")
+        .border_style(Style::default().fg(Color::Cyan));
+    let endpoint_input = Paragraph::new(app.storage_tab.endpoint.value.as_str())
+        .block(endpoint_block)
+        .style(Style::default().fg(Color::White));
+    f.render_widget(endpoint_input, input_chunks[0]);
+
+    // 登录状态
+    let status_text = if app.storage_tab.logged_in {
+        format!("✓ 已登录（token: {}...）", &app.storage_tab.token[..8.min(app.storage_tab.token.len())])
+    } else {
+        "✗ 未登录，将使用登录凭据自动登录".to_string()
+    };
+    let status_block = Block::default()
+        .borders(Borders::ALL)
+        .title("认证状态")
+        .border_style(Style::default().fg(if app.storage_tab.logged_in { Color::Green } else { Color::Yellow }));
+    let status_para = Paragraph::new(status_text)
+        .block(status_block)
+        .style(Style::default().fg(Color::Gray));
+    f.render_widget(status_para, input_chunks[1]);
+
+    // bucket + prefix
+    let bucket_prefix = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
+        .split(input_chunks[2]);
+
+    let bucket_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Bucket")
+        .border_style(Style::default().fg(Color::Cyan));
+    let bucket_input = Paragraph::new(app.storage_tab.bucket.value.as_str())
+        .block(bucket_block)
+        .style(Style::default().fg(Color::White));
+    f.render_widget(bucket_input, bucket_prefix[0]);
+
+    let prefix_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Prefix")
+        .border_style(Style::default().fg(Color::Cyan));
+    let prefix_input = Paragraph::new(app.storage_tab.prefix.value.as_str())
+        .block(prefix_block)
+        .style(Style::default().fg(Color::White));
+    f.render_widget(prefix_input, bucket_prefix[1]);
+
+    // ── 对象列表 ──
+    let list_block = Block::default()
+        .borders(Borders::ALL)
+        .title("对象列表")
+        .border_style(Style::default().fg(Color::Cyan));
+    let list_inner = list_block.inner(chunks[1]);
+    f.render_widget(list_block, chunks[1]);
+
+    if app.storage_tab.objects.is_empty() {
+        let empty_text = Paragraph::new("按 F1 列出对象")
+            .style(Style::default().fg(Color::Gray))
+            .alignment(Alignment::Center);
+        f.render_widget(empty_text, list_inner);
+        return;
+    }
+
+    // 表头
+    let header = Row::new(vec![
+        Cell::from(Span::styled("Key", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+        Cell::from(Span::styled("Size", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+        Cell::from(Span::styled("Last Modified", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+        Cell::from(Span::styled("Type", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))),
+    ]);
+
+    // 可见行数
+    let visible_rows = list_inner.height.saturating_sub(2) as usize; // 表头 + 边框
+    let scroll = app.storage_tab.list_scroll;
+
+    let rows: Vec<Row> = app.storage_tab.objects
+        .iter()
+        .skip(scroll)
+        .take(visible_rows)
+        .enumerate()
+        .map(|(i, obj)| {
+            let is_selected = app.storage_tab.selected_index
+                .map(|idx| idx == scroll + i)
+                .unwrap_or(false);
+            let style = if is_selected {
+                Style::default().bg(Color::Green).fg(Color::Black)
+            } else {
+                Style::default()
+            };
+
+            // 格式化大小
+            let size_str = if obj.size > 1024 * 1024 {
+                format!("{:.1} MB", obj.size as f64 / (1024.0 * 1024.0))
+            } else if obj.size > 1024 {
+                format!("{:.1} KB", obj.size as f64 / 1024.0)
+            } else {
+                format!("{} B", obj.size)
+            };
+
+            Row::new(vec![
+                Cell::from(Span::styled(&obj.key, style)),
+                Cell::from(Span::styled(size_str, style)),
+                Cell::from(Span::styled(&obj.last_modified, style)),
+                Cell::from(Span::styled(&obj.content_type, style)),
+            ])
+            .style(style)
+        })
+        .collect();
+
+    let widths = [
+        Constraint::Percentage(45),
+        Constraint::Length(12),
+        Constraint::Length(22),
+        Constraint::Length(20),
+    ];
+
+    let table = Table::new(rows, widths).header(header);
+    f.render_widget(table, list_inner);
+
+    // 垂直滚动条
+    let total = app.storage_tab.objects.len();
+    let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(1))
+        .position(scroll.min(total.saturating_sub(1)));
+    f.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None),
+        list_inner,
+        &mut scrollbar_state,
+    );
 }
 
 /// 绘制表列表弹出窗

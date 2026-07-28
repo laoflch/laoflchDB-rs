@@ -12,6 +12,7 @@ pub enum Tab {
     Vector,
     Sql,
     Index,
+    Storage,
 }
 
 impl Tab {
@@ -23,10 +24,11 @@ impl Tab {
             Tab::Vector => "3:向量",
             Tab::Sql => "4:SQL",
             Tab::Index => "5:索引",
+            Tab::Storage => "6:存储",
         }
     }
 
-    /// Tab 在栏中的索引（0..5）
+    /// Tab 在栏中的索引（0..6）
     pub fn index(self) -> usize {
         match self {
             Tab::Image => 0,
@@ -34,10 +36,11 @@ impl Tab {
             Tab::Vector => 2,
             Tab::Sql => 3,
             Tab::Index => 4,
+            Tab::Storage => 5,
         }
     }
 
-    /// 按数字键 1..=5 切换 Tab
+    /// 按数字键 1..=6 切换 Tab
     pub fn from_index(i: usize) -> Option<Self> {
         match i {
             0 => Some(Tab::Image),
@@ -45,6 +48,7 @@ impl Tab {
             2 => Some(Tab::Vector),
             3 => Some(Tab::Sql),
             4 => Some(Tab::Index),
+            5 => Some(Tab::Storage),
             _ => None,
         }
     }
@@ -815,6 +819,54 @@ impl Default for CommandMode {
     }
 }
 
+/// 存储 Tab 状态（S3 兼容对象存储浏览器）
+#[derive(Debug, Clone)]
+pub struct StorageTabState {
+    /// S3 端点 URL
+    pub endpoint: InputState,
+    /// 认证 token
+    pub token: String,
+    /// 当前 bucket
+    pub bucket: InputState,
+    /// 当前前缀（路径）
+    pub prefix: InputState,
+    /// 对象列表
+    pub objects: Vec<StorageObject>,
+    /// 选中对象索引
+    pub selected_index: Option<usize>,
+    /// 列表滚动位置
+    pub list_scroll: usize,
+    /// 分页状态
+    pub pagination: PaginationState,
+    /// 是否已登录（获取 token）
+    pub logged_in: bool,
+}
+
+/// 存储对象信息
+#[derive(Debug, Clone)]
+pub struct StorageObject {
+    pub key: String,
+    pub size: i64,
+    pub last_modified: String,
+    pub content_type: String,
+}
+
+impl Default for StorageTabState {
+    fn default() -> Self {
+        Self {
+            endpoint: InputState::with_value("http://localhost:8080/api/v1/object-store"),
+            token: String::new(),
+            bucket: InputState::with_value("images"),
+            prefix: InputState::new(),
+            objects: Vec::new(),
+            selected_index: None,
+            list_scroll: 0,
+            pagination: PaginationState::new(50),
+            logged_in: false,
+        }
+    }
+}
+
 /// 全局 App 状态
 pub struct App {
     pub clients: Option<GrpcClients>,
@@ -831,6 +883,7 @@ pub struct App {
     pub vector_tab: VectorTabState,
     pub sql_tab: SqlTabState,
     pub index_tab: IndexTabState,
+    pub storage_tab: StorageTabState,
     pub command_mode: CommandMode,
 }
 
@@ -851,6 +904,7 @@ impl App {
             vector_tab: VectorTabState::default(),
             sql_tab: SqlTabState::default(),
             index_tab: IndexTabState::default(),
+            storage_tab: StorageTabState::default(),
             command_mode: CommandMode::default(),
         }
     }
@@ -881,7 +935,8 @@ impl App {
             Tab::Face => Tab::Vector,
             Tab::Vector => Tab::Sql,
             Tab::Sql => Tab::Index,
-            Tab::Index => Tab::Image,
+            Tab::Index => Tab::Storage,
+            Tab::Storage => Tab::Image,
         };
     }
 
@@ -889,11 +944,12 @@ impl App {
     pub fn prev_tab(&mut self) {
         self.clear_image_tab_popups();
         self.current_tab = match self.current_tab {
-            Tab::Image => Tab::Index,
+            Tab::Image => Tab::Storage,
             Tab::Face => Tab::Image,
             Tab::Vector => Tab::Face,
             Tab::Sql => Tab::Vector,
             Tab::Index => Tab::Sql,
+            Tab::Storage => Tab::Index,
         };
     }
 

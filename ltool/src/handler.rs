@@ -44,12 +44,13 @@ pub async fn handle_event(app: &mut App, event: KeyEvent) -> bool {
         Tab::Vector => handle_vector_tab(app, event).await,
         Tab::Sql => handle_sql_tab(app, event).await,
         Tab::Index => handle_index_tab(app, event).await,
+        Tab::Storage => handle_storage_tab(app, event).await,
     };
     if handled {
         return true;
     }
 
-    // 无弹窗激活时的全局快捷键：Alt+1~5 切换主 Tab
+    // 无弹窗激活时的全局快捷键：Alt+1~6 切换主 Tab
     // Tab 键留给各 Tab 内部做字段/焦点切换，不在这里做全局切换
     match event.code {
         KeyCode::Char('1') if event.modifiers.contains(KeyModifiers::ALT) => {
@@ -77,6 +78,11 @@ pub async fn handle_event(app: &mut App, event: KeyEvent) -> bool {
         KeyCode::Char('5') if event.modifiers.contains(KeyModifiers::ALT) => {
             app.clear_image_tab_popups();
             app.current_tab = Tab::Index;
+            return true;
+        }
+        KeyCode::Char('6') if event.modifiers.contains(KeyModifiers::ALT) => {
+            app.clear_image_tab_popups();
+            app.current_tab = Tab::Storage;
             return true;
         }
         _ => {}
@@ -1836,6 +1842,43 @@ fn handle_input_event(input: &mut InputState, event: KeyEvent) -> bool {
         _ => return false,
     }
     true
+}
+
+/// 处理存储 Tab 的事件
+async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
+    // 对象列表导航
+    if !app.storage_tab.objects.is_empty() {
+        match event.code {
+            KeyCode::Up => {
+                let cur = app.storage_tab.selected_index.unwrap_or(0);
+                if cur > 0 {
+                    app.storage_tab.selected_index = Some(cur - 1);
+                }
+                return true;
+            }
+            KeyCode::Down => {
+                let max = app.storage_tab.objects.len().saturating_sub(1);
+                let cur = app.storage_tab.selected_index.unwrap_or(0);
+                if cur < max {
+                    app.storage_tab.selected_index = Some(cur + 1);
+                }
+                return true;
+            }
+            _ => {}
+        }
+    }
+
+    // 功能键
+    match event.code {
+        KeyCode::F(1) => {
+            // F1: 列出对象
+            let _ = crate::tab_storage::list_objects(app).await;
+            return true;
+        }
+        _ => {}
+    }
+
+    false
 }
 
 /// 处理鼠标事件
