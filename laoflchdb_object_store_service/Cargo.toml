@@ -16,6 +16,7 @@ uuid = { version = "1.0", features = ["v4"] }
 base64 = "0.22"
 chrono = "0.4"
 axum = "0.7"
+tower-http = { version = "0.5", features = ["normalize-path"] }
 bytes = "1.6"
 # S3 协议支持
 quick-xml = { version = "0.31", features = ["serialize"] }

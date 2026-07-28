@@ -17,6 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, head, put},
 };
+use tower_http::normalize_path::NormalizePathLayer;
 use hmac::{Hmac, Mac};
 use log;
 use sha2::{Digest, Sha256};
@@ -656,6 +657,36 @@ fn s3_error_response(code: &str, message: &str, status_code: StatusCode) -> Resp
 
 // ── S3 认证中间件 ──
 
+/// 简单的路径标准化中间件，在路由匹配前运行
+async fn normalize_path_middleware(
+    req: Request<axum::body::Body>,
+    next: axum::middleware::Next,
+) -> Response {
+    let (mut parts, body) = req.into_parts();
+
+    // 保存原始 URI（用于签名）
+    let original_uri = parts.uri.clone();
+    parts.extensions.insert(OriginalUri(original_uri.clone()));
+
+    // 去除路径尾部斜杠（但保留根路径 "/"）
+    let path = parts.uri.path();
+    let query = parts.uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+    if path != "/" && path.ends_with('/') {
+        let new_path = path.trim_end_matches('/');
+        if let Ok(new_uri) = format!("{}{}", new_path, query).parse::<Uri>() {
+            parts.uri = new_uri;
+            log::debug!("S3 标准化路径: {} -> {}", path, new_path);
+        }
+    }
+
+    let req = Request::from_parts(parts, body);
+    next.run(req).await
+}
+
+/// 保存原始 URI 的包装类型
+#[derive(Debug, Clone)]
+struct OriginalUri(Uri);
+
 /// S3 认证中间件
 async fn s3_auth(
     State(state): State<Arc<S3State>>,
@@ -669,11 +700,18 @@ async fn s3_auth(
         .await
         .unwrap_or_default();
 
+    // 从扩展中获取原始 URI（用于签名）
+    let original_uri = parts.extensions.get::<OriginalUri>()
+        .map(|ou| &ou.0)
+        .unwrap_or(&parts.uri);
+
+    log::debug!("S3 使用 URI 验证签名: {:?}", original_uri);
+
     // 验证签名
     if let Err(e) = verify_aws_v4_signature(
         &state.config,
         &parts.method,
-        &parts.uri,
+        original_uri,
         &parts.headers,
         &body_bytes,
     ) {
@@ -682,7 +720,10 @@ async fn s3_auth(
 
     // 重建请求
     let req = Request::from_parts(parts, axum::body::Body::from(body_bytes));
-    next.run(req).await
+    log::debug!("S3 签名验证通过，转发到路由处理");
+    let resp = next.run(req).await;
+    log::debug!("S3 路由响应: status={}", resp.status());
+    resp
 }
 
 // ── S3 请求处理函数 ──
@@ -770,6 +811,7 @@ async fn head_bucket_handler(
     State(state): State<Arc<S3State>>,
     Path(bucket): Path<String>,
 ) -> impl IntoResponse {
+    log::debug!("head_bucket_handler 被调用: bucket={}", bucket);
     // 通过列出对象检查 bucket 是否存在（max_keys=1，没有 key 表示只检查 bucket）
     let req = tonic::Request::new(ListObjectsRequest {
         bucket: bucket.clone(),
@@ -1075,7 +1117,8 @@ pub fn create_s3_router(
         config: Arc::new(s3_config),
     });
 
-    let router = Router::new()
+    // 创建内部路由（带认证）
+    let inner_router = Router::new()
         // GET / - ListBuckets
         .route("/", get(list_buckets_handler))
         // PUT /{bucket} - CreateBucket
@@ -1094,8 +1137,28 @@ pub fn create_s3_router(
         .route("/{bucket}/{key}", head(head_object_handler))
         // DELETE /{bucket}/{key} - DeleteObject
         .route("/{bucket}/{key}", delete(delete_object_handler))
+        // 添加 fallback 记录未匹配路由
+        .fallback(|req: Request<axum::body::Body>| async move {
+            log::warn!("S3 路由未匹配: method={}, uri={}", req.method(), req.uri());
+            let body = axum::body::to_bytes(req.into_body(), 1024 * 1024).await.unwrap_or_default();
+            let body_str = String::from_utf8_lossy(&body);
+            let xml = format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+    <Code>NoSuchKey</Code>
+    <Message>路由未匹配</Message>
+    <Resource>{}</Resource>
+</Error>"#,
+                body_str
+            );
+            (StatusCode::NOT_FOUND, [("Content-Type", "application/xml")], xml)
+        })
+        // 应用认证中间件
         .layer(middleware::from_fn_with_state(state.clone(), s3_auth))
         .with_state(state);
 
-    router
+    // 外层路由：先应用路径标准化，再转发到内部路由
+    Router::new()
+        .fallback_service(inner_router)
+        .layer(middleware::from_fn(normalize_path_middleware))
 }
