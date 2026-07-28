@@ -54,6 +54,10 @@ embedding_index:
 object_store:
   enabled: true
   db_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_oss
+  # S3 协议访问密钥（用于标准 S3 端口认证）
+  s3_access_key: admin
+  s3_secret_key: laoflchdb
+  s3_region: us-east-1
 
 # 图片服务配置（基于对象存储，自动生成三种缩略图）
 image_service:
@@ -93,6 +97,12 @@ access_protocols:
     enabled: true
     addr: 0.0.0.0:8080
     service_id: rest_admin
+
+  # S3 兼容协议（标准 S3 API，AWS Signature V4 签名验证）
+  - protocol: s3
+    enabled: true
+    addr: 0.0.0.0:9000
+    service_id: s3_service
 
 # Permissions configuration
 permissions:
