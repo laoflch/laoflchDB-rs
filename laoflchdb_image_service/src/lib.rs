@@ -51,6 +51,8 @@ pub struct ImageServiceConfig {
     pub enabled: bool,
     /// 默认 bucket 名称
     pub default_bucket: String,
+    /// 图片重复检测距离阈值（Cosine 距离 < 此值视为重复，默认 0.0001）
+    pub image_duplicate_distance: f32,
 }
 
 impl Default for ImageServiceConfig {
@@ -58,6 +60,7 @@ impl Default for ImageServiceConfig {
         Self {
             enabled: false,
             default_bucket: DEFAULT_BUCKET.to_string(),
+            image_duplicate_distance: 0.0001,
         }
     }
 }
@@ -401,7 +404,7 @@ impl ImageServiceImpl {
         let mut duplicates: Vec<(String, i32)> = Vec::new();
         if search.success {
             for result in &search.results {
-                if result.distance < 0.0001 {
+                if result.distance < self.config.image_duplicate_distance {
                     let existing_key = result.id.to_string();
                     duplicates.push((existing_key, index_dim));
                 }

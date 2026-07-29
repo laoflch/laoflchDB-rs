@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, List, ListItem, Paragraph, R
 use ratatui::Frame;
 
 use crate::app::{App, ImageFocus, PathPopup, Tab};
+use urlencoding;
 
 /// 主渲染入口
 pub fn draw(f: &mut Frame, app: &mut App) {
@@ -26,6 +27,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // 各 Tab 渲染
     let image_path_anchor: Option<Rect>;
     let face_path_anchor: Option<Rect>;
+    let storage_upload_path_anchor: Option<Rect>;
     let vector_input_anchor: Option<Rect>;
     let index_input_anchor: Option<Rect>;
 
@@ -33,12 +35,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
         Tab::Image => {
             image_path_anchor = draw_image_tab(f, app, chunks[1]);
             face_path_anchor = None;
+            storage_upload_path_anchor = None;
             vector_input_anchor = None;
             index_input_anchor = None;
         }
         Tab::Face => {
             face_path_anchor = draw_face_tab(f, app, chunks[1]);
             image_path_anchor = None;
+            storage_upload_path_anchor = None;
             vector_input_anchor = None;
             index_input_anchor = None;
         }
@@ -46,12 +50,14 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             vector_input_anchor = Some(draw_vector_tab(f, app, chunks[1]));
             image_path_anchor = None;
             face_path_anchor = None;
+            storage_upload_path_anchor = None;
             index_input_anchor = None;
         }
         Tab::Sql => {
             draw_sql_tab(f, app, chunks[1]);
             image_path_anchor = None;
             face_path_anchor = None;
+            storage_upload_path_anchor = None;
             vector_input_anchor = None;
             index_input_anchor = None;
         }
@@ -59,10 +65,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             index_input_anchor = Some(draw_index_tab(f, app, chunks[1]));
             image_path_anchor = None;
             face_path_anchor = None;
+            storage_upload_path_anchor = None;
             vector_input_anchor = None;
         }
         Tab::Storage => {
-            draw_storage_tab(f, app, chunks[1]);
+            storage_upload_path_anchor = draw_storage_tab(f, app, chunks[1]);
             image_path_anchor = None;
             face_path_anchor = None;
             vector_input_anchor = None;
@@ -77,8 +84,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     let content_bottom = chunks[1].y + chunks[1].height;
 
     if let Some(anchor) = image_path_anchor {
-        let max_visible = (content_bottom.saturating_sub(anchor.y + anchor.height)) as usize;
-        app.image_tab.path_popup.visible = max_visible;
+        app.image_tab.path_popup.visible = calc_popup_visible(content_bottom, anchor);
         let popup = &app.image_tab.path_popup;
         if popup.is_active() {
             draw_path_popup(f, popup, anchor, content_bottom);
@@ -86,9 +92,16 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 
     if let Some(anchor) = face_path_anchor {
-        let max_visible = (content_bottom.saturating_sub(anchor.y + anchor.height)) as usize;
-        app.face_tab.path_popup.visible = max_visible;
+        app.face_tab.path_popup.visible = calc_popup_visible(content_bottom, anchor);
         let popup = &app.face_tab.path_popup;
+        if popup.is_active() {
+            draw_path_popup(f, popup, anchor, content_bottom);
+        }
+    }
+
+    if let Some(anchor) = storage_upload_path_anchor {
+        app.storage_tab.path_popup.visible = calc_popup_visible(content_bottom, anchor);
+        let popup = &app.storage_tab.path_popup;
         if popup.is_active() {
             draw_path_popup(f, popup, anchor, content_bottom);
         }
@@ -1793,7 +1806,7 @@ fn draw_sql_schema_list_popup(f: &mut Frame, app: &mut App) {
 }
 
 /// 绘制存储 Tab（S3 兼容对象存储浏览器）
-fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
+fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
     // 输入区高度：12行（endpoint+protocol + access_key+secret_key+region + 认证状态 + bucket+prefix）
     let input_height: u16 = 12;
 
@@ -2005,7 +2018,7 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
                 };
 
                 Row::new(vec![
-                    Cell::from(Span::styled(&obj.key, style)),
+                    Cell::from(Span::styled(&obj.display_key, style)),
                     Cell::from(Span::styled(size_str, style)),
                     Cell::from(Span::styled(&obj.last_modified, style)),
                     Cell::from(Span::styled(&obj.content_type, style)),
@@ -2026,7 +2039,7 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
 
         // 垂直滚动条
         let total = app.storage_tab.objects.len();
-        let mut scrollbar_state = ScrollbarState::new(total.saturating_sub(1))
+        let mut scrollbar_state = ScrollbarState::new(total)
             .position(scroll.min(total.saturating_sub(1)));
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
@@ -2063,7 +2076,7 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
                 let lines = vec![
                     Line::from(vec![Span::styled("对象详情", Style::default().add_modifier(Modifier::BOLD).fg(Color::Cyan))]),
                     Line::from(""),
-                    Line::from(vec![Span::styled("Key:    ", Style::default().fg(Color::Gray)), Span::styled(&obj.key, Style::default().fg(Color::White))]),
+                    Line::from(vec![Span::styled("Key:    ", Style::default().fg(Color::Gray)), Span::styled(&obj.display_key, Style::default().fg(Color::White))]),
                     Line::from(vec![Span::styled("Size:   ", Style::default().fg(Color::Gray)), Span::styled(size_str, Style::default().fg(Color::White))]),
                     Line::from(vec![Span::styled("Type:   ", Style::default().fg(Color::Gray)), Span::styled(&obj.content_type, Style::default().fg(Color::White))]),
                     Line::from(vec![Span::styled("Modify: ", Style::default().fg(Color::Gray)), Span::styled(&obj.last_modified, Style::default().fg(Color::White))]),
@@ -2074,7 +2087,7 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
                 let detail_para = Paragraph::new(lines)
                     .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan)));
                 f.render_widget(detail_para, dialog);
-                return;
+                return None;
             }
         }
     }
@@ -2105,16 +2118,106 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
         let confirm_para = Paragraph::new(lines)
             .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Red)));
         f.render_widget(confirm_para, dialog);
-        return;
+        return None;
     }
 
-    // 上传对话框
+    // 上传确认对话框
+    if app.storage_tab.confirm_upload {
+        let area = f.size();
+        let width = 60.min(area.width.saturating_sub(4));
+        let height = 9;
+        let x = (area.width - width) / 2;
+        let y = (area.height - height) / 2;
+        let dialog = Rect { x, y, width, height };
+
+        f.render_widget(Clear, dialog);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("确认上传")
+            .border_style(Style::default().fg(Color::Green));
+        f.render_widget(block, dialog);
+
+        let inner = Rect {
+            x: dialog.x + 1,
+            y: dialog.y + 1,
+            width: dialog.width.saturating_sub(2),
+            height: dialog.height.saturating_sub(2),
+        };
+
+        // 文件信息
+        let path_short = if app.storage_tab.confirm_upload_path.len() > 40 {
+            format!("...{}", &app.storage_tab.confirm_upload_path[app.storage_tab.confirm_upload_path.len().saturating_sub(37)..])
+        } else {
+            app.storage_tab.confirm_upload_path.clone()
+        };
+        let info = vec![
+            Line::from(vec![
+                Span::styled("本地路径: ", Style::default().fg(Color::White)),
+                Span::styled(path_short, Style::default().fg(Color::Yellow)),
+            ]),
+            Line::from(vec![
+                Span::styled("对象 key: ", Style::default().fg(Color::White)),
+                Span::styled(&app.storage_tab.confirm_upload_key, Style::default().fg(Color::Yellow)),
+            ]),
+        ];
+        let info_para = Paragraph::new(info);
+        let info_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: 2,
+        };
+        f.render_widget(info_para, info_area);
+
+        // 横向并列按钮
+        const CONFIRM_OPTIONS: &[&str] = &["确认上传", "取消"];
+        let btn_width = 14.max(inner.width / 2 / CONFIRM_OPTIONS.len() as u16);
+        let total_btn_width = (btn_width + 2) * CONFIRM_OPTIONS.len() as u16 - 2;
+        let start_x = inner.x + (inner.width.saturating_sub(total_btn_width)) / 2;
+        let btn_y = inner.y + 3;
+
+        for (i, opt) in CONFIRM_OPTIONS.iter().enumerate() {
+            let selected = i == app.storage_tab.confirm_upload_selected;
+            let (bg, fg) = if selected {
+                (Color::Green, Color::Black)
+            } else {
+                (Color::DarkGray, Color::White)
+            };
+            let btn = Paragraph::new(Line::from(Span::styled(
+                format!(" {} ", opt),
+                Style::default().bg(bg).fg(fg),
+            )));
+            f.render_widget(btn, Rect {
+                x: start_x + (btn_width + 2) * i as u16,
+                y: btn_y,
+                width: btn_width,
+                height: 1,
+            });
+        }
+
+        // 提示
+        let help = Paragraph::new(Line::from(Span::styled(
+            "← → 选择  |  Enter 确认  |  Esc 取消",
+            Style::default().fg(Color::DarkGray),
+        )));
+        f.render_widget(help, Rect {
+            x: inner.x,
+            y: inner.y + 5,
+            width: inner.width,
+            height: 1,
+        });
+
+        return None;
+    }
+
+    // 上传对话框（上沿与 Access Key 行对齐）
     if app.storage_tab.show_upload_dialog {
         let area = f.size();
         let width = 60.min(area.width.saturating_sub(4));
         let height = 7;
         let x = (area.width - width) / 2;
-        let y = (area.height - height) / 2;
+        let y = input_chunks[1].y; // 与 Access Key 行对齐
         let dialog = Rect { x, y, width, height };
 
         f.render_widget(Clear, dialog);
@@ -2135,20 +2238,15 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
         let help_area = Rect { x, y: y + height, width, height: 1 };
         f.render_widget(help_text, help_area);
 
-        // 路径补全弹窗
-        if app.storage_tab.path_popup.is_active() {
-            let content_bottom = area.height;
-            draw_path_popup(f, &app.storage_tab.path_popup, dialog, content_bottom);
-        }
-
-        return;
+        return Some(dialog);
     }
 
     // 下载对话框
     if app.storage_tab.show_download_dialog {
         let area = f.size();
         let width = 65.min(area.width.saturating_sub(4));
-        let height = 7;
+        let input_lines = 5;
+        let height = input_lines + 3; // border(2) + input(5) + help(1)
         let x = (area.width - width) / 2;
         let y = (area.height - height) / 2;
         let dialog = Rect { x, y, width, height };
@@ -2161,17 +2259,75 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
             Style::default().fg(Color::Cyan)
         };
 
-        let title = format!("下载: {}", app.storage_tab.download_key);
+        let display_key = urlencoding::decode(&app.storage_tab.download_key)
+            .map(|s| s.into_owned())
+            .unwrap_or_else(|_| app.storage_tab.download_key.clone());
+        let title = format!("下载: {}", display_key);
+        let input_area = Rect { x: x + 1, y: y + 1, width: width - 2, height: input_lines };
+        let input_style = Style::default().bg(Color::DarkGray).fg(Color::White);
+
+        // 光标行计算 + 自动滚动
+        let line_width = input_area.width as usize;
+        let cursor_line = if line_width > 0 {
+            app.storage_tab.download_path.cursor / line_width
+        } else {
+            0
+        };
+        if cursor_line < app.storage_tab.download_path_scroll {
+            app.storage_tab.download_path_scroll = cursor_line;
+        }
+        if cursor_line >= app.storage_tab.download_path_scroll + input_lines as usize {
+            app.storage_tab.download_path_scroll = cursor_line - input_lines as usize + 1;
+        }
+
         let input = Paragraph::new(app.storage_tab.download_path.value.as_str())
             .block(Block::default().borders(Borders::ALL).title(title).border_style(border_style))
-            .style(Style::default().fg(Color::White));
+            .style(input_style)
+            .scroll((app.storage_tab.download_path_scroll as u16, 0))
+            .wrap(ratatui::widgets::Wrap { trim: false });
         f.render_widget(input, dialog);
 
-        let help_text = Paragraph::new("Enter 下载  |  Esc 取消")
-            .style(Style::default().fg(Color::DarkGray));
-        let help_area = Rect { x, y: y + height, width, height: 1 };
+        // 光标位置
+        let cursor_display = cursor_line.saturating_sub(app.storage_tab.download_path_scroll);
+        if cursor_display < input_lines as usize {
+            let cursor_x = input_area.x + (app.storage_tab.download_path.cursor % line_width) as u16;
+            let cursor_y = input_area.y + cursor_display as u16;
+            f.set_cursor(cursor_x, cursor_y);
+        }
+
+        // 提示（底部居中显示）
+        let help_text = Paragraph::new(Line::from(vec![
+            Span::styled("Enter ", Style::default().fg(Color::Green)),
+            Span::styled("确认下载  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Tab ", Style::default().fg(Color::Green)),
+            Span::styled("补全路径  |  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("Esc ", Style::default().fg(Color::Green)),
+            Span::styled("取消", Style::default().fg(Color::DarkGray)),
+        ]))
+        .alignment(Alignment::Center)
+        .style(Style::default().fg(Color::DarkGray));
+        let help_area = Rect {
+            x: dialog.x + 1,
+            y: dialog.y + dialog.height - 1,
+            width: dialog.width - 2,
+            height: 1,
+        };
         f.render_widget(help_text, help_area);
-        return;
+
+        // 路径补全弹窗 anchor：对话框底部（弹窗出现在对话框下方）
+        let anchor = Rect {
+            x: dialog.x + 1,
+            y: dialog.y + dialog.height,
+            width: dialog.width - 2,
+            height: 1,
+        };
+        app.storage_tab.path_popup.visible = calc_popup_visible(area.height, anchor);
+        let popup = &app.storage_tab.path_popup;
+        if popup.is_active() {
+            draw_path_popup(f, popup, anchor, area.height);
+        }
+
+        return None;
     }
 
     // 操作弹窗
@@ -2218,7 +2374,9 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) {
                 height: 1,
             });
         }
+        return None;
     }
+    None
 }
 
 /// 绘制表列表弹出窗
@@ -2482,6 +2640,12 @@ fn truncate_str(s: &str, max_chars: usize) -> String {
 /// 锚定在路径输入框的正下方，高度延伸到内容区底部（content_bottom），
 /// 最多显示所有候选；右侧显示滚动条。
 /// 必须在所有其他渲染之后调用，确保浮在最顶层。
+/// 计算弹窗可用行数时，需留出 2 行给边框，否则滚动计算与渲染不一致
+fn calc_popup_visible(content_bottom: u16, anchor: Rect) -> usize {
+    let max_visible = (content_bottom.saturating_sub(anchor.y + anchor.height)) as usize;
+    max_visible.saturating_sub(2) // 减去边框占用的 2 行
+}
+
 fn draw_path_popup(f: &mut Frame, popup: &PathPopup, anchor: Rect, content_bottom: u16) {
     let total = popup.candidates.len();
     if total == 0 {
@@ -2494,21 +2658,33 @@ fn draw_path_popup(f: &mut Frame, popup: &PathPopup, anchor: Rect, content_botto
 
     // 底部可用的最大行数（内容区底部 - 输入框下方）
     let max_rows = content_bottom.saturating_sub(anchor.y + anchor.height);
-    // 实际显示行数 = min(候选数, 可用行数)
-    let visible = total.min(max_rows as usize);
+    // 留 2 行给边框，确保弹窗总高度不超出可用空间
+    let max_content_rows = if max_rows >= 2 { max_rows - 2 } else { 0 };
+    // 实际显示行数 = min(候选数, 可用内容行数)
+    let visible = total.min(max_content_rows as usize);
     if visible == 0 {
         return;
     }
+
+    // 钳位 scroll，确保 scroll + visible <= total
+    let safe_scroll = popup.scroll.min(total.saturating_sub(visible));
+    // 钳位 selected，确保 selected < total
+    let safe_selected = popup.selected.min(total.saturating_sub(1));
 
     let height = visible as u16 + 2; // 每项 1 行 + 边框
     let y = anchor.y + anchor.height; // 始终在输入框下方
     let area = Rect { x, y, width, height };
 
+    // 检查弹窗区域是否在屏幕内
+    if area.y + area.height > content_bottom {
+        return;
+    }
+
     // 清除背景
     f.render_widget(Clear, area);
 
     // 外框（黑色背景 + 黄色边框）
-    let title = format!(" 路径补全 {}/{} ", popup.selected + 1, total);
+    let title = format!(" 路径补全 {}/{} ", safe_selected + 1, total);
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
@@ -2540,9 +2716,11 @@ fn draw_path_popup(f: &mut Frame, popup: &PathPopup, anchor: Rect, content_botto
 
     // 渲染每一行
     for i in 0..visible {
-        let idx = popup.scroll + i;
-        let c = &popup.candidates[idx];
-        let is_selected = idx == popup.selected;
+        let idx = safe_scroll + i;
+        let Some(c) = popup.candidates.get(idx) else {
+            continue;
+        };
+        let is_selected = idx == safe_selected;
 
         let row_area = Rect {
             x: list_area.x,
@@ -2592,7 +2770,7 @@ fn draw_path_popup(f: &mut Frame, popup: &PathPopup, anchor: Rect, content_botto
             .thumb_symbol("█")
             .track_symbol(Some("░"))
             .style(Style::default().fg(Color::DarkGray));
-        let mut state = ScrollbarState::new(total).position(popup.scroll);
+        let mut state = ScrollbarState::new(total).position(safe_scroll);
         f.render_stateful_widget(scrollbar, scrollbar_area, &mut state);
     }
 }

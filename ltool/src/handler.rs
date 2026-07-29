@@ -1884,10 +1884,10 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                             if let Some(obj) = app.storage_tab.objects.get(si) {
                                 app.storage_tab.show_download_dialog = true;
                                 app.storage_tab.download_key = obj.key.clone();
-                                let filename = std::path::Path::new(&obj.key)
+                                let filename = std::path::Path::new(&obj.display_key)
                                     .file_name()
                                     .and_then(|n| n.to_str())
-                                    .unwrap_or(&obj.key);
+                                    .unwrap_or(&obj.display_key);
                                 let default_path = format!("~/Pictures/{}", filename);
                                 if app.storage_tab.download_path.value.is_empty() {
                                     app.storage_tab.download_path = InputState::with_value(&default_path);
@@ -1952,11 +1952,11 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                         app.storage_tab.show_detail = false;
                         app.storage_tab.show_download_dialog = true;
                         app.storage_tab.download_key = obj.key.clone();
-                        // 默认下载路径
-                        let filename = std::path::Path::new(&obj.key)
+                        // 默认下载路径（使用 display_key 获取正确的文件名）
+                        let filename = std::path::Path::new(&obj.display_key)
                             .file_name()
                             .and_then(|n| n.to_str())
-                            .unwrap_or(&obj.key);
+                            .unwrap_or(&obj.display_key);
                         let default_path = format!("~/Pictures/{}", filename);
                         if app.storage_tab.download_path.value.is_empty() {
                             app.storage_tab.download_path = InputState::with_value(&default_path);
@@ -1964,6 +1964,57 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                         app.storage_tab.focus = 4;
                     }
                 }
+                return true;
+            }
+            _ => {}
+        }
+        return true;
+    }
+
+    // 上传确认弹窗优先处理
+    if app.storage_tab.confirm_upload {
+        match event.code {
+            KeyCode::Left => {
+                if app.storage_tab.confirm_upload_selected > 0 {
+                    app.storage_tab.confirm_upload_selected -= 1;
+                }
+                return true;
+            }
+            KeyCode::Right => {
+                if app.storage_tab.confirm_upload_selected < 1 {
+                    app.storage_tab.confirm_upload_selected += 1;
+                }
+                return true;
+            }
+            KeyCode::Enter => {
+                if app.storage_tab.confirm_upload_selected == 0 {
+                    // 确认上传
+                    let path = app.storage_tab.confirm_upload_path.clone();
+                    let key = app.storage_tab.confirm_upload_key.clone();
+                    app.storage_tab.confirm_upload = false;
+                    app.storage_tab.confirm_upload_path.clear();
+                    app.storage_tab.confirm_upload_key.clear();
+                    app.storage_tab.show_upload_dialog = false;
+                    app.storage_tab.upload_path.value.clear();
+                    app.storage_tab.path_popup.close();
+                    app.set_status(format!("正在上传 '{}' 到 '{}' ...", &path, &key));
+                    let _ = crate::tab_storage::upload_file(app, &path, &key).await;
+                    let _ = crate::tab_storage::list_objects(app).await;
+                } else {
+                    // 取消上传
+                    app.storage_tab.confirm_upload = false;
+                    app.storage_tab.confirm_upload_path.clear();
+                    app.storage_tab.confirm_upload_key.clear();
+                    app.set_status("已取消上传");
+                }
+                return true;
+            }
+            KeyCode::Esc => {
+                // 取消上传
+                app.storage_tab.confirm_upload = false;
+                app.storage_tab.confirm_upload_path.clear();
+                app.storage_tab.confirm_upload_key.clear();
+                app.set_status("已取消上传");
                 return true;
             }
             _ => {}
@@ -1995,15 +2046,15 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                             let cs = crate::path_complete::list_candidates(&full);
                             app.storage_tab.path_popup.open(cs);
                         } else {
-                            // 选中文件后自动触发上传
+                            // 选中文件后弹出确认对话框
                             let key = std::path::Path::new(&full)
                                 .file_name()
                                 .and_then(|n| n.to_str())
                                 .unwrap_or("uploaded_file");
-                            let _ = crate::tab_storage::upload_file(app, &full, key).await;
-                            app.storage_tab.show_upload_dialog = false;
-                            app.storage_tab.upload_path.value.clear();
-                            let _ = crate::tab_storage::list_objects(app).await;
+                            app.storage_tab.confirm_upload_path = full.clone();
+                            app.storage_tab.confirm_upload_key = key.to_string();
+                            app.storage_tab.confirm_upload = true;
+                            app.storage_tab.confirm_upload_selected = 0;
                         }
                     }
                     return true;
@@ -2060,10 +2111,45 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
 
     // 下载对话框
     if app.storage_tab.show_download_dialog {
+        // 路径补全弹窗优先处理
+        if app.storage_tab.path_popup.is_active() {
+            match event.code {
+                KeyCode::Up => {
+                    app.storage_tab.path_popup.prev();
+                    return true;
+                }
+                KeyCode::Down => {
+                    app.storage_tab.path_popup.next();
+                    return true;
+                }
+                KeyCode::Enter => {
+                    if let Some(c) = app.storage_tab.path_popup.current() {
+                        let full = c.full_path.clone();
+                        let is_dir = c.is_dir;
+                        app.storage_tab.download_path.set_value(&full);
+                        app.storage_tab.download_path_scroll = 0;
+                        app.storage_tab.path_popup.close();
+                        if is_dir {
+                            // 进入目录后自动刷新候选
+                            let cs = crate::path_complete::list_candidates(&full);
+                            app.storage_tab.path_popup.open(cs);
+                        }
+                    }
+                    return true;
+                }
+                KeyCode::Esc => {
+                    app.storage_tab.path_popup.close();
+                    return true;
+                }
+                _ => {}
+            }
+        }
+
         match event.code {
             KeyCode::Esc => {
                 app.storage_tab.show_download_dialog = false;
                 app.storage_tab.download_path.value.clear();
+                app.storage_tab.path_popup.close();
                 app.storage_tab.download_data.clear();
                 app.storage_tab.download_key.clear();
                 return true;
@@ -2072,20 +2158,49 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                 let path = app.storage_tab.download_path.value.clone();
                 let key = app.storage_tab.download_key.clone();
                 if !path.is_empty() && !key.is_empty() {
-                    let _ = crate::tab_storage::download_object(app, &key, &path).await;
+                    if let Err(e) = crate::tab_storage::download_object(app, &key, &path).await {
+                        app.set_status(format!("下载失败: {}", e));
+                    }
                     app.storage_tab.show_download_dialog = false;
                     app.storage_tab.download_path.value.clear();
+                    app.storage_tab.path_popup.close();
                     app.storage_tab.download_data.clear();
                     app.storage_tab.download_key.clear();
                 }
                 return true;
             }
+            KeyCode::Tab => {
+                // Tab 触发补全
+                let cs = crate::path_complete::list_candidates(&app.storage_tab.download_path.value);
+                if cs.is_empty() {
+                    app.storage_tab.path_popup.close();
+                } else {
+                    app.storage_tab.path_popup.open(cs);
+                }
+                return true;
+            }
+            KeyCode::Left => {
+                app.storage_tab.download_path.left();
+                return true;
+            }
+            KeyCode::Right => {
+                app.storage_tab.download_path.right();
+                return true;
+            }
             KeyCode::Char(c) => {
-                app.storage_tab.download_path.value.push(c);
+                app.storage_tab.download_path.insert_char(c);
+                app.storage_tab.download_path_scroll = 0;
+                // 自动刷新补全
+                let cs = crate::path_complete::list_candidates(&app.storage_tab.download_path.value);
+                app.storage_tab.path_popup.refresh(cs);
                 return true;
             }
             KeyCode::Backspace => {
-                app.storage_tab.download_path.value.pop();
+                app.storage_tab.download_path.backspace();
+                app.storage_tab.download_path_scroll = 0;
+                // 自动刷新补全
+                let cs = crate::path_complete::list_candidates(&app.storage_tab.download_path.value);
+                app.storage_tab.path_popup.refresh(cs);
                 return true;
             }
             _ => {}
@@ -2206,7 +2321,7 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
             } else {
                 "asc".to_string()
             };
-            app.storage_tab.pagination = PaginationState::new(50);
+            app.storage_tab.pagination = PaginationState::new(20);
             let _ = crate::tab_storage::list_objects(app).await;
             app.set_status(format!(
                 "排序已切换为：{}",

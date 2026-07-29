@@ -110,11 +110,20 @@ fn parse_s3_list_response(xml: &str) -> Result<(Vec<StorageObject>, bool, String
         .map_err(|e| anyhow!("解析 XML 失败: {}", e))?;
 
     let objects: Vec<StorageObject> = parsed.contents.into_iter().map(|c| {
+        // key 保持原样（URL 编码状态）用于操作，display_key 解码后用于显示
+        let display_key = urlencoding::decode(&c.key)
+            .map(|s| s.into_owned())
+            .unwrap_or_else(|_| c.key.clone());
         let content_type = infer_content_type(&c.key);
+        // 把 UTC 格式的 last modified 转为本地时区的可读格式
+        let last_modified = chrono::DateTime::parse_from_rfc3339(&c.last_modified)
+            .map(|dt| dt.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or(c.last_modified);
         StorageObject {
             key: c.key,
+            display_key,
             size: c.size as i64,
-            last_modified: c.last_modified,
+            last_modified,
             content_type,
         }
     }).collect();
@@ -185,6 +194,9 @@ pub async fn list_objects(app: &mut App) -> Result<()> {
     let reverse = app.storage_tab.sort_order == "desc";
 
     let mut action = bucket.list_objects_v2(Some(&credentials));
+    // 分页大小
+    let max_keys_str = app.storage_tab.pagination.page_size.to_string();
+    action.query_mut().insert("max-keys", &max_keys_str);
     if !prefix.is_empty() {
         action.query_mut().insert("prefix", prefix.clone());
     }
@@ -237,7 +249,8 @@ pub async fn get_object(app: &mut App, key: &str) -> Result<Vec<u8>> {
 
     if !resp.status().is_success() {
         let status = resp.status();
-        return Err(anyhow!("获取对象失败 ({}): {}", status, resp.status().canonical_reason().unwrap_or("")));
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("获取对象失败 ({}): {:?} body={}", status, status.canonical_reason(), body));
     }
 
     let data = resp.bytes().await.map_err(|e| anyhow!("读取数据失败: {}", e))?;
@@ -275,12 +288,15 @@ pub async fn upload_file(app: &mut App, local_path: &str, object_key: &str) -> R
 pub async fn download_object(app: &mut App, key: &str, local_path: &str) -> Result<()> {
     let data = get_object(app, key).await?;
 
+    // 展开 ~ 为用户主目录
+    let (expanded_path, _) = crate::path_complete::expand_tilde(local_path);
+
     // 确保父目录存在
-    if let Some(parent) = std::path::Path::new(local_path).parent() {
+    if let Some(parent) = std::path::Path::new(&expanded_path).parent() {
         let _ = std::fs::create_dir_all(parent);
     }
 
-    std::fs::write(local_path, &data)
+    std::fs::write(&expanded_path, &data)
         .map_err(|e| anyhow!("写入文件失败: {}", e))?;
 
     let size_str = if data.len() > 1024 * 1024 {
@@ -291,6 +307,6 @@ pub async fn download_object(app: &mut App, key: &str, local_path: &str) -> Resu
         format!("{} B", data.len())
     };
 
-    app.set_status(format!("已下载 '{}' 到 '{}'（{}）", key, local_path, size_str));
+    app.set_status(format!("已下载 '{}' 到 '{}'（{}）", key, expanded_path, size_str));
     Ok(())
 }

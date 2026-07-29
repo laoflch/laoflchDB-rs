@@ -320,7 +320,14 @@ pub struct ImageServiceConfig {
     /// 默认 bucket 名称
     #[serde(default = "default_image_bucket")]
     pub default_bucket: String,
+    /// 图片重复检测距离阈值（Cosine 距离 < 此值视为重复，默认 0.0001）
+    #[serde(default = "default_image_duplicate_distance")]
+    pub image_duplicate_distance: f32,
 }
+
+fn default_image_duplicate_distance() -> f32 { 0.0001 }
+fn default_face_duplicate_distance() -> f32 { 0.01 }
+fn default_same_person_threshold() -> f32 { 0.5 }
 
 /// 人脸服务配置
 #[derive(Debug, Deserialize, Clone)]
@@ -343,6 +350,12 @@ pub struct FaceServiceConfig {
     /// 默认最大检测人脸数（0=不限）
     #[serde(default)]
     pub max_faces: i32,
+    /// 人脸重复检测距离阈值（Cosine 距离 < 此值视为重复人脸，默认 0.01）
+    #[serde(default = "default_face_duplicate_distance")]
+    pub face_duplicate_distance: f32,
+    /// 人脸相似度判定阈值（点积 >= 此值视为同一人，默认 0.5）
+    #[serde(default = "default_same_person_threshold")]
+    pub same_person_threshold: f32,
 }
 
 fn default_face_model_dir() -> String {

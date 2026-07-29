@@ -865,6 +865,8 @@ pub struct StorageTabState {
     pub show_upload_dialog: bool,
     /// 下载保存路径输入框
     pub download_path: InputState,
+    /// 下载路径滚动偏移
+    pub download_path_scroll: usize,
     /// 下载对话框
     pub show_download_dialog: bool,
     /// 下载的数据缓存
@@ -873,12 +875,23 @@ pub struct StorageTabState {
     pub download_key: String,
     /// 路径补全弹窗
     pub path_popup: PathPopup,
+    /// 上传确认弹窗
+    pub confirm_upload: bool,
+    /// 上传确认中的本地路径
+    pub confirm_upload_path: String,
+    /// 上传确认中的对象 key
+    pub confirm_upload_key: String,
+    /// 上传确认弹窗中选择的选项（0=确认上传，1=取消）
+    pub confirm_upload_selected: usize,
 }
 
 /// 存储对象信息
 #[derive(Debug, Clone)]
 pub struct StorageObject {
+    /// 原始 key（URL 编码状态，用于操作）
     pub key: String,
+    /// 显示用的 key（URL 解码后，用于 UI 展示）
+    pub display_key: String,
     pub size: i64,
     pub last_modified: String,
     pub content_type: String,
@@ -893,7 +906,7 @@ impl Default for StorageTabState {
             objects: Vec::new(),
             selected_index: None,
             list_scroll: 0,
-            pagination: PaginationState::new(50),
+            pagination: PaginationState::new(20),
             sort_order: "asc".to_string(),
             s3_logged_in: false,
             focus: 0,
@@ -908,10 +921,15 @@ impl Default for StorageTabState {
             upload_path: InputState::new(),
             show_upload_dialog: false,
             download_path: InputState::new(),
+            download_path_scroll: 0,
             show_download_dialog: false,
             download_data: Vec::new(),
             download_key: String::new(),
             path_popup: PathPopup::default(),
+            confirm_upload: false,
+            confirm_upload_path: String::new(),
+            confirm_upload_key: String::new(),
+            confirm_upload_selected: 0,
         }
     }
 }

@@ -185,6 +185,7 @@ impl LaoflchDBServer {
                 let img_config = laoflchdb_image_service::ImageServiceConfig {
                     enabled: true,
                     default_bucket: img_cfg.default_bucket.clone(),
+                    image_duplicate_distance: img_cfg.image_duplicate_distance,
                 };
                 let img_svc = laoflchdb_image_service::ImageServiceImpl::new(
                     os_svc.clone(),
@@ -239,6 +240,8 @@ impl LaoflchDBServer {
                     arcface_model_file: face_cfg.arcface_model_file.clone(),
                     det_threshold: face_cfg.det_threshold,
                     max_faces: face_cfg.max_faces,
+                    face_duplicate_distance: face_cfg.face_duplicate_distance,
+                    same_person_threshold: face_cfg.same_person_threshold,
                 };
                 let face_svc = laoflchdb_face_service::FaceServiceImpl::new(
                     face_config,

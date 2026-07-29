@@ -98,7 +98,7 @@ fn resolve_input(input: &str) -> Option<(String, String, bool)> {
 }
 
 /// 展开 ~ 为 home 目录
-fn expand_tilde(input: &str) -> (String, bool) {
+pub fn expand_tilde(input: &str) -> (String, bool) {
     if input == "~" {
         let home = std::env::var("HOME").unwrap_or_else(|_| "~".to_string());
         (home, true)

@@ -45,8 +45,10 @@ const EMBEDDING_DIM: usize = 512;
 const DEFAULT_DET_THRESHOLD: f32 = 0.5;
 /// 默认最大检测人脸数（0=不限）
 const DEFAULT_MAX_FACES: i32 = 0;
-/// 人脸相似度判定阈值（余弦相似度 >= 0.5 视为同一人）
-const SAME_PERSON_THRESHOLD: f32 = 0.5;
+/// 人脸相似度判定阈值默认值（余弦相似度 >= 0.5 视为同一人）
+const DEFAULT_SAME_PERSON_THRESHOLD: f32 = 0.5;
+/// 人脸重复检测距离阈值默认值（Cosine 距离 < 0.01 视为重复人脸）
+const DEFAULT_FACE_DUPLICATE_DISTANCE: f32 = 0.01;
 /// SCRFD 输入最大尺寸（长边）
 const DETECT_MAX_INPUT_SIZE: u32 = 1280;
 /// SCRFD 输入最小尺寸（短边，避免小图片检测效果差）
@@ -69,6 +71,10 @@ pub struct FaceServiceConfig {
     pub det_threshold: f32,
     /// 默认最大检测人脸数（0=不限）
     pub max_faces: i32,
+    /// 人脸重复检测距离阈值（Cosine 距离 < 此值视为重复人脸，默认 0.01）
+    pub face_duplicate_distance: f32,
+    /// 人脸相似度判定阈值（点积 >= 此值视为同一人，默认 0.5）
+    pub same_person_threshold: f32,
 }
 
 impl Default for FaceServiceConfig {
@@ -80,6 +86,8 @@ impl Default for FaceServiceConfig {
             arcface_model_file: "arcface_r100.onnx".to_string(),
             det_threshold: DEFAULT_DET_THRESHOLD,
             max_faces: DEFAULT_MAX_FACES,
+            face_duplicate_distance: DEFAULT_FACE_DUPLICATE_DISTANCE,
+            same_person_threshold: DEFAULT_SAME_PERSON_THRESHOLD,
         }
     }
 }
@@ -1078,7 +1086,7 @@ impl FaceService for FaceServiceImpl {
             // 4. 去重检测：搜索 face 索引中是否有相同向量
             let existing_id = if req.index_embedding || req.save_aligned_images {
                 if let Some(ref emb_svc) = self.embedding_service {
-                    search_face_embedding(emb_svc, embedding).await
+                    search_face_embedding(emb_svc, embedding, self.config.face_duplicate_distance).await
                 } else {
                     None
                 }
@@ -1226,7 +1234,7 @@ impl FaceService for FaceServiceImpl {
             .map(|(a, b)| a * b)
             .sum();
 
-        let is_same = dot >= SAME_PERSON_THRESHOLD;
+        let is_same = dot >= self.config.same_person_threshold;
 
         Ok(TonicResponse::new(CompareFeaturesResponse {
             success: true,
@@ -1449,6 +1457,7 @@ async fn index_face_embedding(
 async fn search_face_embedding(
     emb_svc: &Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>,
     embedding: &[f32],
+    face_duplicate_distance: f32,
 ) -> Option<u64> {
     use laoflchdb_embedding_service::proto::embedding_index_service_server::EmbeddingIndexService;
     use laoflchdb_embedding_service::proto::SearchEmbeddingRequest;
@@ -1464,10 +1473,10 @@ async fn search_face_embedding(
             let resp = resp.into_inner();
             if resp.success && !resp.results.is_empty() {
                 let result = &resp.results[0];
-                // Cosine 距离 < 0.01 视为完全相同的人脸
+                // Cosine 距离 < face_duplicate_distance 视为完全相同的人脸
                 // 对于 L2 归一化向量，cosine_distance = 1 - dot_product
                 // 完全相同 → distance = 0
-                if result.distance < 0.01 {
+                if result.distance < face_duplicate_distance {
                     info!("  检测到重复人脸: existing_id={}, distance={}", result.id, result.distance);
                     return Some(result.id);
                 }
@@ -1666,7 +1675,7 @@ struct CompareFeaturesJson {
 }
 
 async fn compare_features_handler(
-    State(_service): State<Arc<FaceServiceImpl>>,
+    State(service): State<Arc<FaceServiceImpl>>,
     Json(req): Json<CompareFeaturesJson>,
 ) -> Response {
     if req.feature1.len() != EMBEDDING_DIM || req.feature2.len() != EMBEDDING_DIM {
@@ -1688,7 +1697,7 @@ async fn compare_features_handler(
         .zip(req.feature2.iter())
         .map(|(a, b)| a * b)
         .sum();
-    let is_same = dot >= SAME_PERSON_THRESHOLD;
+    let is_same = dot >= service.config.same_person_threshold;
 
     Json(serde_json::json!({
         "success": true,

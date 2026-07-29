@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use urlencoding;
 use axum::{
     Router,
     body::Bytes,
@@ -596,6 +597,9 @@ struct ListBucketResult {
     #[serde(rename = "NextMarker")]
     #[serde(skip_serializing_if = "Option::is_none")]
     next_marker: Option<String>,
+    #[serde(rename = "NextContinuationToken")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_continuation_token: Option<String>,
     #[serde(rename = "Delimiter")]
     #[serde(skip_serializing_if = "Option::is_none")]
     delimiter: Option<String>,
@@ -907,7 +911,7 @@ async fn list_objects_handler(
                 .objects
                 .iter()
                 .map(|o| ObjectContent {
-                    key: o.key.clone(),
+                    key: urlencoding::encode(&o.key).to_string(),
                     last_modified: timestamp_to_iso(&o.last_modified),
                     etag: o.etag.clone(),
                     size: o.size,
@@ -937,6 +941,11 @@ async fn list_objects_handler(
                     Some(query.marker)
                 },
                 next_marker: if resp.is_truncated && !resp.next_marker.is_empty() {
+                    Some(resp.next_marker.clone())
+                } else {
+                    None
+                },
+                next_continuation_token: if query.list_type.as_deref() == Some("2") && resp.is_truncated && !resp.next_marker.is_empty() {
                     Some(resp.next_marker)
                 } else {
                     None
@@ -1179,7 +1188,10 @@ async fn s3_dispatch(
         .splitn(2, '/')
         .collect();
 
-    let bucket = path_segments[0].to_string();
+    // URL 解码 bucket（bucket 名称通常简单，但以防万一）
+    let bucket = urlencoding::decode(path_segments[0])
+        .map(|s| s.into_owned())
+        .unwrap_or_else(|_| path_segments[0].to_string());
     if bucket.is_empty() {
         return s3_error_response("InvalidRequest", "Bucket 名称不能为空", StatusCode::BAD_REQUEST);
     }
@@ -1208,7 +1220,11 @@ async fn s3_dispatch(
     }
 
     // /{bucket}/{key} - 有 key
-    let key = path_segments[1].to_string();
+    // URL 解码 key 后再操作，RocksDB 中存储的是解码后的原始字符串
+    let key = urlencoding::decode(path_segments[1])
+        .map(|s| s.into_owned())
+        .unwrap_or_else(|_| path_segments[1].to_string());
+    log::debug!("GET/PUT/DELETE object: bucket={}, key={}", bucket, key);
     match method {
         Method::GET => {
             // GetObject
@@ -1246,10 +1262,16 @@ async fn list_objects_handler_inner(
     bucket: &str,
     query_str: &str,
 ) -> Response {
-    // 解析查询参数
+    // 解析查询参数并 URL 解码
     let query_params = parse_query_string(query_str);
     let prefix = query_params.get("prefix").cloned().unwrap_or_default();
+    let prefix = urlencoding::decode(&prefix)
+        .map(|s| s.into_owned())
+        .unwrap_or(prefix);
     let delimiter = query_params.get("delimiter").cloned().unwrap_or_default();
+    let delimiter = urlencoding::decode(&delimiter)
+        .map(|s| s.into_owned())
+        .unwrap_or(delimiter);
     let max_keys: i32 = query_params.get("max-keys")
         .and_then(|v| v.parse().ok())
         .unwrap_or(1000)
@@ -1257,6 +1279,11 @@ async fn list_objects_handler_inner(
     let marker = query_params.get("continuation-token").cloned()
         .or_else(|| query_params.get("marker").cloned())
         .unwrap_or_default();
+    let marker = urlencoding::decode(&marker)
+        .map(|s| s.into_owned())
+        .unwrap_or(marker);
+
+    let is_v2 = query_params.get("list-type").map(|v| v == "2").unwrap_or(false);
 
     let req = tonic::Request::new(ListObjectsRequest {
         bucket: bucket.to_string(),
@@ -1274,7 +1301,7 @@ async fn list_objects_handler_inner(
                 .objects
                 .iter()
                 .map(|o| ObjectContent {
-                    key: o.key.clone(),
+                    key: urlencoding::encode(&o.key).to_string(),
                     last_modified: timestamp_to_iso(&o.last_modified),
                     etag: o.etag.clone(),
                     size: o.size,
@@ -1300,6 +1327,11 @@ async fn list_objects_handler_inner(
                 common_prefixes,
                 marker: if marker.is_empty() { None } else { Some(marker) },
                 next_marker: if resp.is_truncated && !resp.next_marker.is_empty() {
+                    Some(resp.next_marker.clone())
+                } else {
+                    None
+                },
+                next_continuation_token: if is_v2 && resp.is_truncated && !resp.next_marker.is_empty() {
                     Some(resp.next_marker)
                 } else {
                     None
@@ -1308,11 +1340,14 @@ async fn list_objects_handler_inner(
             };
 
             match to_xml(&result) {
-                Ok(xml) => (
-                    StatusCode::OK,
-                    [("Content-Type", "application/xml")],
-                    xml,
-                ).into_response(),
+                Ok(xml) => {
+                    log::debug!("list_objects 返回 XML（前 1000 字节）: {}", &xml[..xml.len().min(1000)]);
+                    (
+                        StatusCode::OK,
+                        [("Content-Type", "application/xml")],
+                        xml,
+                    ).into_response()
+                }
                 Err(_) => (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     [("Content-Type", "application/xml")],
@@ -1320,11 +1355,14 @@ async fn list_objects_handler_inner(
                 ).into_response(),
             }
         }
-        Err(e) => (
+        Err(e) => {
+            log::error!("list_objects 调用失败: bucket={}, err={}", bucket, e.message());
+            (
             StatusCode::INTERNAL_SERVER_ERROR,
             [("Content-Type", "application/xml")],
             format!("<Error><Code>InternalError</Code><Message>{}</Message></Error>", e.message()),
-        ).into_response(),
+        ).into_response()
+        }
     }
 }
 
@@ -1410,7 +1448,7 @@ async fn put_object_handler_inner(
         bucket: bucket.to_string(),
         key: key.to_string(),
         data: body.to_vec(),
-        content_type,
+        content_type: content_type,
         metadata: HashMap::new(),
     });
 
@@ -1424,10 +1462,14 @@ async fn put_object_handler_inner(
                     .body(axum::body::Body::empty())
                     .unwrap()
             } else {
+                log::error!("put_object 返回失败: bucket={}, key={}, msg={}", bucket, key, resp.message);
                 s3_error_response("InternalError", &resp.message, StatusCode::INTERNAL_SERVER_ERROR)
             }
         }
-        Err(e) => s3_error_response("InternalError", &e.message(), StatusCode::INTERNAL_SERVER_ERROR),
+        Err(e) => {
+            log::error!("put_object 调用失败: bucket={}, key={}, err={}", bucket, key, e.message());
+            s3_error_response("InternalError", &e.message(), StatusCode::INTERNAL_SERVER_ERROR)
+        }
     }
 }
 
