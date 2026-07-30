@@ -1883,7 +1883,8 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                         if let Some(si) = sel {
                             if let Some(obj) = app.storage_tab.objects.get(si) {
                                 app.storage_tab.show_download_dialog = true;
-                                app.storage_tab.download_key = obj.key.clone();
+                                // 使用 display_key（解码后的原始 key），rusty_s3 会正确编码
+                                app.storage_tab.download_key = obj.display_key.clone();
                                 let filename = std::path::Path::new(&obj.display_key)
                                     .file_name()
                                     .and_then(|n| n.to_str())
@@ -1901,7 +1902,7 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                         if let Some(si) = sel {
                             if let Some(obj) = app.storage_tab.objects.get(si) {
                                 app.storage_tab.confirm_delete = true;
-                                app.storage_tab.delete_key = obj.key.clone();
+                                app.storage_tab.delete_key = obj.display_key.clone();
                             }
                         }
                     }
@@ -1951,7 +1952,8 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                     if let Some(obj) = app.storage_tab.objects.get(idx) {
                         app.storage_tab.show_detail = false;
                         app.storage_tab.show_download_dialog = true;
-                        app.storage_tab.download_key = obj.key.clone();
+                        // 使用 display_key（解码后的原始 key），rusty_s3 会正确编码
+                        app.storage_tab.download_key = obj.display_key.clone();
                         // 默认下载路径（使用 display_key 获取正确的文件名）
                         let filename = std::path::Path::new(&obj.display_key)
                             .file_name()
@@ -2265,7 +2267,7 @@ async fn handle_storage_tab(app: &mut App, event: KeyEvent) -> bool {
                 if let Some(idx) = app.storage_tab.selected_index {
                     if let Some(obj) = app.storage_tab.objects.get(idx) {
                         app.storage_tab.confirm_delete = true;
-                        app.storage_tab.delete_key = obj.key.clone();
+                        app.storage_tab.delete_key = obj.display_key.clone();
                         return true;
                     }
                 }

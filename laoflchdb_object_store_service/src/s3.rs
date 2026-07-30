@@ -482,48 +482,28 @@ fn url_decode(s: &str) -> String {
     result
 }
 
-/// 构建规范查询字符串（移除 X-Amz-Signature，按 key 排序，URL 编码）
-fn build_canonical_query_string(query: &str, params: &std::collections::HashMap<String, String>) -> String {
-    let mut pairs: Vec<(String, String)> = params.iter()
-        .filter(|(k, _)| *k != "X-Amz-Signature")
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
-    pairs.sort_by(|a, b| a.0.cmp(&b.0));
-
-    pairs.iter()
-        .map(|(k, v)| {
-            // URL 编码 key
-            let encoded_k = percent_encode(k);
-            let encoded_v = percent_encode(v);
-            format!("{}={}", encoded_k, encoded_v)
+/// 构建规范查询字符串（移除 X-Amz-Signature，按 key 排序）
+/// 直接从原始查询字符串操作，不经过 decode→re-encode 循环，避免多字节 UTF-8 序列损坏
+fn build_canonical_query_string(query: &str, _params: &std::collections::HashMap<String, String>) -> String {
+    let mut pairs: Vec<(&str, &str)> = query.split('&')
+        .filter_map(|pair| {
+            if let Some(idx) = pair.find('=') {
+                let key = &pair[..idx];
+                if key == "X-Amz-Signature" {
+                    return None;
+                }
+                Some((key, &pair[idx + 1..]))
+            } else {
+                Some((pair, ""))
+            }
         })
+        .collect();
+    // 按 key 的字节序排序
+    pairs.sort_by(|a, b| a.0.cmp(b.0));
+    pairs.iter()
+        .map(|(k, v)| format!("{}={}", k, v))
         .collect::<Vec<_>>()
         .join("&")
-}
-
-/// 简单的百分比编码（只编码需要编码的字符）
-fn percent_encode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '_' | '-' | '~' | '.' => result.push(c),
-            ' ' => result.push_str("%20"),
-            '/' => result.push_str("%2F"),
-            ':' => result.push_str("%3A"),
-            '=' => result.push_str("%3D"),
-            '&' => result.push_str("%26"),
-            '%' => result.push_str("%25"),
-            '@' => result.push_str("%40"),
-            '+' => result.push_str("%2B"),
-            ',' => result.push_str("%2C"),
-            other => {
-                for byte in other.to_string().as_bytes() {
-                    result.push_str(&format!("%{:02X}", byte));
-                }
-            }
-        }
-    }
-    result
 }
 
 // ── XML 响应结构 ──
@@ -911,7 +891,7 @@ async fn list_objects_handler(
                 .objects
                 .iter()
                 .map(|o| ObjectContent {
-                    key: urlencoding::encode(&o.key).to_string(),
+                    key: o.key.clone(),
                     last_modified: timestamp_to_iso(&o.last_modified),
                     etag: o.etag.clone(),
                     size: o.size,
@@ -1032,7 +1012,7 @@ async fn get_object_handler(
             headers.insert("Content-Type", resp.content_type.parse().unwrap_or("application/octet-stream".parse().unwrap()));
             headers.insert("Content-Length", resp.content_length.to_string().parse().unwrap());
             headers.insert("ETag", resp.etag.parse().unwrap_or("\"\"".parse().unwrap()));
-            headers.insert("Last-Modified", resp.content_length.to_string().parse().unwrap_or("0".parse().unwrap()));
+            headers.insert("Last-Modified", timestamp_to_rfc7231(&resp.last_modified).parse().unwrap());
             (StatusCode::OK, headers, resp.data)
         }
         Err(e) => {
@@ -1066,7 +1046,7 @@ async fn head_object_handler(
             headers.insert("Content-Type", resp.content_type.parse().unwrap_or("application/octet-stream".parse().unwrap()));
             headers.insert("Content-Length", resp.content_length.to_string().parse().unwrap());
             headers.insert("ETag", resp.etag.parse().unwrap_or("\"\"".parse().unwrap()));
-            headers.insert("Last-Modified", resp.last_modified.parse().unwrap_or("0".parse().unwrap()));
+            headers.insert("Last-Modified", timestamp_to_rfc7231(&resp.last_modified).parse().unwrap());
             (StatusCode::OK, headers)
         }
         Err(_) => (StatusCode::NOT_FOUND, HeaderMap::new()),
@@ -1109,6 +1089,20 @@ fn timestamp_to_iso(timestamp: &str) -> String {
     }
     // 如果是 ISO 格式或无效，直接返回
     timestamp.to_string()
+}
+
+/// 将 Unix 时间戳（秒）转换为 RFC 7231 格式（用于 Last-Modified HTTP 头）
+fn timestamp_to_rfc7231(timestamp: &str) -> String {
+    if let Ok(secs) = timestamp.parse::<i64>() {
+        // RFC 7231 格式: Thu, 29 Jul 2026 06:09:09 GMT
+        let naive = chrono::NaiveDateTime::from_timestamp_opt(secs, 0)
+            .unwrap_or_default();
+        let utc: chrono::DateTime<chrono::Utc> =
+            chrono::DateTime::from_naive_utc_and_offset(naive, chrono::Utc);
+        return utc.format("%a, %d %b %Y %H:%M:%S GMT").to_string();
+    }
+    // 无效时间戳，返回 epoch
+    "Thu, 01 Jan 1970 00:00:00 GMT".to_string()
 }
 
 // ── 创建 S3 Router ──
@@ -1220,10 +1214,8 @@ async fn s3_dispatch(
     }
 
     // /{bucket}/{key} - 有 key
-    // URL 解码 key 后再操作，RocksDB 中存储的是解码后的原始字符串
-    let key = urlencoding::decode(path_segments[1])
-        .map(|s| s.into_owned())
-        .unwrap_or_else(|_| path_segments[1].to_string());
+    // 注意：key 保持 URI 原样（URL 编码状态），因为 RocksDB 中存储的 key 也是编码后的
+    let key = path_segments[1].to_string();
     log::debug!("GET/PUT/DELETE object: bucket={}, key={}", bucket, key);
     match method {
         Method::GET => {
@@ -1262,28 +1254,31 @@ async fn list_objects_handler_inner(
     bucket: &str,
     query_str: &str,
 ) -> Response {
-    // 解析查询参数并 URL 解码
-    let query_params = parse_query_string(query_str);
-    let prefix = query_params.get("prefix").cloned().unwrap_or_default();
-    let prefix = urlencoding::decode(&prefix)
-        .map(|s| s.into_owned())
-        .unwrap_or(prefix);
-    let delimiter = query_params.get("delimiter").cloned().unwrap_or_default();
-    let delimiter = urlencoding::decode(&delimiter)
-        .map(|s| s.into_owned())
-        .unwrap_or(delimiter);
-    let max_keys: i32 = query_params.get("max-keys")
-        .and_then(|v| v.parse().ok())
+    // 解析查询参数（保持原始编码状态，因为 RocksDB 中 key 是编码存储的）
+    // 手动解析，不使用 parse_query_string（它会 URL 解码，破坏多字节编码）
+    let query_params = query_str.split('&')
+        .filter_map(|pair| {
+            pair.split_once('=').map(|(k, v)| (k, v))
+        })
+        .collect::<Vec<_>>();
+    let get_param = |name: &str| -> String {
+        query_params.iter()
+            .find(|(k, _)| *k == name)
+            .map(|(_, v)| v.to_string())
+            .unwrap_or_default()
+    };
+    let prefix = get_param("prefix");
+    let delimiter = get_param("delimiter");
+    let max_keys: i32 = get_param("max-keys")
+        .parse()
         .unwrap_or(1000)
         .max(1).min(1000);
-    let marker = query_params.get("continuation-token").cloned()
-        .or_else(|| query_params.get("marker").cloned())
-        .unwrap_or_default();
-    let marker = urlencoding::decode(&marker)
-        .map(|s| s.into_owned())
-        .unwrap_or(marker);
+    let marker = {
+        let ct = get_param("continuation-token");
+        if ct.is_empty() { get_param("marker") } else { ct }
+    };
 
-    let is_v2 = query_params.get("list-type").map(|v| v == "2").unwrap_or(false);
+    let is_v2 = get_param("list-type") == "2";
 
     let req = tonic::Request::new(ListObjectsRequest {
         bucket: bucket.to_string(),
@@ -1301,7 +1296,7 @@ async fn list_objects_handler_inner(
                 .objects
                 .iter()
                 .map(|o| ObjectContent {
-                    key: urlencoding::encode(&o.key).to_string(),
+                    key: o.key.clone(),
                     last_modified: timestamp_to_iso(&o.last_modified),
                     etag: o.etag.clone(),
                     size: o.size,
@@ -1486,7 +1481,7 @@ async fn get_object_handler_inner(state: &Arc<S3State>, bucket: &str, key: &str)
             headers.insert("Content-Type", resp.content_type.parse().unwrap_or("application/octet-stream".parse().unwrap()));
             headers.insert("Content-Length", resp.content_length.to_string().parse().unwrap());
             headers.insert("ETag", resp.etag.parse().unwrap_or("\"\"".parse().unwrap()));
-            headers.insert("Last-Modified", resp.content_length.to_string().parse().unwrap_or("0".parse().unwrap()));
+            headers.insert("Last-Modified", timestamp_to_rfc7231(&resp.last_modified).parse().unwrap());
             (StatusCode::OK, headers, resp.data).into_response()
         }
         Err(e) => {
@@ -1517,7 +1512,7 @@ async fn head_object_handler_inner(state: &Arc<S3State>, bucket: &str, key: &str
             headers.insert("Content-Type", resp.content_type.parse().unwrap_or("application/octet-stream".parse().unwrap()));
             headers.insert("Content-Length", resp.content_length.to_string().parse().unwrap());
             headers.insert("ETag", resp.etag.parse().unwrap_or("\"\"".parse().unwrap()));
-            headers.insert("Last-Modified", resp.last_modified.parse().unwrap_or("0".parse().unwrap()));
+            headers.insert("Last-Modified", timestamp_to_rfc7231(&resp.last_modified).parse().unwrap());
             (StatusCode::OK, headers).into_response()
         }
         Err(_) => (StatusCode::NOT_FOUND, HeaderMap::new()).into_response(),

@@ -292,6 +292,7 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
 
         let mut content_type = String::new();
         let mut etag = String::new();
+        let mut last_modified = String::new();
         let mut metadata = HashMap::new();
 
         if !meta_bytes.is_empty() {
@@ -303,6 +304,11 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
                     .to_string();
                 etag = meta
                     .get("etag")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                last_modified = meta
+                    .get("last_modified")
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -325,6 +331,7 @@ impl ObjectStoreService for ObjectStoreServiceImpl {
             content_type,
             content_length,
             etag,
+            last_modified,
             metadata,
         }))
     }

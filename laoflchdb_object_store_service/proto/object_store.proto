@@ -55,7 +55,8 @@ message GetObjectResponse {
   string content_type = 4;
   int64 content_length = 5;
   string etag = 6;
-  map<string, string> metadata = 7;
+  string last_modified = 7;
+  map<string, string> metadata = 8;
 }
 
 // ── DeleteObject ────────────────────────────
