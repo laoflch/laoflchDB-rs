@@ -2,10 +2,24 @@
 
 ## 基础信息
 
-- **Base URL**: `http://localhost:8080`
+| API | Base URL | 端口 | 认证方式 | 响应格式 |
+|------|-----------|------|---------|---------|
+| **REST API** | `http://localhost:8080` | 8080 | Bearer Token | JSON |
+| **gRPC API** | `grpc://localhost:19777` | 19777 | Bearer Token | Protobuf |
+| **S3 兼容 API** | `http://localhost:9000` | 9000 | AWS Signature V4 | XML |
+
 - **Content-Type**: `application/json`
-- **gRPC 端口**: `19777`
 - **版本**: v0.1.9
+
+## S3 兼容 API
+
+LaoflchDB 还提供完全兼容 S3 协议的对象存储接口，支持：
+
+- **AWS Signature V4** 签名验证
+- **标准 S3 XML** 响应格式
+- **预签名 URL** 支持
+
+详细文档请参考 [S3_API.md](./S3_API.md)。
 
 ## 认证机制
 
@@ -1014,6 +1028,7 @@ cargo docker deploy
 服务将同时启动:
 - **gRPC 服务**: `0.0.0.0:19777`
 - **REST 服务**: `0.0.0.0:8080`
+- **S3 服务**: `0.0.0.0:9000`
 
 ---
 
@@ -1062,6 +1077,13 @@ access_protocols:
     enabled: true
     addr: 0.0.0.0:8080
     service_id: rest_admin
+
+  - protocol: s3
+    enabled: true
+    addr: 0.0.0.0:9000
+    service_id: s3_admin
+    s3_access_key: admin
+    s3_secret_key: laoflchdb
 
 # 权限配置
 permissions:

@@ -2,10 +2,25 @@
 
 ## 基础信息
 
-- **服务地址**: `localhost:19777`
+| API | 地址 | 端口 | 认证方式 | 响应格式 |
+|------|-----------|------|---------|---------|
+| **gRPC API** | `grpc://localhost:19777` | 19777 | Bearer Token | Protobuf |
+| **REST API** | `http://localhost:8080` | 8080 | Bearer Token | JSON |
+| **S3 兼容 API** | `http://localhost:9000` | 9000 | AWS Signature V4 | XML |
+
 - **协议**: gRPC (HTTP/2)
 - **语言**: Protocol Buffers 3
 - **版本**: v0.1.9
+
+## S3 兼容 API
+
+LaoflchDB 还提供完全兼容 S3 协议的对象存储接口，支持：
+
+- **AWS Signature V4** 签名验证
+- **标准 S3 XML** 响应格式
+- **预签名 URL** 支持
+
+详细文档请参考 [S3_API.md](./S3_API.md)。
 
 ## 认证机制
 
