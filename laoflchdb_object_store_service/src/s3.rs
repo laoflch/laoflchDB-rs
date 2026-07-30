@@ -1183,9 +1183,10 @@ async fn s3_dispatch(
         .collect();
 
     // URL 解码 bucket（bucket 名称通常简单，但以防万一）
-    let bucket = urlencoding::decode(path_segments[0])
-        .map(|s| s.into_owned())
-        .unwrap_or_else(|_| path_segments[0].to_string());
+    let bucket = {
+        let decoded = urlencoding::decode_binary(path_segments[0].as_bytes());
+        String::from_utf8_lossy(&decoded).to_string()
+    };
     if bucket.is_empty() {
         return s3_error_response("InvalidRequest", "Bucket 名称不能为空", StatusCode::BAD_REQUEST);
     }
@@ -1214,8 +1215,11 @@ async fn s3_dispatch(
     }
 
     // /{bucket}/{key} - 有 key
-    // 注意：key 保持 URI 原样（URL 编码状态），因为 RocksDB 中存储的 key 也是编码后的
-    let key = path_segments[1].to_string();
+    // URL 解码 key，在 RocksDB 中存储解码后的原始 key
+    let key = {
+        let decoded = urlencoding::decode_binary(path_segments[1].as_bytes());
+        String::from_utf8_lossy(&decoded).to_string()
+    };
     log::debug!("GET/PUT/DELETE object: bucket={}, key={}", bucket, key);
     match method {
         Method::GET => {
@@ -1254,8 +1258,7 @@ async fn list_objects_handler_inner(
     bucket: &str,
     query_str: &str,
 ) -> Response {
-    // 解析查询参数（保持原始编码状态，因为 RocksDB 中 key 是编码存储的）
-    // 手动解析，不使用 parse_query_string（它会 URL 解码，破坏多字节编码）
+    // 解析查询参数并 URL 解码
     let query_params = query_str.split('&')
         .filter_map(|pair| {
             pair.split_once('=').map(|(k, v)| (k, v))
@@ -1264,7 +1267,11 @@ async fn list_objects_handler_inner(
     let get_param = |name: &str| -> String {
         query_params.iter()
             .find(|(k, _)| *k == name)
-            .map(|(_, v)| v.to_string())
+            .map(|(_, v)| {
+                // URL 解码参数值
+                let decoded = urlencoding::decode_binary(v.as_bytes());
+                String::from_utf8_lossy(&decoded).to_string()
+            })
             .unwrap_or_default()
     };
     let prefix = get_param("prefix");
@@ -1296,7 +1303,8 @@ async fn list_objects_handler_inner(
                 .objects
                 .iter()
                 .map(|o| ObjectContent {
-                    key: o.key.clone(),
+                    // URL 编码 key 用于 S3 响应
+                    key: urlencoding::encode(&o.key).to_string(),
                     last_modified: timestamp_to_iso(&o.last_modified),
                     etag: o.etag.clone(),
                     size: o.size,
@@ -1309,29 +1317,30 @@ async fn list_objects_handler_inner(
                 .common_prefixes
                 .iter()
                 .map(|p| CommonPrefix {
-                    prefix: p.clone(),
+                    // URL 编码前缀用于 S3 响应
+                    prefix: urlencoding::encode(p).to_string(),
                 })
                 .collect();
 
             let result = ListBucketResult {
                 name: resp.bucket.clone(),
-                prefix,
+                prefix: if prefix.is_empty() { String::new() } else { urlencoding::encode(&prefix).to_string() },
                 max_keys,
                 is_truncated: resp.is_truncated,
                 contents,
                 common_prefixes,
-                marker: if marker.is_empty() { None } else { Some(marker) },
+                marker: if marker.is_empty() { None } else { Some(urlencoding::encode(&marker).to_string()) },
                 next_marker: if resp.is_truncated && !resp.next_marker.is_empty() {
-                    Some(resp.next_marker.clone())
+                    Some(urlencoding::encode(&resp.next_marker).to_string())
                 } else {
                     None
                 },
                 next_continuation_token: if is_v2 && resp.is_truncated && !resp.next_marker.is_empty() {
-                    Some(resp.next_marker)
+                    Some(urlencoding::encode(&resp.next_marker).to_string())
                 } else {
                     None
                 },
-                delimiter: if delimiter.is_empty() { None } else { Some(delimiter) },
+                delimiter: if delimiter.is_empty() { None } else { Some(urlencoding::encode(&delimiter).to_string()) },
             };
 
             match to_xml(&result) {

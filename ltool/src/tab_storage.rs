@@ -111,9 +111,10 @@ fn parse_s3_list_response(xml: &str) -> Result<(Vec<StorageObject>, bool, String
 
     let objects: Vec<StorageObject> = parsed.contents.into_iter().map(|c| {
         // key 保持原样（URL 编码状态）用于操作，display_key 解码后用于显示
-        let display_key = urlencoding::decode(&c.key)
-            .map(|s| s.into_owned())
-            .unwrap_or_else(|_| c.key.clone());
+        let display_key = {
+            let decoded = urlencoding::decode_binary(c.key.as_bytes());
+            String::from_utf8_lossy(&decoded).to_string()
+        };
         let content_type = infer_content_type(&c.key);
         // 把 UTC 格式的 last modified 转为本地时区的可读格式
         let last_modified = chrono::DateTime::parse_from_rfc3339(&c.last_modified)

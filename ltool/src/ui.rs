@@ -2008,8 +2008,10 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
         };
 
         // 文件信息
-        let path_short = if app.storage_tab.confirm_upload_path.len() > 40 {
-            format!("...{}", &app.storage_tab.confirm_upload_path[app.storage_tab.confirm_upload_path.len().saturating_sub(37)..])
+        let path_short = if app.storage_tab.confirm_upload_path.chars().count() > 40 {
+            let total_chars = app.storage_tab.confirm_upload_path.chars().count();
+            let suffix: String = app.storage_tab.confirm_upload_path.chars().skip(total_chars.saturating_sub(37)).collect();
+            format!("...{}", suffix)
         } else {
             app.storage_tab.confirm_upload_path.clone()
         };
@@ -2121,10 +2123,8 @@ fn draw_storage_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
             Style::default().fg(Color::Cyan)
         };
 
-        let display_key = urlencoding::decode(&app.storage_tab.download_key)
-            .map(|s| s.into_owned())
-            .unwrap_or_else(|_| app.storage_tab.download_key.clone());
-        let title = format!("下载: {}", display_key);
+        // download_key 已经是原始 key（display_key），不需要再解码
+        let title = format!("下载: {}", app.storage_tab.download_key);
         let input_area = Rect { x: x + 1, y: y + 1, width: width - 2, height: input_lines };
         let input_style = Style::default().bg(Color::DarkGray).fg(Color::White);
 
