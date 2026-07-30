@@ -594,47 +594,7 @@ fn draw_face_tab(f: &mut Frame, app: &mut App, area: Rect) -> Option<Rect> {
 /// 绘制检测结果操作弹窗
 fn draw_face_detection_action_popup(f: &mut Frame, app: &mut App) {
     const OPTIONS: &[&str] = &["保存人脸并索引", "检索相似人脸"];
-    let area = f.size();
-    let width = 30;
-    let height = OPTIONS.len() as u16 + 3;
-    let x = (area.width.saturating_sub(width)) / 2;
-    let y = (area.height.saturating_sub(height)) / 2;
-    let dialog_area = Rect { x, y, width, height };
-
-    f.render_widget(Clear, dialog_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("人脸操作")
-        .style(Style::default().bg(Color::Black).fg(Color::White));
-    f.render_widget(block, dialog_area);
-
-    let inner = Rect {
-        x: dialog_area.x + 1,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(2),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    for (i, opt) in OPTIONS.iter().enumerate() {
-        let selected = i == app.face_tab.detection_action_selected;
-        let style = if selected {
-            Style::default().bg(Color::Green).fg(Color::Black)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let prefix = if selected { "▶ " } else { "  " };
-        let line = Paragraph::new(Line::from(Span::styled(
-            format!("{}{}", prefix, opt),
-            style,
-        )));
-        f.render_widget(line, Rect {
-            x: inner.x,
-            y: inner.y + i as u16,
-            width: inner.width,
-            height: 1,
-        });
-    }
+    draw_action_menu_popup(f, "人脸操作", OPTIONS, app.face_tab.detection_action_selected, None);
 }
 
 /// 绘制检索相似人脸结果弹窗
@@ -871,76 +831,18 @@ fn draw_face_saved_list(f: &mut Frame, app: &mut App) {
 /// 已保存人脸操作弹窗
 fn draw_face_saved_action_popup(f: &mut Frame, app: &mut App) {
     const FACE_ACTION_OPTIONS: &[&str] = &["导出人脸", "删除人脸"];
-    let area = f.size();
-    let width = 30;
-    let height = FACE_ACTION_OPTIONS.len() as u16 + 3;
-    let x = (area.width.saturating_sub(width)) / 2;
-    let y = (area.height.saturating_sub(height)) / 2;
-    let dialog_area = Rect { x, y, width, height };
-
-    f.render_widget(Clear, dialog_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("人脸操作")
-        .style(Style::default().bg(Color::Black).fg(Color::White));
-    f.render_widget(block, dialog_area);
-
-    let inner = Rect {
-        x: dialog_area.x + 1,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(2),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    for (i, opt) in FACE_ACTION_OPTIONS.iter().enumerate() {
-        let selected = i == app.face_tab.saved_action_selected;
-        let style = if selected {
-            Style::default().bg(Color::Green).fg(Color::Black)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let prefix = if selected { "▶ " } else { "  " };
-        let line = Paragraph::new(Line::from(Span::styled(
-            format!("{}{}", prefix, opt),
-            style,
-        )));
-        f.render_widget(line, Rect {
-            x: inner.x,
-            y: inner.y + i as u16,
-            width: inner.width,
-            height: 1,
-        });
-    }
+    draw_action_menu_popup(f, "人脸操作", FACE_ACTION_OPTIONS, app.face_tab.saved_action_selected, None);
 }
 
 /// 已保存人脸删除确认弹窗
 fn draw_face_delete_confirm_dialog(f: &mut Frame, key: &str) {
-    let area = f.size();
-    let width = 50.min(area.width.saturating_sub(4));
-    let height = 5;
-    let x = (area.width - width) / 2;
-    let y = (area.height - height) / 2;
-    let dialog_area = Rect { x, y, width, height };
-
-    f.render_widget(Clear, dialog_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("确认删除")
-        .style(Style::default().bg(Color::Black).fg(Color::Red));
-    f.render_widget(block, dialog_area);
-
-    let inner = Rect {
-        x: dialog_area.x + 1,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(2),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    let msg = Paragraph::new(format!("确认删除人脸 {} ?\nEnter 确认  Esc 取消", key))
-        .wrap(Wrap { trim: false });
-    f.render_widget(msg, inner);
+    draw_confirm_dialog(
+        f,
+        "确认删除",
+        &format!("确认删除人脸 {} ?\nEnter 确认  Esc 取消", key),
+        Color::Red,
+        None,
+    );
 }
 
 // ── 向量 Tab ──────────────────────────────────────
@@ -1154,47 +1056,7 @@ fn draw_vector_tab(f: &mut Frame, app: &mut App, area: Rect) -> Rect {
         };
 
         const VEC_ACTION_OPTIONS: &[&str] = &["查看向量", "删除向量"];
-        let area = f.size();
-        let width = 30;
-        let height = VEC_ACTION_OPTIONS.len() as u16 + 3;
-        let x = (area.width.saturating_sub(width)) / 2;
-        let y = (area.height.saturating_sub(height)) / 2;
-        let dialog_area = Rect { x, y, width, height };
-
-        f.render_widget(Clear, dialog_area);
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(action_label)
-            .style(Style::default().bg(Color::Black).fg(Color::White));
-        f.render_widget(block, dialog_area);
-
-        let inner = Rect {
-            x: dialog_area.x + 1,
-            y: dialog_area.y + 1,
-            width: dialog_area.width.saturating_sub(2),
-            height: dialog_area.height.saturating_sub(2),
-        };
-
-        for (i, label) in VEC_ACTION_OPTIONS.iter().enumerate() {
-            let selected = i == app.vector_tab.entries_action_selected;
-            let style = if selected {
-                Style::default().bg(Color::Green).fg(Color::Black)
-            } else {
-                Style::default().fg(Color::White)
-            };
-            let prefix = if selected { "▶ " } else { "  " };
-            let line = Paragraph::new(Line::from(Span::styled(
-                format!("{}{}", prefix, label),
-                style,
-            )));
-            f.render_widget(line, Rect {
-                x: inner.x,
-                y: inner.y + i as u16,
-                width: inner.width,
-                height: 1,
-            });
-        }
+        draw_action_menu_popup(f, &action_label, VEC_ACTION_OPTIONS, app.vector_tab.entries_action_selected, None);
     }
 
     // ── 向量详情弹窗 ──
@@ -3234,102 +3096,20 @@ fn format_timestamp(ts: &str) -> String {
 }
 
 /// 绘制图片操作弹窗
-const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "下载图片", "删除图片"];
-
 fn draw_image_action_popup(f: &mut Frame, app: &mut App) {
-    let area = f.size();
-    let width = 30;
-    let height = IMAGE_ACTION_OPTIONS.len() as u16 + 3; // 标题 + 选项 + 边框
-    let x = (area.width.saturating_sub(width)) / 2;
-    let y = (area.height.saturating_sub(height)) / 2;
-    let dialog_area = Rect { x, y, width, height };
-
-    f.render_widget(Clear, dialog_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("图片操作")
-        .style(Style::default().bg(Color::Black).fg(Color::White));
-    f.render_widget(block, dialog_area);
-
-    let inner = Rect {
-        x: dialog_area.x + 1,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(2),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    for (i, opt) in IMAGE_ACTION_OPTIONS.iter().enumerate() {
-        let selected = i == app.image_tab.action_popup_selected;
-        let style = if selected {
-            Style::default().bg(Color::Green).fg(Color::Black)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let prefix = if selected { "▶ " } else { "  " };
-        let line = Paragraph::new(Line::from(Span::styled(
-            format!("{}{}", prefix, opt),
-            style,
-        )));
-        f.render_widget(line, Rect {
-            x: inner.x,
-            y: inner.y + i as u16,
-            width: inner.width,
-            height: 1,
-        });
-    }
+    const IMAGE_ACTION_OPTIONS: &[&str] = &["查看元数据", "下载图片", "删除图片"];
+    draw_action_menu_popup(f, "图片操作", IMAGE_ACTION_OPTIONS, app.image_tab.action_popup_selected, None);
 }
 
 /// 绘制删除确认弹窗
 fn draw_delete_confirm_dialog(f: &mut Frame, key: &str) {
-    let area = f.size();
-    let width = 50.min(area.width.saturating_sub(4));
-    let height = 5;
-    let x = (area.width - width) / 2;
-    let y = (area.height - height) / 2;
-    let dialog_area = Rect { x, y, width, height };
-
-    f.render_widget(Clear, dialog_area);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("确认删除")
-        .style(Style::default().bg(Color::Black).fg(Color::Red));
-    f.render_widget(block, dialog_area);
-
-    let inner = Rect {
-        x: dialog_area.x + 1,
-        y: dialog_area.y + 1,
-        width: dialog_area.width.saturating_sub(2),
-        height: dialog_area.height.saturating_sub(2),
-    };
-
-    let key_display = truncate_str(key, inner.width as usize);
-    let msg = Paragraph::new(Line::from(vec![
-        Span::styled("确认删除图片 ", Style::default().fg(Color::White)),
-        Span::styled(key_display, Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        Span::raw(" ?"),
-    ]));
-    f.render_widget(msg, Rect {
-        x: inner.x,
-        y: inner.y,
-        width: inner.width,
-        height: 1,
-    });
-
-    let hint = Paragraph::new(Line::from(vec![
-        Span::styled("Enter ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::raw("确认删除  "),
-        Span::styled("Esc ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
-        Span::raw("取消"),
-    ]))
-    .alignment(Alignment::Center);
-    f.render_widget(hint, Rect {
-        x: inner.x,
-        y: inner.y + 2,
-        width: inner.width,
-        height: 1,
-    });
+    draw_confirm_dialog(
+        f,
+        "确认删除",
+        &format!("确认删除图片 {} ?\nEnter 确认删除  Esc 取消", truncate_str(key, 40)),
+        Color::Red,
+        None,
+    );
 }
 
 /// 绘制图片重复确认弹窗
@@ -3524,4 +3304,107 @@ fn draw_download_confirm_dialog(f: &mut Frame, app: &mut App) {
             });
         }
     }
+}
+
+// ── 通用弹窗辅助函数 ──────────────────────────────
+
+/// 通用的操作菜单弹窗
+///
+/// 居中显示一个带选项列表的操作菜单弹窗，支持选项高亮、键盘导航。
+///
+/// # 参数
+/// - `title`: 弹窗标题
+/// - `options`: 选项列表
+/// - `selected`: 当前选中的选项索引
+/// - `width`: 可选的自定义宽度（默认 30）
+fn draw_action_menu_popup(
+    f: &mut Frame,
+    title: &str,
+    options: &[&str],
+    selected: usize,
+    width: Option<u16>,
+) {
+    let width = width.unwrap_or(30);
+    let area = f.size();
+    let height = options.len() as u16 + 3;
+    let x = (area.width.saturating_sub(width)) / 2;
+    let y = (area.height.saturating_sub(height)) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(Color::Black).fg(Color::White));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    for (i, opt) in options.iter().enumerate() {
+        let is_selected = i == selected;
+        let style = if is_selected {
+            Style::default().bg(Color::Green).fg(Color::Black)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        let prefix = if is_selected { "▶ " } else { "  " };
+        let line = Paragraph::new(Line::from(Span::styled(
+            format!("{}{}", prefix, opt),
+            style,
+        )));
+        f.render_widget(line, Rect {
+            x: inner.x,
+            y: inner.y + i as u16,
+            width: inner.width,
+            height: 1,
+        });
+    }
+}
+
+/// 通用的确认对话框弹窗
+///
+/// 居中显示一个带标题和消息的确认对话框，支持自定义边框颜色。
+///
+/// # 参数
+/// - `title`: 弹窗标题
+/// - `message`: 确认消息内容
+/// - `border_color`: 边框颜色（如 Color::Red 表示危险操作）
+/// - `width`: 可选的自定义宽度（默认 50）
+fn draw_confirm_dialog(
+    f: &mut Frame,
+    title: &str,
+    message: &str,
+    border_color: Color,
+    width: Option<u16>,
+) {
+    let width = width.unwrap_or(50).min(f.size().width.saturating_sub(4));
+    let area = f.size();
+    let height = 5;
+    let x = (area.width - width) / 2;
+    let y = (area.height - height) / 2;
+    let dialog_area = Rect { x, y, width, height };
+
+    f.render_widget(Clear, dialog_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .style(Style::default().bg(Color::Black).fg(border_color));
+    f.render_widget(block, dialog_area);
+
+    let inner = Rect {
+        x: dialog_area.x + 1,
+        y: dialog_area.y + 1,
+        width: dialog_area.width.saturating_sub(2),
+        height: dialog_area.height.saturating_sub(2),
+    };
+
+    let msg = Paragraph::new(message).wrap(Wrap { trim: false });
+    f.render_widget(msg, inner);
 }
