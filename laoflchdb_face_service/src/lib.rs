@@ -346,16 +346,16 @@ impl ScrfdModel {
     /// 运行 SCRFD 检测
     ///
     /// 输入图片，返回检测到的人脸列表（bbox + score + 5 landmarks）
-    fn detect(
+    /// 单尺度检测核心：预处理 → 推理 → 解码，返回原始坐标下的人脸
+    fn detect_at_scale(
         &mut self,
         img: &image::DynamicImage,
+        img_w: u32,
+        img_h: u32,
         threshold: f32,
-        max_faces: i32,
     ) -> Result<Vec<DetectedFaceInfo>, Status> {
-        let (orig_w, orig_h) = (img.width(), img.height());
-
         // 动态计算输入尺寸：根据原图长边，在 [DETECT_MIN_INPUT_SIZE, DETECT_MAX_INPUT_SIZE] 范围内
-        let long_side = orig_w.max(orig_h);
+        let long_side = img_w.max(img_h);
         let input_size = long_side
             .max(DETECT_MIN_INPUT_SIZE)
             .min(DETECT_MAX_INPUT_SIZE);
@@ -365,13 +365,13 @@ impl ScrfdModel {
             Self::preprocess(img, input_size)?;
         info!(
             "检测预处理: orig={}x{}, input_size={}, scale={:.6}, pad_w={}, pad_h={}",
-            orig_w, orig_h, input_size, scale, pad_w, pad_h
+            img_w, img_h, input_size, scale, pad_w, pad_h
         );
 
         let input_name = self.get_input_name()?;
         let output_names = self.get_output_names();
 
-        // 运行推理（使用 HashMap 构造输入，ort::inputs! 宏在 rc.10 中不可用）
+        // 运行推理
         let mut input_map = HashMap::new();
         input_map.insert(input_name, input_tensor);
         let outputs = self
@@ -397,17 +397,14 @@ impl ScrfdModel {
         let strides = [8u32, 16u32, 32u32];
 
         for stride in strides.iter() {
-            // 根据当前 input_size 动态计算这个 stride 的 tensor 长度
             let num_cells_per_side = input_size / stride;
             let expected_len = (num_cells_per_side * num_cells_per_side * 2) as usize;
 
-            // 找这个 stride 的所有 tensor（len 匹配）
             let group: Vec<_> = all_outputs
                 .iter()
                 .filter(|(_, arr)| arr.shape()[0] == expected_len)
                 .collect();
 
-            // 在这个组里找 score, bbox, kps（按 last_dim）
             let mut score_arr: Option<&ndarray::ArrayD<f32>> = None;
             let mut bbox_arr: Option<&ndarray::ArrayD<f32>> = None;
             let mut kps_arr: Option<&ndarray::ArrayD<f32>> = None;
@@ -422,7 +419,6 @@ impl ScrfdModel {
                 }
             }
 
-            // 如果找到了三个输出，解析
             if let (Some(sa), Some(ba), Some(ka)) = (score_arr, bbox_arr, kps_arr) {
                 let faces = Self::parse_stride_output(
                     &sa.view(),
@@ -430,14 +426,58 @@ impl ScrfdModel {
                     &ka.view(),
                     *stride,
                     input_size,
-                    orig_w,
-                    orig_h,
+                    img_w,
+                    img_h,
                     scale,
                     pad_w,
                     pad_h,
                     threshold,
                 )?;
                 all_faces.extend(faces);
+            }
+        }
+
+        Ok(all_faces)
+    }
+
+    fn detect(
+        &mut self,
+        img: &image::DynamicImage,
+        threshold: f32,
+        max_faces: i32,
+    ) -> Result<Vec<DetectedFaceInfo>, Status> {
+        let (orig_w, orig_h) = (img.width(), img.height());
+
+        // 主尺度检测
+        let mut all_faces = self.detect_at_scale(img, orig_w, orig_h, threshold)?;
+
+        // 多尺度降采样：主尺度未检测到人脸时，尝试 0.5x 降采样
+        // 解决人脸占图片大部分时检测不到的问题
+        if all_faces.is_empty() && orig_w > 100 && orig_h > 100 {
+            info!("主尺度未检测到人脸，尝试 0.5x 降采样多尺度检测");
+            let scaled_w = (orig_w / 2).max(1);
+            let scaled_h = (orig_h / 2).max(1);
+            let scaled_img = img.resize_exact(
+                scaled_w, scaled_h,
+                image::imageops::FilterType::Triangle,
+            );
+            let scaled_faces = self.detect_at_scale(&scaled_img, scaled_w, scaled_h, threshold)?;
+
+            if !scaled_faces.is_empty() {
+                info!("降采样检测到 {} 张人脸，缩放回原始坐标", scaled_faces.len());
+                // 缩放回原始坐标
+                let scale_back_x = orig_w as f32 / scaled_w as f32;
+                let scale_back_y = orig_h as f32 / scaled_h as f32;
+                for mut face in scaled_faces {
+                    face.bbox[0] *= scale_back_x;
+                    face.bbox[1] *= scale_back_y;
+                    face.bbox[2] *= scale_back_x;
+                    face.bbox[3] *= scale_back_y;
+                    for j in 0..10 {
+                        face.landmarks[j] *= if j % 2 == 0 { scale_back_x } else { scale_back_y };
+                    }
+                    all_faces.push(face);
+                }
             }
         }
 
@@ -484,23 +524,18 @@ impl ScrfdModel {
         }
 
         // 过滤假阳性检测
-        // 策略：1) 边缘微小检测（padding 导致的误检） 2) 整体尺寸过小的检测
         let edge_margin_x = (orig_w as f32 * 0.02).max(10.0);
         let edge_margin_y = (orig_h as f32 * 0.02).max(10.0);
-        // 最小人脸尺寸：原图短边的 1%，但至少 30px
-        // 用短边（w.min(h)）判断，避免窄长人脸被误过滤
         let min_face_size = (orig_w.min(orig_h) as f32 * 0.01).max(30.0);
         nms_faces.retain(|f| {
             let (x1, y1, x2, y2) = (f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]);
             let w = x2 - x1;
             let h = y2 - y1;
-            // 过滤整体尺寸过小的检测（用短边判断）
             if w.min(h) < min_face_size {
                 info!("  过滤过小假阳性: bbox=({:.1},{:.1})-({:.1},{:.1}), score={:.4}, size={:.0}x{:.0}, min_face={:.0}",
                     x1, y1, x2, y2, f.score, w, h, min_face_size);
                 return false;
             }
-            // 排除完全在边缘上的微小检测（宽或高 < 20px 且贴着边缘）
             let near_left = x1 <= edge_margin_x;
             let near_right = x2 >= orig_w as f32 - edge_margin_x;
             let near_top = y1 <= edge_margin_y;
@@ -985,13 +1020,13 @@ impl FaceService for FaceServiceImpl {
         } else {
             self.config.det_threshold
         };
-        // 限制最大人脸数：客户端未指定时用配置值，配置为 0 时最多处理 20 张（避免假阳性导致超时）
+        // 最大人脸数：客户端指定 >0 用客户端值，否则用配置值，0 表示不限制
         let max_faces = if req.max_faces > 0 {
             req.max_faces
         } else if self.config.max_faces > 0 {
             self.config.max_faces
         } else {
-            20
+            0
         };
 
         // 获取图片数据：优先通过 image_key 从 image_service 获取
