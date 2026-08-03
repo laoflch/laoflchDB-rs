@@ -347,18 +347,24 @@ impl ScrfdModel {
     ///
     /// 输入图片，返回检测到的人脸列表（bbox + score + 5 landmarks）
     /// 单尺度检测核心：预处理 → 推理 → 解码，返回原始坐标下的人脸
+    /// 如果 fixed_input_size 为 None，则根据图片长边动态计算
     fn detect_at_scale(
         &mut self,
         img: &image::DynamicImage,
         img_w: u32,
         img_h: u32,
         threshold: f32,
+        fixed_input_size: Option<u32>,
     ) -> Result<Vec<DetectedFaceInfo>, Status> {
         // 动态计算输入尺寸：根据原图长边，在 [DETECT_MIN_INPUT_SIZE, DETECT_MAX_INPUT_SIZE] 范围内
-        let long_side = img_w.max(img_h);
-        let input_size = long_side
-            .max(DETECT_MIN_INPUT_SIZE)
-            .min(DETECT_MAX_INPUT_SIZE);
+        let input_size = if let Some(size) = fixed_input_size {
+            size.clamp(DETECT_MIN_INPUT_SIZE, DETECT_MAX_INPUT_SIZE)
+        } else {
+            let long_side = img_w.max(img_h);
+            long_side
+                .max(DETECT_MIN_INPUT_SIZE)
+                .min(DETECT_MAX_INPUT_SIZE)
+        };
 
         // 预处理：letterbox resize 到目标尺寸
         let (input_tensor, scale, pad_w, pad_h) =
@@ -448,36 +454,41 @@ impl ScrfdModel {
     ) -> Result<Vec<DetectedFaceInfo>, Status> {
         let (orig_w, orig_h) = (img.width(), img.height());
 
-        // 主尺度检测
-        let mut all_faces = self.detect_at_scale(img, orig_w, orig_h, threshold)?;
-
-        // 多尺度降采样：主尺度未检测到人脸时，尝试 0.5x 降采样
+        // 多尺度检测：对同一张图片尝试多个固定 input_size
         // 解决人脸占图片大部分时检测不到的问题
-        if all_faces.is_empty() && orig_w > 100 && orig_h > 100 {
-            info!("主尺度未检测到人脸，尝试 0.5x 降采样多尺度检测");
-            let scaled_w = (orig_w / 2).max(1);
-            let scaled_h = (orig_h / 2).max(1);
-            let scaled_img = img.resize_exact(
-                scaled_w, scaled_h,
-                image::imageops::FilterType::Triangle,
-            );
-            let scaled_faces = self.detect_at_scale(&scaled_img, scaled_w, scaled_h, threshold)?;
+        // 人脸占比较大时，用较小的 input_size 让图片缩小，面部像素变小落入模型有效检测范围
+        let long_side = orig_w.max(orig_h);
+        let primary_size = long_side
+            .max(DETECT_MIN_INPUT_SIZE)
+            .min(DETECT_MAX_INPUT_SIZE);
 
-            if !scaled_faces.is_empty() {
-                info!("降采样检测到 {} 张人脸，缩放回原始坐标", scaled_faces.len());
-                // 缩放回原始坐标
-                let scale_back_x = orig_w as f32 / scaled_w as f32;
-                let scale_back_y = orig_h as f32 / scaled_h as f32;
-                for mut face in scaled_faces {
-                    face.bbox[0] *= scale_back_x;
-                    face.bbox[1] *= scale_back_y;
-                    face.bbox[2] *= scale_back_x;
-                    face.bbox[3] *= scale_back_y;
-                    for j in 0..10 {
-                        face.landmarks[j] *= if j % 2 == 0 { scale_back_x } else { scale_back_y };
-                    }
-                    all_faces.push(face);
-                }
+        // 生成候选 input_size 列表：从大到小，去重，且不超出图片长边
+        let candidates = [primary_size, 640u32, 320u32];
+        let mut seen = std::collections::HashSet::new();
+        let mut all_faces = Vec::new();
+
+        for &size in &candidates {
+            // 跳过超出图片长边的 input_size（会导致放大图片，起反作用）
+            let clamped = size.min(long_side);
+            if !seen.insert(clamped) {
+                continue; // 已经试过这个尺寸
+            }
+            // 确保不低于最小输入尺寸
+            let input_size = clamped.max(DETECT_MIN_INPUT_SIZE);
+            if input_size > DETECT_MAX_INPUT_SIZE {
+                continue;
+            }
+
+            info!(
+                "多尺度检测尝试: input_size={}, 图片尺寸={}x{}",
+                input_size, orig_w, orig_h
+            );
+            let faces = self.detect_at_scale(img, orig_w, orig_h, threshold, Some(input_size))?;
+
+            if !faces.is_empty() {
+                info!("多尺度检测成功: input_size={}, 检测到 {} 张人脸", input_size, faces.len());
+                all_faces = faces;
+                break;
             }
         }
 
