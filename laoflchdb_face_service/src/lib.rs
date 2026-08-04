@@ -537,7 +537,9 @@ impl ScrfdModel {
         // 过滤假阳性检测
         let edge_margin_x = (orig_w as f32 * 0.02).max(10.0);
         let edge_margin_y = (orig_h as f32 * 0.02).max(10.0);
-        let min_face_size = (orig_w.min(orig_h) as f32 * 0.01).max(30.0);
+        // 降低最小人脸尺寸门槛，避免合影小面部被过滤
+        // 使用图片长边计算，避免窄高/宽短图片比例失真
+        let min_face_size = (orig_w.max(orig_h) as f32 * 0.005).max(12.0);
         nms_faces.retain(|f| {
             let (x1, y1, x2, y2) = (f.bbox[0], f.bbox[1], f.bbox[2], f.bbox[3]);
             let w = x2 - x1;
@@ -551,7 +553,7 @@ impl ScrfdModel {
             let near_right = x2 >= orig_w as f32 - edge_margin_x;
             let near_top = y1 <= edge_margin_y;
             let near_bottom = y2 >= orig_h as f32 - edge_margin_y;
-            if (w < 20.0 || h < 20.0) && (near_left || near_right || near_top || near_bottom) {
+            if (w < 12.0 || h < 12.0) && (near_left || near_right || near_top || near_bottom) {
                 info!("  过滤边缘假阳性: bbox=({:.1},{:.1})-({:.1},{:.1}), score={:.4}", x1, y1, x2, y2, f.score);
                 return false;
             }
