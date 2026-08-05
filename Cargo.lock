@@ -3550,7 +3550,7 @@ dependencies = [
 
 [[package]]
 name = "laoflchDB-rust"
-version = "0.1.10+cc2d24a74cd6ba6c63ca018c78c5439b20462408"
+version = "0.1.10+9e0b54eabb3ca84fdf3a02056208cb4dbff9183a"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
@@ -4037,7 +4037,7 @@ dependencies = [
 
 [[package]]
 name = "lsql"
-version = "0.1.10+cc2d24a74cd6ba6c63ca018c78c5439b20462408"
+version = "0.1.10+9e0b54eabb3ca84fdf3a02056208cb4dbff9183a"
 dependencies = [
  "clap",
  "laoflchdb_client",
