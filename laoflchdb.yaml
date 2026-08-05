@@ -20,6 +20,10 @@ embedding_index:
   startup_mode: snapshot
   kv_db_path: /workspace/rust_space/laoflchDB-rust/laoflch_hnsw_data
   snapshot_path: /workspace/rust_space/laoflchDB-rust/laoflch_hnsw_snapshots
+  # 搜索参数上限配置
+  max_filter_multiplier: 20.0      # 过滤候选的最大倍数（0=不限制）
+  max_filter_iterations: 10         # 过滤的最大迭代次数（0=不限制）
+  max_search_distance: 0.0          # 搜索结果的最大距离（0=不限制）
   indices:
     - name: default
       dim: 512
@@ -49,6 +53,14 @@ embedding_index:
       ef_search: 50
       max_elements: 50000
       distance_metric: Cosine
+    - name: agent_memory
+      dim: 1024
+      m: 16
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 1000000
+      distance_metric: Cosine
+      storage_format: protobuf
 
 # 对象存储服务配置（S3 兼容，基于 RocksDB BlobDB）
 object_store:

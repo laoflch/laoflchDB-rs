@@ -163,11 +163,22 @@ pub struct IndexDef {
     /// 距离度量
     #[serde(default = "default_hnsw_distance_metric")]
     pub distance_metric: String,
+    /// 存储格式: "raw"（旧格式，直接 f32 字节）或 "protobuf"（protobuf StoredEmbedding）
+    #[serde(default = "default_storage_format")]
+    pub storage_format: String,
+}
+
+fn default_storage_format() -> String {
+    "raw".to_string()
 }
 
 fn default_hnsw_distance_metric() -> String {
     "Cosine".to_string()
 }
+
+fn default_hnsw_max_filter_multiplier() -> f32 { 20.0 }
+fn default_hnsw_max_filter_iterations() -> usize { 10 }
+fn default_hnsw_max_search_distance() -> f32 { f32::INFINITY }
 
 /// 嵌入向量索引服务配置
 #[derive(Debug, Deserialize, Clone)]
@@ -187,6 +198,15 @@ pub struct EmbeddingIndexConfig {
     /// 图拓扑快照保存路径
     #[serde(default = "default_hnsw_snapshot_path")]
     pub snapshot_path: String,
+    /// 搜索过滤的最大候选倍数上限
+    #[serde(default = "default_hnsw_max_filter_multiplier")]
+    pub max_filter_multiplier: f32,
+    /// 搜索过滤的最大迭代次数上限
+    #[serde(default = "default_hnsw_max_filter_iterations")]
+    pub max_filter_iterations: usize,
+    /// 搜索结果的最大距离上限
+    #[serde(default = "default_hnsw_max_search_distance")]
+    pub max_search_distance: f32,
 }
 
 fn default_startup_mode() -> String {
@@ -203,6 +223,7 @@ fn default_hnsw_indices() -> Vec<IndexDef> {
             ef_search: 50,
             max_elements: 1_000_000,
             distance_metric: "Cosine".to_string(),
+            storage_format: "raw".to_string(),
         },
         IndexDef {
             name: "image".to_string(),
@@ -212,6 +233,7 @@ fn default_hnsw_indices() -> Vec<IndexDef> {
             ef_search: 50,
             max_elements: 1_000_000,
             distance_metric: "Cosine".to_string(),
+            storage_format: "raw".to_string(),
         },
         IndexDef {
             name: "face".to_string(),
@@ -221,6 +243,7 @@ fn default_hnsw_indices() -> Vec<IndexDef> {
             ef_search: 50,
             max_elements: 1_000_000,
             distance_metric: "Cosine".to_string(),
+            storage_format: "raw".to_string(),
         },
         IndexDef {
             name: "memory".to_string(),
@@ -230,6 +253,7 @@ fn default_hnsw_indices() -> Vec<IndexDef> {
             ef_search: 50,
             max_elements: 1_000_000,
             distance_metric: "Cosine".to_string(),
+            storage_format: "raw".to_string(),
         },
     ]
 }
@@ -250,6 +274,9 @@ impl Default for EmbeddingIndexConfig {
             indices: default_hnsw_indices(),
             kv_db_path: default_hnsw_kv_db_path(),
             snapshot_path: default_hnsw_snapshot_path(),
+            max_filter_multiplier: default_hnsw_max_filter_multiplier(),
+            max_filter_iterations: default_hnsw_max_filter_iterations(),
+            max_search_distance: default_hnsw_max_search_distance(),
         }
     }
 }

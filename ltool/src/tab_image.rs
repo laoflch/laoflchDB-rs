@@ -583,6 +583,10 @@ pub async fn search_similar_image(app: &mut App, model_name: &str, index_name: &
         query_embedding,
         top_k,
         index_name: index_name.to_string(),
+        field_filters: Default::default(),
+        filter_multiplier: 0.0,
+        max_filter_iterations: 0,
+        max_distance: 0.0,
     };
 
     app.set_status("正在搜索相似图片...");

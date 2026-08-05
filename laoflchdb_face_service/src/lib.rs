@@ -854,7 +854,7 @@ struct DetectedFaceInfo {
 fn align_face(
     img: &image::DynamicImage,
     bbox: &[f32; 4], // [x1, y1, x2, y2]
-    landmarks: &[f32; 10], // 5 个关键点 [x,y] 对
+    _landmarks: &[f32; 10], // 5 个关键点 [x,y] 对
 ) -> Result<image::DynamicImage, Status> {
     // 确保 bbox 坐标正序（x1 <= x2, y1 <= y2）
     let mut x1 = bbox[0];
@@ -1488,6 +1488,7 @@ async fn index_face_embedding(
         id,
         index_name: "face".to_string(),
         embedding: embedding.to_vec(),
+        fields: Default::default(),
     });
 
     let resp = emb_svc.insert_embedding(request).await?;
@@ -1514,6 +1515,10 @@ async fn search_face_embedding(
         query_embedding: embedding.to_vec(),
         top_k: 1,
         index_name: "face".to_string(),
+        field_filters: Default::default(),
+        filter_multiplier: 0.0,
+        max_filter_iterations: 0,
+        max_distance: 0.0,
     });
 
     match emb_svc.search_embedding(request).await {

@@ -47,6 +47,9 @@ message SearchEmbeddingRequest {
   int32 top_k = 2;                  // 返回 top-K 结果
   string index_name = 3;            // 索引名称（默认 "default"）
   map<string, string> field_filters = 4;  // 字段过滤条件
+  float filter_multiplier = 5;       // 过滤时的候选扩大倍数（默认5）
+  int32 max_filter_iterations = 6;   // 最大过滤迭代次数（默认3）
+  float max_distance = 7;            // 最大允许距离，超过则停止搜索（默认0表示不限制）
 }
 
 message SearchResult {

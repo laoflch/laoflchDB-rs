@@ -77,6 +77,7 @@ impl LaoflchDBServer {
                         ef_search: idx.ef_search as usize,
                         max_elements: idx.max_elements as u64,
                         distance_metric: laoflchdb_embedding_service::IndexConfig::distance_metric_from_str(&idx.distance_metric),
+                        storage_format: idx.storage_format.clone(),
                     }
                 }).collect();
 
@@ -85,6 +86,9 @@ impl LaoflchDBServer {
                     kv_db_path: embedding_cfg.kv_db_path.clone(),
                     snapshot_path: embedding_cfg.snapshot_path.clone(),
                     startup_mode: embedding_cfg.startup_mode.clone(),
+                    max_filter_multiplier: embedding_cfg.max_filter_multiplier,
+                    max_filter_iterations: embedding_cfg.max_filter_iterations,
+                    max_search_distance: embedding_cfg.max_search_distance,
                 };
                 match laoflchdb_embedding_service::EmbeddingIndexServiceImpl::new(&embedding_config).await {
                     Ok(svc) => {

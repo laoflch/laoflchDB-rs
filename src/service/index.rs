@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use std::collections::HashMap;
-use log::{info, debug, warn};
+use log::{info, debug};
 
 use laoflchdb_engines::{ColumnType, ColumnMeta, TableMeta, StorageEngine, Row, SpecialFields, EnumOrUnknown};
 use laoflchdb_index_tantivy_engine::TantivyStorageEngine;

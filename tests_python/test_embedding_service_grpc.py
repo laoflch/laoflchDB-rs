@@ -18,7 +18,7 @@ import embedding_pb2_grpc
 import rpc_pb2
 import rpc_pb2_grpc
 
-TEST_ADDR = "127.0.0.1:29777"
+TEST_ADDR = "127.0.0.1:19777"
 SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchdb")
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "laoflchdb.yaml")
 
@@ -533,6 +533,122 @@ def test_search_nearest_by_copy():
         return False
 
 
+def test_insert_with_fields():
+    """测试插入向量时附带过滤字段"""
+    print("[测试] 插入向量带过滤字段...")
+    try:
+        eid = _next_id()
+        emb = _make_random_embedding()
+        req = embedding_pb2.InsertEmbeddingRequest(
+            id=eid,
+            index_name="default",
+            embedding=emb,
+            fields={"user_id": "123", "type": "test"},
+        )
+        resp = embedding_stub.InsertEmbedding(req, metadata=get_metadata())
+        assert resp.success, f"插入带字段失败: {resp.message}"
+        print(f"    ✓ 向量 {eid} 带字段插入成功 (fields={{user_id: 123, type: test}})")
+        return True
+    except Exception as e:
+        print(f"    ✗ 插入带字段失败: {e}")
+        return False
+
+
+def test_search_with_field_filters():
+    """测试带字段过滤的向量搜索"""
+    print("[测试] 带字段过滤的向量搜索...")
+    try:
+        # 插入两个不同字段的向量
+        eid1 = _next_id()
+        eid2 = _next_id()
+        emb = _make_random_embedding()
+        embedding_stub.InsertEmbedding(embedding_pb2.InsertEmbeddingRequest(
+            id=eid1, index_name="default", embedding=emb,
+            fields={"group": "A"},
+        ), metadata=get_metadata())
+        embedding_stub.InsertEmbedding(embedding_pb2.InsertEmbeddingRequest(
+            id=eid2, index_name="default", embedding=emb,
+            fields={"group": "B"},
+        ), metadata=get_metadata())
+
+        # 带 field_filters 搜索
+        req = embedding_pb2.SearchEmbeddingRequest(
+            query_embedding=emb,
+            top_k=10,
+            index_name="default",
+            field_filters={"group": "A"},
+        )
+        resp = embedding_stub.SearchEmbedding(req, metadata=get_metadata())
+        assert resp.success, f"带字段过滤搜索失败: {resp.message}"
+        ids = [r.id for r in resp.results]
+        assert eid1 in ids, f"应包含 group=A 的向量 id={eid1}: {ids}"
+        print(f"    ✓ 带字段过滤搜索成功，返回 {len(resp.results)} 条")
+        return True
+    except Exception as e:
+        print(f"    ✗ 带字段过滤搜索失败: {e}")
+        return False
+
+
+def test_search_with_filter_multiplier():
+    """测试 filter_multiplier 参数"""
+    print("[测试] filter_multiplier 参数...")
+    try:
+        query = _make_random_embedding()
+        req = embedding_pb2.SearchEmbeddingRequest(
+            query_embedding=query,
+            top_k=5,
+            index_name="default",
+            filter_multiplier=10.0,
+        )
+        resp = embedding_stub.SearchEmbedding(req, metadata=get_metadata())
+        assert resp.success, f"设置 filter_multiplier 搜索失败: {resp.message}"
+        print(f"    ✓ filter_multiplier=10.0 搜索成功，返回 {len(resp.results)} 条")
+        return True
+    except Exception as e:
+        print(f"    ✗ filter_multiplier 测试失败: {e}")
+        return False
+
+
+def test_search_with_max_filter_iterations():
+    """测试 max_filter_iterations 参数"""
+    print("[测试] max_filter_iterations 参数...")
+    try:
+        query = _make_random_embedding()
+        req = embedding_pb2.SearchEmbeddingRequest(
+            query_embedding=query,
+            top_k=5,
+            index_name="default",
+            max_filter_iterations=5,
+        )
+        resp = embedding_stub.SearchEmbedding(req, metadata=get_metadata())
+        assert resp.success, f"设置 max_filter_iterations 搜索失败: {resp.message}"
+        print(f"    ✓ max_filter_iterations=5 搜索成功，返回 {len(resp.results)} 条")
+        return True
+    except Exception as e:
+        print(f"    ✗ max_filter_iterations 测试失败: {e}")
+        return False
+
+
+def test_search_with_max_distance():
+    """测试 max_distance 参数"""
+    print("[测试] max_distance 参数...")
+    try:
+        query = _make_random_embedding()
+        req = embedding_pb2.SearchEmbeddingRequest(
+            query_embedding=query,
+            top_k=5,
+            index_name="default",
+            max_distance=2.0,
+        )
+        resp = embedding_stub.SearchEmbedding(req, metadata=get_metadata())
+        assert resp.success, f"设置 max_distance 搜索失败: {resp.message}"
+        print(f"    ✓ max_distance=2.0 搜索成功，返回 {len(resp.results)} 条")
+        return True
+    except Exception as e:
+        print(f"    ✗ max_distance 测试失败: {e}")
+        return False
+
+
 def test_multiple_indices():
     """测试多索引隔离"""
     print("[测试] 多索引隔离...")
@@ -810,6 +926,11 @@ def run_all_tests():
         ("保存不存在索引的快照", test_save_snapshot_non_existent),
         ("插入大向量", test_insert_large_embedding),
         ("搜索相同向量", test_search_nearest_by_copy),
+        ("插入向量带过滤字段", test_insert_with_fields),
+        ("带字段过滤的向量搜索", test_search_with_field_filters),
+        ("filter_multiplier 参数", test_search_with_filter_multiplier),
+        ("max_filter_iterations 参数", test_search_with_max_filter_iterations),
+        ("max_distance 参数", test_search_with_max_distance),
         ("多索引隔离", test_multiple_indices),
         ("索引完整生命周期", test_index_lifecycle),
         ("压力测试", test_stress_insert),

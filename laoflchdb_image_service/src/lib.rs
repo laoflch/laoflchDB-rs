@@ -397,6 +397,10 @@ impl ImageServiceImpl {
             query_embedding: embedding.to_vec(),
             top_k: 100,
             index_name: "image".to_string(),
+            field_filters: Default::default(),
+            filter_multiplier: 0.0,
+            max_filter_iterations: 0,
+            max_distance: 0.0,
         });
         let search_resp = embedding_svc.search_embedding(search_req).await
             .map_err(|e| format!("搜索向量索引失败: {}", e))?;
@@ -435,6 +439,7 @@ impl ImageServiceImpl {
             id,
             index_name: "image".to_string(),
             embedding,
+            fields: Default::default(),
         });
         let ins_resp = embedding_svc.insert_embedding(ins_req).await
             .map_err(|e| format!("索引请求失败: {}", e))?;

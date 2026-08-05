@@ -16,23 +16,88 @@ vector_service:
 embedding_index:
   enabled: true
   startup_mode: snapshot
-  dim: 512
-  m: 32
-  ef_construction: 200
-  ef_search: 50
-  max_elements: 1000000
+  
   kv_db_path: /app/laoflch_hnsw_data
   snapshot_path: /app/laoflch_hnsw_snapshots
+ # 搜索参数上限配置
+  max_filter_multiplier: 20.0      # 过滤候选的最大倍数（0=不限制）
+  max_filter_iterations: 10         # 过滤的最大迭代次数（0=不限制）
+  max_search_distance: 0.0          # 搜索结果的最大距离（0=不限制）
+  indices:
+    - name: default
+      dim: 512
+      m: 32
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 1000000
+      distance_metric: Cosine
+    - name: image
+      dim: 1024
+      m: 16
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 1000000
+      distance_metric: Cosine
+    - name: face
+      dim: 512
+      m: 16
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 1000000
+      distance_metric: Cosine
+    - name: memory
+      dim: 768
+      m: 16
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 50000
+      distance_metric: Cosine
+    - name: agent_memory
+      dim: 1024
+      m: 16
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 1000000
+      distance_metric: Cosine
+      storage_format: protobuf
 
 # 对象存储服务配置（S3 兼容，基于 RocksDB BlobDB）
 object_store:
   enabled: true
   db_path: /app/laoflch_db_oss
+  # BlobDB 配置（大对象存储）
+  blob_db:
+    enabled: true
+    min_blob_size: 32768          # 大于此值的数据存到 BlobDB（0=全部存 BlobDB）　32KB
+    blob_file_size: 268435456  # 每个 Blob 文件最大 256MB
+    blob_compression_type: zstd
+    #enable_blob_garbage_collection: true
+    #blob_garbage_collection_age_cutoff: 0.25
+  # S3 协议访问密钥（用于标准 S3 端口认证）
+  s3_access_key: admin
+  s3_secret_key: laoflchdb
+  s3_region: us-east-1
 
 # 图片服务配置（基于对象存储，自动生成三种缩略图）
 image_service:
   enabled: true
   default_bucket: images
+   # 图片重复检测距离阈值（Cosine 距离 < 此值视为重复，默认 0.0001）
+  image_duplicate_distance: 0.000002
+
+# 人脸服务配置（SCRFD 检测 + ArcFace 特征提取，基于 ort (ONNX Runtime)，支持 CUDA）
+face_service:
+  enabled: true
+  model_dir: /workspace/rust_space/laoflchDB-rust/laoflch_db_model
+  scrfd_model_file: scrfd_10g.onnx
+  arcface_model_file: arcface_w600k_r50.onnx
+  det_threshold: 0.5
+  max_faces: 0
+  # 人脸重复检测距离阈值（Cosine 距离 < 此值视为重复人脸，默认 0.01）
+  face_duplicate_distance: 0.01
+  # 人脸相似度判定阈值（点积 >= 此值视为同一人，默认 0.5）
+  same_person_threshold: 0.5
+
 
 # Log configuration
 log_level: info
@@ -58,6 +123,12 @@ access_protocols:
     addr: 0.0.0.0:38080
     service_id: rest_admin
 
+     # S3 兼容协议（标准 S3 API，AWS Signature V4 签名验证）
+  - protocol: s3
+    enabled: true
+    addr: 0.0.0.0:19000
+    service_id: s3_service
+
 # Permissions configuration
 permissions:
   - service_id: grpc_admin
@@ -80,6 +151,25 @@ permissions:
       - query
 
   - service_id: rest_admin
+    default_policy: allow
+    allowed_actions:
+      - get
+      - put
+      - delete
+      - create_table
+      - drop_table
+      - list_tables
+      - list_table_cols
+      - add_row
+      - get_row
+      - update_row
+      - delete_row
+      - get_all_meta
+      - get_schema_info
+      - get_table_meta
+      - query
+
+  - service_id: grpc_test
     default_policy: allow
     allowed_actions:
       - get

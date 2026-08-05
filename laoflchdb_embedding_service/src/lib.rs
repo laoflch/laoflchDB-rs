@@ -26,6 +26,7 @@ use std::time::SystemTime;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{Mutex, RwLock};
 use tonic::{Request, Response, Status};
+use prost::Message;
 
 /// 单个索引配置
 #[derive(Debug, Clone)]
@@ -44,6 +45,8 @@ pub struct IndexConfig {
     pub max_elements: u64,
     /// 距离度量
     pub distance_metric: DistanceMetric,
+    /// 存储格式: "raw"（旧格式）或 "protobuf"（新格式）
+    pub storage_format: String,
 }
 
 impl IndexConfig {
@@ -54,6 +57,11 @@ impl IndexConfig {
             "dot" | "dotproduct" => DistanceMetric::InnerProduct,
             _ => DistanceMetric::Cosine,
         }
+    }
+
+    /// 存储格式是否为 protobuf
+    pub fn is_protobuf_format(&self) -> bool {
+        self.storage_format == "protobuf"
     }
 
     /// 转换为 HnswConfig
@@ -82,6 +90,12 @@ pub struct EmbeddingServiceConfig {
     pub snapshot_path: String,
     /// 启动模式: "snapshot"（快照恢复）或 "rebuild"（从 RocksDB 重建）
     pub startup_mode: String,
+    /// 搜索过滤的最大候选倍数上限
+    pub max_filter_multiplier: f32,
+    /// 搜索过滤的最大迭代次数上限
+    pub max_filter_iterations: usize,
+    /// 搜索结果的最大距离上限
+    pub max_search_distance: f32,
 }
 
 impl Default for EmbeddingServiceConfig {
@@ -96,6 +110,7 @@ impl Default for EmbeddingServiceConfig {
                     ef_search: 50,
                     max_elements: 1_000_000,
                     distance_metric: DistanceMetric::Cosine,
+                    storage_format: "raw".to_string(),
                 },
                 IndexConfig {
                     name: "image".to_string(),
@@ -105,6 +120,7 @@ impl Default for EmbeddingServiceConfig {
                     ef_search: 50,
                     max_elements: 1_000_000,
                     distance_metric: DistanceMetric::Cosine,
+                    storage_format: "raw".to_string(),
                 },
                 IndexConfig {
                     name: "face".to_string(),
@@ -114,6 +130,7 @@ impl Default for EmbeddingServiceConfig {
                     ef_search: 50,
                     max_elements: 1_000_000,
                     distance_metric: DistanceMetric::Cosine,
+                    storage_format: "raw".to_string(),
                 },
                 IndexConfig {
                     name: "memory".to_string(),
@@ -123,11 +140,15 @@ impl Default for EmbeddingServiceConfig {
                     ef_search: 50,
                     max_elements: 1_000_000,
                     distance_metric: DistanceMetric::Cosine,
+                    storage_format: "raw".to_string(),
                 },
             ],
             kv_db_path: "./laoflch_hnsw_data".to_string(),
             snapshot_path: "./laoflch_hnsw_snapshots".to_string(),
             startup_mode: "snapshot".to_string(),
+            max_filter_multiplier: 20.0,
+            max_filter_iterations: 10,
+            max_search_distance: f32::INFINITY,
         }
     }
 }
@@ -626,20 +647,28 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         let table_name = format!("hnsw_{}", index_name);
         let key = format!("v:{}", req.id).into_bytes();
         
-        // 构建存储的 proto
-        let ts = Self::unix_ms() as i64;
-        let stored_embedding = storage_proto::StoredEmbedding {
-            embedding: req.embedding.clone(),
-            fields: req.fields,
-            created_at: ts,
-            updated_at: ts,
+        let is_protobuf = state.config.is_protobuf_format();
+        let value: Vec<u8> = if is_protobuf {
+            // protobuf 格式：存储向量 + 过滤字段
+            let ts = Self::unix_ms() as i64;
+            let stored_embedding = storage_proto::StoredEmbedding {
+                embedding: req.embedding.clone(),
+                fields: req.fields,
+                created_at: ts,
+                updated_at: ts,
+            };
+            let mut buf = Vec::new();
+            prost::Message::encode(&stored_embedding, &mut buf).map_err(|e| {
+                Status::internal(format!("序列化存储数据失败: {}", e))
+            })?;
+            buf
+        } else {
+            // 旧格式：直接写入 f32 字节
+            let bytes: Vec<u8> = req.embedding.iter()
+                .flat_map(|f| f.to_le_bytes())
+                .collect();
+            bytes
         };
-        
-        // 序列化为字节
-        let mut value = Vec::new();
-        prost::Message::encode(&stored_embedding, &mut value).map_err(|e| {
-            Status::internal(format!("序列化存储数据失败: {}", e))
-        })?;
 
         {
             let mut storage = self.storage.lock().await;
@@ -677,7 +706,26 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         };
         let top_k = if req.top_k <= 0 { 10 } else { req.top_k as usize };
         let has_filters = !req.field_filters.is_empty();
-        let search_candidate_count = if has_filters { top_k * 2 } else { top_k };
+        let config = &*self.config;
+        
+        // 使用请求参数，但受配置上限限制
+        let filter_multiplier = {
+            let req_val = if req.filter_multiplier > 0.0 { req.filter_multiplier } else { 5.0 };
+            let max_val = config.max_filter_multiplier;
+            if max_val > 0.0 { req_val.min(max_val) } else { req_val }
+        };
+        
+        let max_iterations = {
+            let req_val = if req.max_filter_iterations > 0 { req.max_filter_iterations as usize } else { 3 };
+            let max_val = config.max_filter_iterations;
+            if max_val > 0 { req_val.min(max_val) } else { req_val }
+        };
+        
+        let max_distance = {
+            let req_val = if req.max_distance > 0.0 { req.max_distance } else { f32::INFINITY };
+            let max_val = config.max_search_distance;
+            if max_val > 0.0 { req_val.min(max_val) } else { req_val }
+        };
 
         if req.query_embedding.is_empty() {
             return Ok(Response::new(SearchEmbeddingResponse {
@@ -692,46 +740,109 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             Status::not_found(format!("索引不存在: {}", index_name))
         })?;
 
-        // 执行 HNSW ANN 搜索
-        let results = {
-            let index = state.index.read().await;
-            index.search_f32(&req.query_embedding, search_candidate_count).map_err(|e| {
-                Status::internal(format!("HNSW 搜索失败: {}", e))
-            })?
-        };
+        // 无过滤条件时，直接搜索 top_k
+        if !has_filters {
+            let results = {
+                let index = state.index.read().await;
+                index.search_f32(&req.query_embedding, top_k).map_err(|e| {
+                    Status::internal(format!("HNSW 搜索失败: {}", e))
+                })?
+            };
 
-        if results.is_empty() {
+            let table_name = format!("hnsw_{}", index_name);
+            let storage = self.storage.lock().await;
+            
+            let mut search_results = Vec::with_capacity(results.len());
+            for (id, distance) in &results {
+                // 检查距离限制
+                if *distance > max_distance {
+                    log::info!("距离超过限制，停止搜索: {} > {}", distance, max_distance);
+                    break;
+                }
+
+                let key = format!("v:{}", id).into_bytes();
+                let embedding = storage.get(&table_name, &key).await.ok().flatten().map(|bytes| {
+                    if let Ok(stored_embedding) = storage_proto::StoredEmbedding::decode(bytes.as_slice()) {
+                        stored_embedding.embedding
+                    } else {
+                        // 兼容旧格式
+                        bytes
+                            .chunks_exact(4)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect()
+                    }
+                });
+
+                search_results.push(SearchResult {
+                    id: *id,
+                    distance: *distance,
+                    embedding: embedding.unwrap_or_default(),
+                });
+            }
+            drop(storage);
+
             return Ok(Response::new(SearchEmbeddingResponse {
                 success: true,
-                message: "未找到匹配结果".to_string(),
-                results: vec![],
+                message: format!("搜索完成, 返回 {} 条结果", search_results.len()),
+                results: search_results,
             }));
         }
 
-        // 从 KV RocksDB 加载向量数据并过滤
+        // 有过滤条件时，循环搜索直到找到足够的结果或达到最大迭代次数
         let table_name = format!("hnsw_{}", index_name);
         let storage = self.storage.lock().await;
         
         let mut search_results = Vec::with_capacity(top_k);
-        
-        for (id, distance) in &results {
-            if search_results.len() >= top_k {
+        let mut current_multiplier = 1.0;
+        let mut seen_ids = std::collections::HashSet::new();
+        let mut should_stop = false;
+
+        for iter in 0..max_iterations {
+            if should_stop {
+                log::info!("已达到距离限制，停止迭代");
                 break;
             }
 
-            let key = format!("v:{}", id).into_bytes();
-            if let Some(bytes) = storage.get(&table_name, &key).await.ok().flatten() {
-                // 解析 StoredEmbedding
-                let stored_embedding = match storage_proto::StoredEmbedding::decode(bytes.as_slice()) {
-                    Ok(se) => se,
-                    Err(e) => {
-                        log::warn!("解码存储数据失败 id={}: {}", id, e);
-                        continue;
-                    }
-                };
+            let search_candidate_count = (top_k as f32 * filter_multiplier * current_multiplier).ceil() as usize;
+            
+            log::info!("过滤迭代 {}/{}, 搜索候选数: {}", iter + 1, max_iterations, search_candidate_count);
+            
+            let results = {
+                let index = state.index.read().await;
+                index.search_f32(&req.query_embedding, search_candidate_count).map_err(|e| {
+                    Status::internal(format!("HNSW 搜索失败: {}", e))
+                })?
+            };
 
-                // 检查过滤条件
-                if has_filters {
+            for (id, distance) in &results {
+                // 检查距离限制
+                if *distance > max_distance {
+                    log::info!("距离超过限制，停止搜索: {} > {}", distance, max_distance);
+                    should_stop = true;
+                    break;
+                }
+
+                if search_results.len() >= top_k {
+                    break;
+                }
+
+                if seen_ids.contains(id) {
+                    continue;
+                }
+                seen_ids.insert(*id);
+
+                let key = format!("v:{}", id).into_bytes();
+                if let Some(bytes) = storage.get(&table_name, &key).await.ok().flatten() {
+                    // 解析 StoredEmbedding
+                    let stored_embedding = match storage_proto::StoredEmbedding::decode(bytes.as_slice()) {
+                        Ok(se) => se,
+                        Err(e) => {
+                            log::warn!("解码存储数据失败 id={}: {}", id, e);
+                            continue;
+                        }
+                    };
+
+                    // 检查过滤条件
                     let mut matches = true;
                     for (k, v) in &req.field_filters {
                         if let Some(stored_val) = stored_embedding.fields.get(k) {
@@ -749,15 +860,22 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
                     if !matches {
                         continue;
                     }
-                }
 
-                // 添加到结果
-                search_results.push(SearchResult {
-                    id: *id,
-                    distance: *distance,
-                    embedding: stored_embedding.embedding,
-                });
+                    // 添加到结果
+                    search_results.push(SearchResult {
+                        id: *id,
+                        distance: *distance,
+                        embedding: stored_embedding.embedding,
+                    });
+                }
             }
+
+            if search_results.len() >= top_k {
+                log::info!("找到足够的结果，停止迭代");
+                break;
+            }
+
+            current_multiplier *= 2.0;
         }
         drop(storage);
 
@@ -786,10 +904,10 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             Status::not_found(format!("索引不存在: {}", index_name))
         })?;
 
-        // 1. 从 HNSW 索引删除（不管内存有没有，都继续删）
+        // 1. 从 HNSW 索引删除
         let ts = Self::unix_ms();
         let removed = {
-            let index = state.index.read().await;
+            let index = state.index.write().await;
             index.remove(req.id, ts)
         };
 
@@ -798,7 +916,9 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         let key = format!("v:{}", req.id).into_bytes();
         {
             let mut storage = self.storage.lock().await;
-            let _ = storage.delete(&table_name, &key).await;
+            if let Err(e) = storage.delete(&table_name, &key).await {
+                log::error!("删除 RocksDB 向量失败: id={}, index={}, error={}", req.id, index_name, e);
+            }
         }
 
         log::info!("向量删除处理完成: id={}, index={}, removed_from_hnsw={}", req.id, index_name, removed);
@@ -919,9 +1039,10 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         };
 
         // 查找索引
-        let _state = self.indices.get(index_name).ok_or_else(|| {
+        let state = self.indices.get(index_name).ok_or_else(|| {
             Status::not_found(format!("索引不存在: {}", index_name))
         })?;
+        let is_protobuf = state.config.is_protobuf_format();
 
         let table_name = format!("hnsw_{}", index_name);
         self.ensure_table(index_name).await?;
@@ -952,11 +1073,21 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             let id_str = String::from_utf8_lossy(&key);
             let id: u64 = id_str.strip_prefix("v:").and_then(|s| s.parse().ok()).unwrap_or(0);
 
-            // 解析 StoredEmbedding
-            let embedding: Vec<f32> = if let Ok(stored_embedding) = storage_proto::StoredEmbedding::decode(value.as_slice()) {
-                stored_embedding.embedding
+            // 解析 embedding（根据存储格式）
+            let embedding: Vec<f32> = if is_protobuf {
+                match storage_proto::StoredEmbedding::decode(value.as_slice()) {
+                    Ok(se) => se.embedding,
+                    Err(e) => {
+                        log::warn!("解码 protobuf 存储数据失败 id={}: {}", id, e);
+                        continue;
+                    }
+                }
             } else {
-                // 兼容旧格式：直接解析 f32 字节
+                // 旧格式：直接解析 f32 字节
+                if value.len() % 4 != 0 {
+                    log::warn!("跳过无效的 value, id={}, value_len={} (不是 4 的倍数)", id, value.len());
+                    continue;
+                }
                 value
                     .chunks_exact(4)
                     .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -1074,6 +1205,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
 
         // 3. 在 blocking 线程池中执行 CPU 密集的 vector 插入操作
         let index_dim = state.config.dim;
+        let is_protobuf = state.config.is_protobuf_format();
         let index_name_clone = index_name.to_string();
         let new_index_clone = new_index.clone();
         let total_entries = all_entries.len();
@@ -1098,24 +1230,29 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
                     }
                 };
 
-                // 解析 embedding（优先解析 StoredEmbedding，否则兼容旧格式）
-                let embedding: Vec<f32> = match storage_proto::StoredEmbedding::decode(value.as_slice()) {
-                    Ok(se) => se.embedding,
-                    Err(_) => {
-                        // 兼容旧格式
-                        if value.len() % 4 != 0 {
-                            log::warn!(
-                                "重建索引: 跳过无效的 value, id={}, value_len={} (不是 4 的倍数)",
-                                id,
-                                value.len()
-                            );
+                // 解析 embedding（根据存储格式）
+                let embedding: Vec<f32> = if is_protobuf {
+                    match storage_proto::StoredEmbedding::decode(value.as_slice()) {
+                        Ok(se) => se.embedding,
+                        Err(e) => {
+                            log::warn!("重建索引: 解码 protobuf 失败 id={}: {}", id, e);
                             continue;
                         }
-                        value
-                            .chunks_exact(4)
-                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                            .collect()
                     }
+                } else {
+                    // 旧格式
+                    if value.len() % 4 != 0 {
+                        log::warn!(
+                            "重建索引: 跳过无效的 value, id={}, value_len={} (不是 4 的倍数)",
+                            id,
+                            value.len()
+                        );
+                        continue;
+                    }
+                    value
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect()
                 };
 
                 // 验证维度

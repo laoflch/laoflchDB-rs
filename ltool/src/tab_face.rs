@@ -217,6 +217,10 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         query_embedding: embedding.clone(),
         top_k: 1,
         index_name: "face".to_string(),
+        field_filters: Default::default(),
+        filter_multiplier: 0.0,
+        max_filter_iterations: 0,
+        max_distance: 0.0,
     };
 
     app.set_status(format!("正在检查人脸 #{} 是否已存在...", face_num));
@@ -297,6 +301,7 @@ pub async fn save_and_index_face(app: &mut App) -> Result<()> {
         index_name: "face".to_string(),
         id: snowflake_id,
         embedding,
+        fields: Default::default(),
     };
 
     let insert_resp = {
@@ -628,6 +633,10 @@ pub async fn search_similar_face(app: &mut App) -> Result<()> {
         query_embedding: embedding,
         top_k: 20,
         index_name: "face".to_string(),
+        field_filters: Default::default(),
+        filter_multiplier: 0.0,
+        max_filter_iterations: 0,
+        max_distance: 0.0,
     };
 
     let resp = {
