@@ -1,0 +1,10 @@
+syntax = "proto3";
+package laoflchdb.embedding_storage;
+
+// RocksDB 中存储的向量格式：包含向量数据 + 元数据
+message StoredEmbedding {
+  repeated float embedding = 1;  // 向量数据
+  map<string, string> fields = 2;  // 用于过滤的字段（如 user_id, doc_id 等）
+  int64 created_at = 3;  // 插入时间戳（可选）
+  int64 updated_at = 4;  // 更新时间戳（可选）
+}

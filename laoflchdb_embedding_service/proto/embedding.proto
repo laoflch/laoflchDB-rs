@@ -32,6 +32,7 @@ message InsertEmbeddingRequest {
   uint64 id = 1;          // 向量唯一 ID
   string index_name = 2;  // 索引名称（默认 "default"）
   repeated float embedding = 3;  // 向量数据
+  map<string, string> fields = 4;  // 过滤字段（可选）
 }
 
 message InsertEmbeddingResponse {
@@ -45,6 +46,7 @@ message SearchEmbeddingRequest {
   repeated float query_embedding = 1;  // 查询向量
   int32 top_k = 2;                  // 返回 top-K 结果
   string index_name = 3;            // 索引名称（默认 "default"）
+  map<string, string> field_filters = 4;  // 字段过滤条件
 }
 
 message SearchResult {

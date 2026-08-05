@@ -1,6 +1,9 @@
 pub mod proto {
     tonic::include_proto!("laoflchdb.embedding");
 }
+pub mod storage_proto {
+    tonic::include_proto!("laoflchdb.embedding_storage");
+}
 
 use proto::embedding_index_service_server::EmbeddingIndexService;
 use proto::{
@@ -618,13 +621,25 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             }));
         }
 
-        // 1. 写入 KV RocksDB（持久化向量数据）
+        // 1. 写入 KV RocksDB（持久化向量数据+元数据）
         self.ensure_table(index_name).await?;
         let table_name = format!("hnsw_{}", index_name);
         let key = format!("v:{}", req.id).into_bytes();
-        let value: Vec<u8> = req.embedding.iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        
+        // 构建存储的 proto
+        let ts = Self::unix_ms() as i64;
+        let stored_embedding = storage_proto::StoredEmbedding {
+            embedding: req.embedding.clone(),
+            fields: req.fields,
+            created_at: ts,
+            updated_at: ts,
+        };
+        
+        // 序列化为字节
+        let mut value = Vec::new();
+        prost::Message::encode(&stored_embedding, &mut value).map_err(|e| {
+            Status::internal(format!("序列化存储数据失败: {}", e))
+        })?;
 
         {
             let mut storage = self.storage.lock().await;
@@ -661,6 +676,8 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             &req.index_name
         };
         let top_k = if req.top_k <= 0 { 10 } else { req.top_k as usize };
+        let has_filters = !req.field_filters.is_empty();
+        let search_candidate_count = if has_filters { top_k * 2 } else { top_k };
 
         if req.query_embedding.is_empty() {
             return Ok(Response::new(SearchEmbeddingResponse {
@@ -678,7 +695,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         // 执行 HNSW ANN 搜索
         let results = {
             let index = state.index.read().await;
-            index.search_f32(&req.query_embedding, top_k).map_err(|e| {
+            index.search_f32(&req.query_embedding, search_candidate_count).map_err(|e| {
                 Status::internal(format!("HNSW 搜索失败: {}", e))
             })?
         };
@@ -691,28 +708,58 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             }));
         }
 
-        // 从 KV RocksDB 加载向量数据
+        // 从 KV RocksDB 加载向量数据并过滤
         let table_name = format!("hnsw_{}", index_name);
-
-        let mut search_results = Vec::with_capacity(results.len());
+        let storage = self.storage.lock().await;
+        
+        let mut search_results = Vec::with_capacity(top_k);
+        
         for (id, distance) in &results {
-            let vector = {
-                let storage = self.storage.lock().await;
-                let key = format!("v:{}", id).into_bytes();
-                storage.get(&table_name, &key).await.ok().flatten().map(|bytes| {
-                    bytes
-                        .chunks_exact(4)
-                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect()
-                })
-            };
+            if search_results.len() >= top_k {
+                break;
+            }
 
-            search_results.push(SearchResult {
-                id: *id,
-                distance: *distance,
-                embedding: vector.unwrap_or_default(),
-            });
+            let key = format!("v:{}", id).into_bytes();
+            if let Some(bytes) = storage.get(&table_name, &key).await.ok().flatten() {
+                // 解析 StoredEmbedding
+                let stored_embedding = match storage_proto::StoredEmbedding::decode(bytes.as_slice()) {
+                    Ok(se) => se,
+                    Err(e) => {
+                        log::warn!("解码存储数据失败 id={}: {}", id, e);
+                        continue;
+                    }
+                };
+
+                // 检查过滤条件
+                if has_filters {
+                    let mut matches = true;
+                    for (k, v) in &req.field_filters {
+                        if let Some(stored_val) = stored_embedding.fields.get(k) {
+                            if stored_val != v {
+                                matches = false;
+                                break;
+                            }
+                        } else {
+                            // 字段不存在，不匹配
+                            matches = false;
+                            break;
+                        }
+                    }
+
+                    if !matches {
+                        continue;
+                    }
+                }
+
+                // 添加到结果
+                search_results.push(SearchResult {
+                    id: *id,
+                    distance: *distance,
+                    embedding: stored_embedding.embedding,
+                });
+            }
         }
+        drop(storage);
 
         Ok(Response::new(SearchEmbeddingResponse {
             success: true,
@@ -905,11 +952,16 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             let id_str = String::from_utf8_lossy(&key);
             let id: u64 = id_str.strip_prefix("v:").and_then(|s| s.parse().ok()).unwrap_or(0);
 
-            // value: f32 little-endian bytes
-            let embedding: Vec<f32> = value
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
+            // 解析 StoredEmbedding
+            let embedding: Vec<f32> = if let Ok(stored_embedding) = storage_proto::StoredEmbedding::decode(value.as_slice()) {
+                stored_embedding.embedding
+            } else {
+                // 兼容旧格式：直接解析 f32 字节
+                value
+                    .chunks_exact(4)
+                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect()
+            };
 
             entries.push(EmbeddingEntry {
                 id,
@@ -1046,20 +1098,25 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
                     }
                 };
 
-                // 验证 value 长度是 4 的倍数（f32 的字节数）
-                if value.len() % 4 != 0 {
-                    log::warn!(
-                        "重建索引: 跳过无效的 value, id={}, value_len={} (不是 4 的倍数)",
-                        id,
-                        value.len()
-                    );
-                    continue;
-                }
-
-                let embedding: Vec<f32> = value
-                    .chunks_exact(4)
-                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                    .collect();
+                // 解析 embedding（优先解析 StoredEmbedding，否则兼容旧格式）
+                let embedding: Vec<f32> = match storage_proto::StoredEmbedding::decode(value.as_slice()) {
+                    Ok(se) => se.embedding,
+                    Err(_) => {
+                        // 兼容旧格式
+                        if value.len() % 4 != 0 {
+                            log::warn!(
+                                "重建索引: 跳过无效的 value, id={}, value_len={} (不是 4 的倍数)",
+                                id,
+                                value.len()
+                            );
+                            continue;
+                        }
+                        value
+                            .chunks_exact(4)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect()
+                    }
+                };
 
                 // 验证维度
                 if embedding.len() != index_dim {
