@@ -1,6 +1,6 @@
 [package]
 name = "lsql"
-version = "0.1.10+9e0b54eabb3ca84fdf3a02056208cb4dbff9183a"
+version = "0.1.10+e0d3ecddc9e193aaf6b95d70148d8745611bf685"
 edition = "2021"
 description = "LaoflchDB 交互式 SQL 客户端 (类似 PostgreSQL 的 psql)"
 

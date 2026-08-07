@@ -265,6 +265,35 @@ impl LaoflchDBServer {
             }
         };
 
+        // 创建文本摘要服务（如果配置启用）
+        let text_summarize_service = match &config.text_summarize {
+            Some(ts_cfg) if ts_cfg.enabled => {
+                let ts_config = laoflchdb_text_summarize_service::TextSummarizeServiceConfig {
+                    model_path: ts_cfg.model_path.clone(),
+                    use_cuda: ts_cfg.use_cuda,
+                    max_input_tokens: ts_cfg.max_input_tokens,
+                    default_max_length: ts_cfg.default_max_length,
+                    default_min_length: ts_cfg.default_min_length,
+                    prefix_zh: ts_cfg.prefix_zh.clone(),
+                    prefix_en: ts_cfg.prefix_en.clone(),
+                };
+                match laoflchdb_text_summarize_service::TextSummarizeService::new(ts_config) {
+                    Ok(svc) => {
+                        info!("文本摘要服务已启动: {}", svc.model_name());
+                        Some(Arc::new(svc))
+                    }
+                    Err(e) => {
+                        log::error!("文本摘要服务启动失败: {}", e);
+                        None
+                    }
+                }
+            }
+            _ => {
+                info!("文本摘要服务未启用");
+                None
+            }
+        };
+
             let object_store_service = object_store_service.clone();
 
         if config.access_protocols.is_empty() {
@@ -277,7 +306,7 @@ impl LaoflchDBServer {
 
             let vector_service = vector_service.clone();
             tokio::spawn(async move {
-                if let Err(e) = start_grpc_server(grpc_service, vector_service, embedding_service, object_store_service, image_service, face_service, &addr).await {
+                if let Err(e) = start_grpc_server(grpc_service, vector_service, embedding_service, object_store_service, image_service, face_service, text_summarize_service, &addr).await {
                     log::error!("gRPC 服务错误: {}", e);
                 }
             });
@@ -305,9 +334,10 @@ impl LaoflchDBServer {
                         let object_store_service_clone = object_store_service.clone();
                         let image_service_clone = image_service.clone();
                         let face_service_clone = face_service.clone();
+                        let text_summarize_service_clone = text_summarize_service.clone();
 
                         tokio::spawn(async move {
-                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, embedding_service_clone, object_store_service_clone, image_service_clone, face_service_clone, &addr_owned).await {
+                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, embedding_service_clone, object_store_service_clone, image_service_clone, face_service_clone, text_summarize_service_clone, &addr_owned).await {
                                 log::error!("gRPC 服务错误: {}", e);
                             }
                         });
@@ -418,6 +448,7 @@ async fn start_grpc_server(
     object_store_service: Option<std::sync::Arc<laoflchdb_object_store_service::ObjectStoreServiceImpl>>,
     image_service: Option<std::sync::Arc<laoflchdb_image_service::ImageServiceImpl>>,
     face_service: Option<std::sync::Arc<laoflchdb_face_service::FaceServiceImpl>>,
+    text_summarize_service: Option<std::sync::Arc<laoflchdb_text_summarize_service::TextSummarizeService>>,
     addr: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tonic::transport::Server;
@@ -427,6 +458,7 @@ async fn start_grpc_server(
     use laoflchdb_object_store_service::proto::object_store_service_server::ObjectStoreServiceServer;
     use laoflchdb_image_service::proto::image_service_server::ImageServiceServer;
     use laoflchdb_face_service::proto::face_service_server::FaceServiceServer;
+    use laoflchdb_text_summarize_service::SummarizeServiceServer;
 
     let addr_copy = addr.to_string();
     info!("gRPC 服务监听: {}", addr_copy);
@@ -455,6 +487,11 @@ async fn start_grpc_server(
     // 如果有 face 服务配置，则注册
     if let Some(face) = face_service {
         server = server.add_service(FaceServiceServer::from_arc(face));
+    }
+
+    // 如果有文本摘要服务配置，则注册
+    if let Some(ts) = text_summarize_service {
+        server = server.add_service(SummarizeServiceServer::from_arc(ts));
     }
 
     server.serve(addr_copy.parse()?).await?;

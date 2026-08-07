@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package laoflchdb.text_summarize;
+
+// 文本摘要服务（基于 candle + T5/Flan-T5）
+service TextSummarizeService {
+    // 生成文本摘要
+    rpc Summarize(SummarizeRequest) returns (SummarizeResponse);
+    // 健康检查
+    rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// 摘要请求
+message SummarizeRequest {
+    // 输入文本
+    string text = 1;
+    // 目标语言："zh" = 中文, "en" = 英文, "auto" = 自动检测（默认）
+    string target_language = 2;
+    // 最大输出 token 数（默认 150）
+    int32 max_length = 3;
+    // 最小输出 token 数（默认 40）
+    int32 min_length = 4;
+    // 采样温度（0 = 贪婪，默认 0）
+    float temperature = 5;
+    // beam 大小（默认 1）
+    int32 num_beams = 6;
+}
+
+// 摘要响应
+message SummarizeResponse {
+    bool success = 1;
+    string message = 2;
+    // 生成的摘要文本
+    string summary = 3;
+    // 检测到的输入语言
+    string detected_language = 4;
+    // 处理耗时（毫秒）
+    int64 processing_time_ms = 5;
+    // 输入字符数
+    int32 input_length = 6;
+    // 输出字符数
+    int32 output_length = 7;
+}
+
+// 健康检查请求
+message HealthCheckRequest {}
+
+// 健康检查响应
+message HealthCheckResponse {
+    bool ready = 1;
+    string model_name = 2;
+    string model_status = 3;
+}

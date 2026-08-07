@@ -309,6 +309,8 @@ pub struct DatabaseConfig {
     pub image_service: Option<ImageServiceConfig>,
     #[serde(default)]
     pub face_service: Option<FaceServiceConfig>,
+    #[serde(default)]
+    pub text_summarize: Option<TextSummarizeServiceConfig>,
 }
 
 /// 对象存储服务配置（S3 兼容）
@@ -405,6 +407,44 @@ fn default_image_bucket() -> String {
     "images".to_string()
 }
 
+/// 文本摘要服务配置（基于 candle + T5/Flan-T5）
+#[derive(Debug, Deserialize, Clone)]
+pub struct TextSummarizeServiceConfig {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// 模型目录，需包含 config.json / tokenizer.json / model.safetensors
+    #[serde(default = "default_ts_model_path")]
+    pub model_path: String,
+    /// 是否使用 GPU（需启用 cuda feature）
+    #[serde(default)]
+    pub use_cuda: bool,
+    /// 输入最大 token 数
+    #[serde(default = "default_ts_max_input_tokens")]
+    pub max_input_tokens: usize,
+    /// 摘要默认最大输出 token 数
+    #[serde(default = "default_ts_max_length")]
+    pub default_max_length: usize,
+    /// 摘要默认最小输出 token 数
+    #[serde(default = "default_ts_min_length")]
+    pub default_min_length: usize,
+    /// 中文任务前缀
+    #[serde(default = "default_ts_prefix_zh")]
+    pub prefix_zh: String,
+    /// 英文任务前缀
+    #[serde(default = "default_ts_prefix_en")]
+    pub prefix_en: String,
+}
+
+fn default_ts_model_path() -> String {
+    "laoflch_db_model/flan-t5-small".to_string()
+}
+fn default_ts_max_input_tokens() -> usize { 1024 }
+fn default_ts_max_length() -> usize { 150 }
+fn default_ts_min_length() -> usize { 40 }
+fn default_ts_prefix_zh() -> String { "请用中文总结以下内容：\n".to_string() }
+fn default_ts_prefix_en() -> String { "summarize: ".to_string() }
+
 fn default_object_store_db_path() -> String {
     "./laoflch_object_store_data".to_string()
 }
@@ -471,6 +511,7 @@ impl DatabaseConfig {
             object_store: None,
             image_service: None,
             face_service: None,
+            text_summarize: None,
         }
     }
 

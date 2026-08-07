@@ -621,6 +621,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "bit-set"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+dependencies = [
+ "bit-vec",
+]
+
+[[package]]
+name = "bit-vec"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
 name = "bit_field"
 version = "0.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -832,6 +847,25 @@ dependencies = [
  "safetensors 0.7.0",
  "serde",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "candle-transformers"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f59d08c89e9f4af9c464e2f3a8e16199e7cc601e6f34538c2cfbb42b623b1783"
+dependencies = [
+ "byteorder",
+ "candle-core",
+ "candle-nn",
+ "fancy-regex",
+ "num-traits",
+ "rand 0.9.4",
+ "rayon",
+ "serde",
+ "serde_json",
+ "serde_plain",
+ "tracing",
 ]
 
 [[package]]
@@ -2351,6 +2385,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "fancy-regex"
+version = "0.17.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72cf461f865c862bb7dc573f643dd6a2b6842f7c30b07882b56bd148cc2761b8"
+dependencies = [
+ "bit-set",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
 name = "fastdivide"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3550,7 +3595,7 @@ dependencies = [
 
 [[package]]
 name = "laoflchDB-rust"
-version = "0.1.10+9e0b54eabb3ca84fdf3a02056208cb4dbff9183a"
+version = "0.1.10+e0d3ecddc9e193aaf6b95d70148d8745611bf685"
 dependencies = [
  "async-trait",
  "axum 0.7.9",
@@ -3567,6 +3612,8 @@ dependencies = [
  "laoflchdb_kv_rocksdb_engine",
  "laoflchdb_object_store_service",
  "laoflchdb_sql_df_engine",
+ "laoflchdb_text_summarize_service",
+ "laoflchdb_text_summarize_service_proto",
  "laoflchdb_vector_service",
  "log",
  "multi_table_rocksdb",
@@ -3790,6 +3837,35 @@ dependencies = [
  "log",
  "protobuf",
  "tokio",
+]
+
+[[package]]
+name = "laoflchdb_text_summarize_service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "candle-nn",
+ "candle-transformers",
+ "laoflchdb_text_summarize_service_proto",
+ "log",
+ "prost",
+ "regex",
+ "serde",
+ "serde_json",
+ "tokenizers",
+ "tokio",
+ "tonic",
+ "tonic-build",
+]
+
+[[package]]
+name = "laoflchdb_text_summarize_service_proto"
+version = "0.1.0"
+dependencies = [
+ "prost",
+ "tonic",
+ "tonic-build",
 ]
 
 [[package]]
@@ -4037,7 +4113,7 @@ dependencies = [
 
 [[package]]
 name = "lsql"
-version = "0.1.10+9e0b54eabb3ca84fdf3a02056208cb4dbff9183a"
+version = "0.1.10+e0d3ecddc9e193aaf6b95d70148d8745611bf685"
 dependencies = [
  "clap",
  "laoflchdb_client",
@@ -5734,6 +5810,15 @@ dependencies = [
  "itoa",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "serde_plain"
+version = "1.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ce1fc6db65a611022b23a0dec6975d63fb80a302cb3388835ff02c097258d50"
+dependencies = [
+ "serde",
 ]
 
 [[package]]

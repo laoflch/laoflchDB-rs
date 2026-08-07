@@ -1,6 +1,6 @@
 [package]
 name = "laoflchDB-rust"
-version = "0.1.10+9e0b54eabb3ca84fdf3a02056208cb4dbff9183a"
+version = "0.1.10+e0d3ecddc9e193aaf6b95d70148d8745611bf685"
 edition = "2021"
 
 [[bin]]
@@ -28,6 +28,8 @@ members = [
     "laoflchdb_client",
     "laoflchdb_image_service_proto",
     "laoflchdb_embedding_service_proto",
+    "laoflchdb_text_summarize_service",
+    "laoflchdb_text_summarize_service_proto",
 ]
 
 [dependencies]
@@ -41,6 +43,8 @@ laoflchdb_embedding_service = { path = "./laoflchdb_embedding_service" }
 laoflchdb_object_store_service = { path = "./laoflchdb_object_store_service" }
 laoflchdb_image_service = { path = "./laoflchdb_image_service", features = ["auto_index"] }
 laoflchdb_face_service = { path = "./laoflchdb_face_service" }
+laoflchdb_text_summarize_service = { path = "./laoflchdb_text_summarize_service" }
+laoflchdb_text_summarize_service_proto = { path = "./laoflchdb_text_summarize_service_proto" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}
 prost = "0.12"
 protobuf = "3.7"
@@ -69,7 +73,7 @@ prost-build = "0.12"
 tonic-build = "0.11"
 
 [features]
-cuda = ["laoflchdb_vector_service/cuda", "laoflchdb_face_service/cuda"]
+cuda = ["laoflchdb_vector_service/cuda", "laoflchdb_face_service/cuda", "laoflchdb_text_summarize_service/cuda"]
 
 [dev-dependencies]
 reqwest = { version = "0.11", features = ["json"] }

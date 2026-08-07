@@ -98,6 +98,15 @@ face_service:
   # 人脸相似度判定阈值（点积 >= 此值视为同一人，默认 0.5）
   same_person_threshold: 0.5
 
+# 文本摘要服务配置（基于 candle + T5/Flan-T5，支持中英文）
+text_summarize:
+  enabled: true
+  model_path: /app/model/flan-t5-small
+  use_cuda: false
+  max_input_tokens: 1024
+  default_max_length: 150
+  default_min_length: 40
+
 
 # Log configuration
 log_level: info
