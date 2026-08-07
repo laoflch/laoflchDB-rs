@@ -102,11 +102,14 @@ face_service:
 # 文本摘要服务配置（基于 candle + T5/Flan-T5，支持中英文）
 text_summarize:
   enabled: true
-  model_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_model/flan-t5-small
+  model_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_model/mt5-xlsum
   use_cuda: true
   max_input_tokens: 1024
   default_max_length: 150
   default_min_length: 40
+  # XLSum 直接对文档生成摘要，无需任务前缀
+  prefix_zh: ""
+  prefix_en: ""
 
 # Log configuration
 log_level: info

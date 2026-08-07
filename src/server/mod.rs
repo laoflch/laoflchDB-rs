@@ -491,7 +491,7 @@ async fn start_grpc_server(
 
     // 如果有文本摘要服务配置，则注册
     if let Some(ts) = text_summarize_service {
-        server = server.add_service(SummarizeServiceServer::from_arc(ts));
+        server = server.add_service(SummarizeServiceServer::new(ts));
     }
 
     server.serve(addr_copy.parse()?).await?;

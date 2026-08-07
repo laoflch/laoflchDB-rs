@@ -203,9 +203,8 @@ impl TextSummarizeService {
         for _ in 0..max_len {
             let logits = model.decode(&decoder_input_ids, &encoder_output)?;
             model.clear_kv_cache();
-            // logits: [1, seq, vocab] -> [vocab]
-            let last_logits = logits.narrow(1, logits.dim(1)? - 1, 1)?.squeeze(1)?;
-            let last_logits = last_logits.squeeze(0)?;
+            // decode 已内部取最后一个位置的 logits 并投影到词表，输出形状为 [batch, vocab]
+            let last_logits = logits.squeeze(0)?;
 
             let next_token: u32 = if temperature > 0.0 && output_ids.len() >= min_len {
                 // 温度采样
