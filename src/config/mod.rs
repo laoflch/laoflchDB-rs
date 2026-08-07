@@ -311,6 +311,8 @@ pub struct DatabaseConfig {
     pub face_service: Option<FaceServiceConfig>,
     #[serde(default)]
     pub text_summarize: Option<TextSummarizeServiceConfig>,
+    #[serde(default)]
+    pub reranker: Option<RerankerServiceConfig>,
 }
 
 /// 对象存储服务配置（S3 兼容）
@@ -434,7 +436,12 @@ pub struct TextSummarizeServiceConfig {
     /// 英文任务前缀
     #[serde(default = "default_ts_prefix_en")]
     pub prefix_en: String,
+    /// 权重精度: "f32" / "f16"
+    #[serde(default = "default_dtype")]
+    pub dtype: String,
 }
+
+fn default_dtype() -> String { "f32".to_string() }
 
 fn default_ts_model_path() -> String {
     "laoflch_db_model/flan-t5-small".to_string()
@@ -444,6 +451,35 @@ fn default_ts_max_length() -> usize { 150 }
 fn default_ts_min_length() -> usize { 40 }
 fn default_ts_prefix_zh() -> String { "请用中文总结以下内容：\n".to_string() }
 fn default_ts_prefix_en() -> String { "summarize: ".to_string() }
+
+/// 精排服务配置（基于 candle + bge-reranker-v2-m3）
+#[derive(Debug, Deserialize, Clone)]
+pub struct RerankerServiceConfig {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// 模型目录，需包含 config.json / tokenizer.json / model.safetensors
+    #[serde(default = "default_rr_model_path")]
+    pub model_path: String,
+    /// 是否使用 GPU（需启用 cuda feature）
+    #[serde(default)]
+    pub use_cuda: bool,
+    /// query + document 总长度上限
+    #[serde(default = "default_rr_max_seq_len")]
+    pub max_seq_len: usize,
+    /// 默认返回的 top_n
+    #[serde(default = "default_rr_top_n")]
+    pub default_top_n: usize,
+    /// 权重精度: "f32" / "f16"
+    #[serde(default = "default_dtype")]
+    pub dtype: String,
+}
+
+fn default_rr_model_path() -> String {
+    "laoflch_db_model/bge-reranker-v2-m3".to_string()
+}
+fn default_rr_max_seq_len() -> usize { 1024 }
+fn default_rr_top_n() -> usize { 10 }
 
 fn default_object_store_db_path() -> String {
     "./laoflch_object_store_data".to_string()
@@ -512,6 +548,7 @@ impl DatabaseConfig {
             image_service: None,
             face_service: None,
             text_summarize: None,
+            reranker: None,
         }
     }
 

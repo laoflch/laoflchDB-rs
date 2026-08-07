@@ -27,6 +27,7 @@ pub struct RestService {
     object_store_router: Option<axum::Router>,
     image_router: Option<axum::Router>,
     face_router: Option<axum::Router>,
+    reranker_router: Option<axum::Router>,
 }
 
 impl RestService {
@@ -40,6 +41,7 @@ impl RestService {
             object_store_router: None,
             image_router: None,
             face_router: None,
+            reranker_router: None,
         }
     }
 
@@ -53,6 +55,7 @@ impl RestService {
             object_store_router: None,
             image_router: None,
             face_router: None,
+            reranker_router: None,
         }
     }
 
@@ -66,6 +69,7 @@ impl RestService {
             object_store_router: None,
             image_router: None,
             face_router: None,
+            reranker_router: None,
         }
     }
 
@@ -90,6 +94,12 @@ impl RestService {
     /// 设置人脸服务 REST Router
     pub fn with_face_router(mut self, router: axum::Router) -> Self {
         self.face_router = Some(router);
+        self
+    }
+
+    /// 设置精排服务 REST Router
+    pub fn with_reranker_router(mut self, router: axum::Router) -> Self {
+        self.reranker_router = Some(router);
         self
     }
 
@@ -163,6 +173,11 @@ impl RestService {
         // 如果设置了人脸服务，添加人脸服务路由
         if let Some(ref face_router) = self.face_router {
             main_router = main_router.nest("/api/v1/face", face_router.clone());
+        }
+
+        // 如果设置了精排服务，添加 OpenAI 兼容精排路由（/v1/rerank）
+        if let Some(ref reranker_router) = self.reranker_router {
+            main_router = main_router.nest("/v1", reranker_router.clone());
         }
 
         main_router

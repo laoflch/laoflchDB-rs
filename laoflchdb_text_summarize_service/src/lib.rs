@@ -42,6 +42,8 @@ pub struct TextSummarizeServiceConfig {
     pub prefix_zh: String,
     /// 英文任务前缀
     pub prefix_en: String,
+    /// 权重精度: "f32" / "f16"（fp16 可大幅降低显存占用）
+    pub dtype: String,
 }
 
 impl Default for TextSummarizeServiceConfig {
@@ -54,6 +56,7 @@ impl Default for TextSummarizeServiceConfig {
             default_min_length: 40,
             prefix_zh: "请用中文总结以下内容：\n".to_string(),
             prefix_en: "summarize: ".to_string(),
+            dtype: "f32".to_string(),
         }
     }
 }
@@ -91,7 +94,9 @@ impl TextSummarizeService {
         // 加载 model.safetensors
         let safetensors_path = path.join("model.safetensors");
         let tensors = candle_core::safetensors::load(safetensors_path, &device)?;
-        let vb = VarBuilder::from_tensors(tensors, DType::F32, &device);
+        let dtype = parse_dtype(&service_config.dtype)?;
+        info!("T5 模型权重精度: {:?}", dtype);
+        let vb = VarBuilder::from_tensors(tensors, dtype, &device);
 
         // 构建 T5 模型
         let model = T5ForConditionalGeneration::load(vb, &config)?;
@@ -257,6 +262,15 @@ impl TextSummarizeService {
             .file_name()
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| self.service_config.model_path.clone())
+    }
+}
+
+/// 解析权重精度字符串为 DType
+fn parse_dtype(s: &str) -> anyhow::Result<DType> {
+    match s.to_ascii_lowercase().as_str() {
+        "f32" | "fp32" => Ok(DType::F32),
+        "f16" | "fp16" => Ok(DType::F16),
+        other => Err(anyhow::anyhow!("不支持的 dtype: {}（支持 f32/fp32、f16/fp16）", other)),
     }
 }
 

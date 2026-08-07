@@ -276,6 +276,7 @@ impl LaoflchDBServer {
                     default_min_length: ts_cfg.default_min_length,
                     prefix_zh: ts_cfg.prefix_zh.clone(),
                     prefix_en: ts_cfg.prefix_en.clone(),
+                    dtype: ts_cfg.dtype.clone(),
                 };
                 match laoflchdb_text_summarize_service::TextSummarizeService::new(ts_config) {
                     Ok(svc) => {
@@ -290,6 +291,33 @@ impl LaoflchDBServer {
             }
             _ => {
                 info!("文本摘要服务未启用");
+                None
+            }
+        };
+
+        // 创建精排服务（如果配置启用）
+        let reranker_service = match &config.reranker {
+            Some(rr_cfg) if rr_cfg.enabled => {
+                let rr_config = laoflchdb_reranker_service::RerankerServiceConfig {
+                    model_path: rr_cfg.model_path.clone(),
+                    use_cuda: rr_cfg.use_cuda,
+                    max_seq_len: rr_cfg.max_seq_len,
+                    default_top_n: rr_cfg.default_top_n,
+                    dtype: rr_cfg.dtype.clone(),
+                };
+                match laoflchdb_reranker_service::RerankerService::new(rr_config) {
+                    Ok(svc) => {
+                        info!("精排服务已启动: {}", svc.model_name());
+                        Some(Arc::new(svc))
+                    }
+                    Err(e) => {
+                        log::error!("精排服务启动失败: {}", e);
+                        None
+                    }
+                }
+            }
+            _ => {
+                info!("精排服务未启用");
                 None
             }
         };
@@ -360,6 +388,11 @@ impl LaoflchDBServer {
                         if let Some(ref face_svc) = face_service {
                             let face_router = laoflchdb_face_service::create_rest_router(face_svc.clone());
                             rest_service = rest_service.with_face_router(face_router);
+                        }
+                        // 如果精排服务已启用，创建并挂载 OpenAI 兼容精排路由（/v1/rerank）
+                        if let Some(ref rr_svc) = reranker_service {
+                            let rr_router = laoflchdb_reranker_service::create_rest_router(rr_svc.clone());
+                            rest_service = rest_service.with_reranker_router(rr_router);
                         }
                         let addr_owned = addr.to_string();
 

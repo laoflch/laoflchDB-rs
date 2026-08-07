@@ -1,0 +1,22 @@
+[package]
+name = "laoflchdb_reranker_service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# 推理框架
+candle-core = "=0.10.2"
+candle-nn = "=0.10.2"
+candle-transformers = "=0.10.2"
+tokenizers = "0.22"
+# HTTP (OpenAI 兼容 /v1/rerank)
+axum = "0.7"
+tokio = { version = "1.0", features = ["full"] }
+# 序列化与日志
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+anyhow = "1.0"
+
+[features]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]

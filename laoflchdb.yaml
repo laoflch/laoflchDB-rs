@@ -10,7 +10,8 @@ vector_service:
   enabled: true
   auto_load: true
   # 可指定启动时加载的模型名称列表（空列表表示加载 candle 目录下所有有效模型）
-  load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
+  #load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
+  load_models: ["bge-small-zh-v1.5", "jina-clip-v2"]
   # 是否使用 CUDA GPU 加速（false=CPU，避免多屏卡顿）
   use_cuda: true
 
@@ -103,13 +104,24 @@ face_service:
 text_summarize:
   enabled: true
   model_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_model/mt5-xlsum
-  use_cuda: true
+  use_cuda: false
+  dtype: f32
   max_input_tokens: 1024
   default_max_length: 150
   default_min_length: 40
   # XLSum 直接对文档生成摘要，无需任务前缀
   prefix_zh: ""
   prefix_en: ""
+
+# 精排服务配置（基于 candle + bge-reranker-v2-m3，OpenAI 兼容 /v1/rerank）
+# 两模型均以 fp16 加载，8GB 显存可同时容纳（各自约 1.1GB）
+reranker:
+  enabled: true
+  model_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_model/bge-reranker-v2-m3
+  use_cuda: true
+  dtype: f32
+  max_seq_len: 1024
+  default_top_n: 10
 
 # Log configuration
 log_level: info
