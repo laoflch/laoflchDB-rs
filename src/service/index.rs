@@ -71,8 +71,27 @@ pub trait IndexService: Send + Sync + 'static {
     /// 通过doc_id获取文档
     async fn get_document(&self, index_name: &str, doc_id: &str) -> Result<Option<SearchResult>, Box<dyn std::error::Error + Send + Sync>>;
 
+    /// 分页获取索引下全部文档
+    async fn scan_documents(
+        &self,
+        index_name: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<PagedDocuments, Box<dyn std::error::Error + Send + Sync>>;
+
     /// 关闭索引服务
     async fn shutdown(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+
+/// 分页文档结果
+#[derive(Debug, Clone)]
+pub struct PagedDocuments {
+    pub documents: Vec<SearchResult>,
+    pub total: u64,
+    pub offset: usize,
+    pub limit: usize,
+    pub has_prev_page: bool,
+    pub has_next_page: bool,
 }
 
 /// 搜索结果
@@ -215,7 +234,7 @@ impl IndexService for IndexServiceImpl {
             special_fields: SpecialFields::new(),
         };
         
-        let row_id = engine.add_row(index_name, &row).await?;
+        let row_id = engine.add_row(index_name, &row, if doc_id.is_empty() { None } else { Some(doc_id) }).await?;
         
         let result_doc_id = if doc_id.is_empty() {
             row_id.to_string()
@@ -366,6 +385,67 @@ impl IndexService for IndexServiceImpl {
         
         info!("IndexService shutdown complete");
         Ok(())
+    }
+
+    async fn scan_documents(
+        &self,
+        index_name: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<PagedDocuments, Box<dyn std::error::Error + Send + Sync>> {
+        debug!("Scanning documents in index '{}' offset={:?} limit={:?}", index_name, offset, limit);
+
+        let default_limit = 10usize;
+        let page_limit = limit.unwrap_or(default_limit).max(1);
+        let page_offset = offset.unwrap_or(0);
+
+        let engine = self.storage_engine.read().await;
+
+        let total = engine.count_rows(index_name).await?;
+
+        // 多取一条用于判断是否有下一页
+        let rows = engine.scan_table(index_name, Some(page_offset), Some(page_limit + 1)).await?;
+
+        let has_next_page = rows.len() > page_limit;
+        let page_rows = rows.into_iter().take(page_limit).collect::<Vec<_>>();
+
+        let cols = engine.list_table_cols(index_name).await?;
+
+        let documents: Vec<SearchResult> = page_rows
+            .into_iter()
+            .map(|(row_id, row)| {
+                let mut fields = HashMap::new();
+                fields.insert("doc_id".to_string(), row_id.to_string());
+                let mut col_index = 0;
+                for col in &cols {
+                    if col.column_name == "_row_id" {
+                        continue;
+                    }
+                    if col_index < row.data.len() {
+                        let value = String::from_utf8_lossy(&row.data[col_index]).to_string();
+                        fields.insert(col.column_name.clone(), value);
+                    }
+                    col_index += 1;
+                }
+                SearchResult {
+                    doc_id: row_id.to_string(),
+                    score: 0.0,
+                    fields,
+                }
+            })
+            .collect();
+
+        let has_prev_page = page_offset > 0;
+
+        info!("Scan index '{}' returned {} documents (total {})", index_name, documents.len(), total);
+        Ok(PagedDocuments {
+            documents,
+            total,
+            offset: page_offset,
+            limit: page_limit,
+            has_prev_page,
+            has_next_page,
+        })
     }
 
     async fn get_document(&self, index_name: &str, doc_id: &str) -> Result<Option<SearchResult>, Box<dyn std::error::Error + Send + Sync>> {

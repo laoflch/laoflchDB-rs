@@ -475,7 +475,7 @@ impl StorageEngine for MultiTableRocksDBEngine {
         Ok(cols)
     }
     
-    async fn add_row(&mut self, table: &str, row: &Row) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    async fn add_row(&mut self, table: &str, row: &Row, _doc_id: Option<&str>) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
         let db = self.db.read().unwrap();
         let cf_handle = db.cf_handle(&cf_name)
@@ -676,23 +676,27 @@ impl StorageEngine for MultiTableRocksDBEngine {
         &self.schema_name
     }
     
-    async fn scan_table(&self, table: &str, limit: Option<usize>) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn scan_table(&self, table: &str, offset: Option<usize>, limit: Option<usize>) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>> {
         let cf_name = self.get_table_cf(table);
         let db = self.db.read().unwrap();
         let cf_handle = db.cf_handle(&cf_name)
             .ok_or_else(|| format!("Table '{}' not found", cf_name))?;
         
         let mut results = Vec::new();
+        let start_offset = offset.unwrap_or(0);
         let iter = db.iterator_cf(cf_handle, rocksdb::IteratorMode::Start);
         
         for item in iter {
+            if results.len() < start_offset {
+                continue;
+            }
             let (key, value) = item?;
             let row_id = self.key_to_row_id(key.as_ref())?;
             let row = Row::parse_from_bytes(&value[..])?;
             results.push((row_id, row));
             
             if let Some(lim) = limit {
-                if results.len() >= lim {
+                if results.len() - start_offset >= lim {
                     break;
                 }
             }
@@ -1731,7 +1735,7 @@ impl MultiTableRocksDBEngine {
     
     pub async fn table_to_arrow(&self, table_name: &str) -> Result<(Schema, Vec<ArrayRef>, Vec<(i32, String)>), Box<dyn std::error::Error + Send + Sync>> {
         let columns = StorageEngine::list_table_cols(self, table_name).await?;
-        let rows = StorageEngine::scan_table(self, table_name, None).await?;
+        let rows = StorageEngine::scan_table(self, table_name, None, None).await?;
         
         let mut column_infos: Vec<(i32, String)> = Vec::new();
         let mut arrow_fields = Vec::new();

@@ -246,6 +246,7 @@ impl LaoflchDBServer {
                     max_faces: face_cfg.max_faces,
                     face_duplicate_distance: face_cfg.face_duplicate_distance,
                     same_person_threshold: face_cfg.same_person_threshold,
+                    use_gpu: face_cfg.use_gpu,
                 };
                 let face_svc = laoflchdb_face_service::FaceServiceImpl::new(
                     face_config,

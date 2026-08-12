@@ -17,7 +17,7 @@ import rpc_pb2
 import rpc_pb2_grpc
 
 TEST_DB = "./laoflch_db_index_test"
-TEST_ADDR = "127.0.0.1:29777"
+TEST_ADDR = "127.0.0.1:19777"
 SERVER_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "target", "release", "laoflchdb")
 INDEX_NAME = "test_grpc_index"
 
@@ -179,9 +179,11 @@ def test_get_index_stats(num=1):
 def test_add_document():
     print("[测试] 添加文档...")
     try:
+        import time as _time
+        doc_id = str(int(_time.time() * 1000) % 10**12)
         req = rpc_pb2.AddDocumentRequest(
             index_name=INDEX_NAME,
-            doc_id="doc_grpc_001",
+            doc_id=doc_id,
             fields={
                 "title": "Hello gRPC World",
                 "content": "This is a test document via gRPC",
@@ -191,7 +193,24 @@ def test_add_document():
         )
         resp = stub.AddDocument(req, metadata=get_metadata())
         assert resp.success, f"AddDocument failed: {resp.message}"
-        print(f"    ✓ 文档添加成功，doc_id: {resp.doc_id}")
+        assert resp.doc_id == doc_id, "返回 doc_id 应与传入的自定义 doc_id 一致"
+        print(f"    ✓ 文档添加成功，自定义 doc_id: {resp.doc_id}")
+
+        # 重复添加相同 doc_id 应报重复错误
+        resp2 = stub.AddDocument(req, metadata=get_metadata())
+        assert resp2.success == False, "重复添加相同 doc_id 应失败"
+        assert "重复" in str(resp2.message) or "Duplicate" in str(resp2.message) or "duplicate" in str(resp2.message), f"重复错误信息不符合预期: {resp2.message}"
+        print(f"    ✓ 重复 doc_id 被正确拒绝: {resp2.message}")
+
+        # 非数字 doc_id 应被拒绝
+        bad = rpc_pb2.AddDocumentRequest(
+            index_name=INDEX_NAME,
+            doc_id="abc_not_numeric",
+            fields={"title": "bad", "content": "bad", "category": "bad", "view_count": "1"}
+        )
+        resp3 = stub.AddDocument(bad, metadata=get_metadata())
+        assert resp3.success == False, "非数字 doc_id 应被拒绝"
+        print(f"    ✓ 非数字 doc_id 被正确拒绝: {resp3.message}")
         return True
     except grpc.RpcError as e:
         if e.code() == grpc.StatusCode.UNIMPLEMENTED:
@@ -206,9 +225,11 @@ def test_add_document():
 def test_search_with_real_data():
     print("[测试] 添加多个文档并进行真实搜索测试...")
     try:
+        import time as _time
+        base = int(_time.time() * 1000) % 10**12
         docs = [
             {
-                "doc_id": "doc_grpc_001",
+                "doc_id": str(base + 1),
                 "fields": {
                     "title": "Rust Programming",
                     "content": "Rust is a systems programming language focused on safety, speed, and concurrency.",
@@ -217,7 +238,7 @@ def test_search_with_real_data():
                 }
             },
             {
-                "doc_id": "doc_grpc_002",
+                "doc_id": str(base + 2),
                 "fields": {
                     "title": "Python Data Analysis",
                     "content": "Python is very popular in the field of data analysis with rich libraries.",
@@ -226,7 +247,7 @@ def test_search_with_real_data():
                 }
             },
             {
-                "doc_id": "doc_grpc_003",
+                "doc_id": str(base + 3),
                 "fields": {
                     "title": "Machine Learning Introduction",
                     "content": "Machine learning is a branch of artificial intelligence.",
@@ -416,6 +437,99 @@ def test_create_duplicate_index():
         print(f"    ✗ 创建同名索引失败: {e}")
         return False
 
+def test_paginated_documents():
+    print("[测试] 分页获取索引下全部文档（上一页/下一页）...")
+    page_index = "test_grpc_page_index"
+    try:
+        # 创建独立分页索引
+        req = rpc_pb2.CreateIndexRequest(
+            index_name=page_index,
+            fields=[
+                rpc_pb2.IndexFieldDef(name="title", field_type=0),
+                rpc_pb2.IndexFieldDef(name="content", field_type=0),
+                rpc_pb2.IndexFieldDef(name="category", field_type=0),
+                rpc_pb2.IndexFieldDef(name="view_count", field_type=1),
+            ]
+        )
+        resp = stub.CreateIndex(req, metadata=get_metadata())
+        assert resp.success, f"创建分页索引失败: {resp.message}"
+
+        # 添加 8 个文档
+        for i in range(8):
+            req = rpc_pb2.AddDocumentRequest(
+                index_name=page_index,
+                doc_id=f"{300000000000 + i}",
+                fields={
+                    "title": f"Pagination Document {i}",
+                    "content": f"Content of pagination document number {i}",
+                    "category": "Pagination",
+                    "view_count": str(10 + i),
+                }
+            )
+            resp = stub.AddDocument(req, metadata=get_metadata())
+            assert resp.success, f"添加文档 {300000000000 + i} 失败: {resp.message}"
+
+        # 第 1 页 offset=0 limit=3
+        req = rpc_pb2.ListDocumentsRequest(index_name=page_index, offset=0, limit=3)
+        resp = stub.ListDocuments(req, metadata=get_metadata())
+        assert resp.success, f"第1页请求失败: {resp.message}"
+        page1 = resp
+        assert len(page1.documents) == 3, f"第1页应返回3条，实际: {len(page1.documents)}"
+        assert page1.total == 8, f"total 应为 8，实际: {page1.total}"
+        assert page1.has_prev_page == False, "第1页 has_prev_page 应为 False"
+        assert page1.has_next_page == True, "第1页 has_next_page 应为 True"
+        print(f"    ✓ 第1页 offset=0 limit=3: {len(page1.documents)} 条, total={page1.total}, prev={page1.has_prev_page}, next={page1.has_next_page}")
+
+        # 下一页 offset=3 limit=3
+        next_offset = page1.offset + len(page1.documents)
+        req = rpc_pb2.ListDocumentsRequest(index_name=page_index, offset=next_offset, limit=3)
+        resp = stub.ListDocuments(req, metadata=get_metadata())
+        assert resp.success, f"下一页请求失败: {resp.message}"
+        page2 = resp
+        assert len(page2.documents) == 3, f"第2页应返回3条，实际: {len(page2.documents)}"
+        assert page2.has_prev_page == True, "第2页 has_prev_page 应为 True"
+        assert page2.has_next_page == True, "第2页 has_next_page 应为 True"
+        print(f"    ✓ 下一页 offset=3 limit=3: {len(page2.documents)} 条, prev={page2.has_prev_page}, next={page2.has_next_page}")
+
+        # 上一页 offset=0
+        prev_offset = max(page2.offset - page2.limit, 0)
+        req = rpc_pb2.ListDocumentsRequest(index_name=page_index, offset=prev_offset, limit=3)
+        resp = stub.ListDocuments(req, metadata=get_metadata())
+        assert resp.success, f"上一页请求失败: {resp.message}"
+        assert resp.offset == 0
+        assert resp.has_prev_page == False, "返回第1页后 has_prev_page 应为 False"
+        print(f"    ✓ 上一页 offset=0: {len(resp.documents)} 条, prev={resp.has_prev_page}, next={resp.has_next_page}")
+
+        # 末页 offset=6 limit=3，仅剩2条
+        req = rpc_pb2.ListDocumentsRequest(index_name=page_index, offset=6, limit=3)
+        resp = stub.ListDocuments(req, metadata=get_metadata())
+        assert resp.success, f"末页请求失败: {resp.message}"
+        assert len(resp.documents) == 2, f"末页应返回2条，实际: {len(resp.documents)}"
+        assert resp.has_next_page == False, "末页 has_next_page 应为 False"
+        assert resp.has_prev_page == True, "末页 has_prev_page 应为 True"
+        print(f"    ✓ 末页 offset=6 limit=3: {len(resp.documents)} 条, prev={resp.has_prev_page}, next={resp.has_next_page}")
+
+        # 越界 offset 返回空列表
+        req = rpc_pb2.ListDocumentsRequest(index_name=page_index, offset=100, limit=3)
+        resp = stub.ListDocuments(req, metadata=get_metadata())
+        assert resp.success, f"越界请求失败: {resp.message}"
+        assert len(resp.documents) == 0, "越界 offset 应返回空列表"
+        print(f"    ✓ 越界 offset=100 返回空列表")
+
+        # 清理分页索引
+        req = rpc_pb2.DropIndexRequest(index_name=page_index)
+        stub.DropIndex(req, metadata=get_metadata())
+
+        return True
+    except grpc.RpcError as e:
+        print(f"    ✗ 分页测试失败: {e}")
+        if e.code() == grpc.StatusCode.UNIMPLEMENTED:
+            print("    ⚠ ListDocuments gRPC方法未实现")
+        return False
+    except Exception as e:
+        print(f"    ✗ 分页测试失败: {e}")
+        return False
+
 def test_drop_index():
     print("[测试] 删除索引...")
     try:
@@ -494,6 +608,7 @@ def run_all_tests():
         ("索引列表复查", test_list_indices),
         ("真实数据搜索测试", test_search_with_real_data),
         ("通过doc_id获取文档", test_get_document_by_id),
+        ("分页获取全部文档", test_paginated_documents),
         ("删除索引", test_drop_index),
         ("删除不存在的索引", test_drop_non_existent_index),
         ("未认证创建索引", test_unauthorized_create),
@@ -535,9 +650,9 @@ def main():
     
     config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "prod.yaml")
     
-    # 强制使用新编译的服务，不使用现有服务
+    # 直接使用已在运行的正式服务，避免 HNSW 锁文件冲突
     grpc_port = int(TEST_ADDR.split(':')[1])
-    use_existing_service = False
+    use_existing_service = True
     
     actual_addr = f"127.0.0.1:{grpc_port}"
     

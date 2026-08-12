@@ -34,5 +34,6 @@ snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 
 [features]
 # 启用 CUDA GPU 加速（与根 crate 的 cuda feature 联动）
-# ort 通过 CUDAExecutionProvider 在运行时启用 CUDA，无需编译时 feature
-cuda = []
+# 关键：必须同时启用 ort/cuda，才会下载并链接带 CUDA EP 的 onnxruntime-gpu；
+# 仅靠 CUDAExecutionProvider 运行时调用无法在 CPU-only onnxruntime 上真正启用 GPU
+cuda = ["ort/cuda"]

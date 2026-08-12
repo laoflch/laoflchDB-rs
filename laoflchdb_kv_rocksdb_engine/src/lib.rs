@@ -554,6 +554,7 @@ impl StorageEngine for KVRocksDBEngine {
         &mut self,
         _table: &str,
         _row: &Row,
+        _doc_id: Option<&str>,
     ) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         Err("add_row is not supported in KV engine; use put() instead".into())
     }
@@ -729,6 +730,7 @@ impl StorageEngine for KVRocksDBEngine {
     async fn scan_table(
         &self,
         _table: &str,
+        _offset: Option<usize>,
         _limit: Option<usize>,
     ) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>> {
         Err("scan_table is not supported in KV engine".into())

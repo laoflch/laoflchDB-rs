@@ -498,7 +498,7 @@ impl DatabaseService for DatabaseServiceImpl {
         let table = table.to_string();
         let row = row.clone();
         let mut engine = engine.write().await;
-        engine.as_mut().add_row(&table, &row).await
+        engine.as_mut().add_row(&table, &row, None).await
     }
 
     async fn get_row(&self, schema: &str, table: &str, row_id: u64) -> Result<Option<Row>, Box<dyn std::error::Error + Send + Sync>> {

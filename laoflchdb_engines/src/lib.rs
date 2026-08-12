@@ -31,7 +31,7 @@ pub trait StorageEngine: Send + Sync + 'static {
     async fn list_tables(&self) -> Result<Vec<String>, Box<dyn std::error::Error + Send + Sync>>;
     async fn list_table_cols(&self, table: &str) -> Result<Vec<ColumnMeta>, Box<dyn std::error::Error + Send + Sync>>;
     
-    async fn add_row(&mut self, table: &str, row: &Row) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>;
+    async fn add_row(&mut self, table: &str, row: &Row, doc_id: Option<&str>) -> Result<u64, Box<dyn std::error::Error + Send + Sync>>;
     async fn get_row(&self, table: &str, row_id: u64) -> Result<Option<Row>, Box<dyn std::error::Error + Send + Sync>>;
     async fn delete_row(&mut self, table: &str, row_id: u64) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
     async fn update_row(&mut self, table: &str, row_id: u64, row: &Row) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
@@ -56,7 +56,7 @@ pub trait StorageEngine: Send + Sync + 'static {
         Ok(())
     }
     
-    async fn scan_table(&self, table: &str, limit: Option<usize>) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>>;
+    async fn scan_table(&self, table: &str, offset: Option<usize>, limit: Option<usize>) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>>;
     
     async fn get_column_types(&self, table: &str) -> Result<std::collections::HashMap<String, ColumnType>, Box<dyn std::error::Error + Send + Sync>>;
     

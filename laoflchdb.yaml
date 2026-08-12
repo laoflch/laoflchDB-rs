@@ -11,7 +11,8 @@ vector_service:
   auto_load: true
   # 可指定启动时加载的模型名称列表（空列表表示加载 candle 目录下所有有效模型）
   #load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
-  load_models: ["bge-small-zh-v1.5", "jina-clip-v2"]
+  #load_models: ["bge-small-zh-v1.5", "jina-clip-v2"]
+  load_models: ["bge-m3", "jina-clip-v2"]
   # 是否使用 CUDA GPU 加速（false=CPU，避免多屏卡顿）
   use_cuda: true
 
@@ -99,6 +100,8 @@ face_service:
   face_duplicate_distance: 0.01
   # 人脸相似度判定阈值（点积 >= 此值视为同一人，默认 0.5）
   same_person_threshold: 0.5
+  # 是否使用 CUDA GPU 推理（需编译时启用 cuda feature 且 onnxruntime-gpu 可用）
+  use_gpu: true
 
 # 文本摘要服务配置（基于 candle + T5/Flan-T5，支持中英文）
 text_summarize:

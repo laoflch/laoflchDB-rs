@@ -41,6 +41,7 @@ use crate::pb::rpc::{
     AddDocumentRequest, AddDocumentResponse,
     GetDocumentRequest, GetDocumentResponse,
     DeleteDocumentRequest, DeleteDocumentResponse,
+    ListDocumentsRequest, ListDocumentsResponse,
 };
 use crate::config::PermissionAction;
 use sha2::{Sha256, Digest};
@@ -1449,6 +1450,73 @@ impl LaoflchDb for GrpcService {
             })),
             Err(e) => Ok(Response::new(DeleteDocumentResponse {
                 success: false,
+                message: e.to_string(),
+            })),
+        }
+    }
+
+    async fn list_documents(&self, request: Request<ListDocumentsRequest>) -> Result<Response<ListDocumentsResponse>, Status> {
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(ListDocumentsResponse {
+                success: false,
+                documents: vec![],
+                total: 0,
+                offset: 0,
+                limit: 0,
+                has_prev_page: false,
+                has_next_page: false,
+                message: e.message().to_string(),
+            }));
+        }
+
+        let index_service = match self.index_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(ListDocumentsResponse {
+                    success: false,
+                    documents: vec![],
+                    total: 0,
+                    offset: 0,
+                    limit: 0,
+                    has_prev_page: false,
+                    has_next_page: false,
+                    message: "Index service not configured".to_string(),
+                }));
+            }
+        };
+
+        let req = request.into_inner();
+        let offset = req.offset.map(|o| o as usize);
+        let limit = req.limit.map(|l| l as usize);
+
+        match index_service.scan_documents(&req.index_name, offset, limit).await {
+            Ok(page) => {
+                let documents: Vec<SearchResultItem> = page.documents.iter()
+                    .map(|r| SearchResultItem {
+                        doc_id: r.doc_id.clone(),
+                        score: r.score,
+                        fields: r.fields.clone(),
+                    })
+                    .collect();
+                Ok(Response::new(ListDocumentsResponse {
+                    success: true,
+                    documents,
+                    total: page.total,
+                    offset: page.offset as u32,
+                    limit: page.limit as u32,
+                    has_prev_page: page.has_prev_page,
+                    has_next_page: page.has_next_page,
+                    message: String::new(),
+                }))
+            },
+            Err(e) => Ok(Response::new(ListDocumentsResponse {
+                success: false,
+                documents: vec![],
+                total: 0,
+                offset: 0,
+                limit: 0,
+                has_prev_page: false,
+                has_next_page: false,
                 message: e.to_string(),
             })),
         }

@@ -75,6 +75,8 @@ pub struct FaceServiceConfig {
     pub face_duplicate_distance: f32,
     /// 人脸相似度判定阈值（点积 >= 此值视为同一人，默认 0.5）
     pub same_person_threshold: f32,
+    /// 是否使用 CUDA GPU 推理（需编译时启用 cuda feature 且 onnxruntime-gpu 可用）
+    pub use_gpu: bool,
 }
 
 impl Default for FaceServiceConfig {
@@ -88,6 +90,7 @@ impl Default for FaceServiceConfig {
             max_faces: DEFAULT_MAX_FACES,
             face_duplicate_distance: DEFAULT_FACE_DUPLICATE_DISTANCE,
             same_person_threshold: DEFAULT_SAME_PERSON_THRESHOLD,
+            use_gpu: false,
         }
     }
 }
@@ -127,8 +130,8 @@ impl FaceServiceImpl {
         image_service: Option<Arc<laoflchdb_image_service::ImageServiceImpl>>,
         embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
     ) -> Self {
-        // 检测 GPU 可用性，尝试优先使用 GPU 0（因为人脸服务独立运行，不与向量服务冲突）
-        let use_gpu = Self::detect_gpu();
+        // 根据配置决定是否使用 GPU（还需编译时启用 cuda feature + onnxruntime-gpu 可用）
+        let use_gpu = Self::detect_gpu(config.use_gpu);
 
         // 加载 SCRFD 模型
         let scrfd = Self::load_scrfd(&config, use_gpu);
@@ -162,20 +165,24 @@ impl FaceServiceImpl {
         }
     }
 
-    /// 检测 GPU 可用性
+    /// 根据配置与编译 feature 决定是否使用 GPU
     ///
-    /// `CUDAExecutionProvider::default().build()` 在 ort-rs 2.0.0-rc.10 中直接返回
-    /// `ExecutionProviderDispatch`（非 Result），因此此处仅通过 feature 开关决定。
-    /// 实际的 CUDA 可用性验证在 `create_ort_session` 的 `with_execution_providers` 中处理。
-    fn detect_gpu() -> bool {
+    /// 注意：`CUDAExecutionProvider::default().build()` 在 ort-rs 2.0.0-rc.10 中直接返回
+    /// `ExecutionProviderDispatch`（非 Result），此处仅通过配置 + feature 开关决定。
+    /// 真正的 CUDA 可用性在 `create_ort_session` 的 `with_execution_providers` 中处理。
+    fn detect_gpu(use_gpu_config: bool) -> bool {
+        if !use_gpu_config {
+            info!("人脸服务配置为 CPU 推理");
+            return false;
+        }
         #[cfg(feature = "cuda")]
         {
-            info!("人脸服务启用 CUDA GPU 推理（尝试）");
-            return true;
+            info!("人脸服务启用 CUDA GPU 推理（需 onnxruntime-gpu 可用）");
+            true
         }
         #[cfg(not(feature = "cuda"))]
         {
-            info!("CUDA feature 未启用，人脸服务使用 CPU 推理");
+            warn!("face_service.use_gpu=true 但未启用 cuda feature，回退到 CPU 推理");
             false
         }
     }

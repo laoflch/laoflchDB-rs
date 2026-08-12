@@ -59,6 +59,7 @@ service LaoflchDb {
   rpc AddDocument(AddDocumentRequest) returns (AddDocumentResponse);
   rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
   rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
+  rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
 }
 
 message RefreshTablesRequest {
@@ -561,4 +562,21 @@ message DeleteDocumentRequest {
 message DeleteDocumentResponse {
   bool success = 1;
   string message = 2;
+}
+
+message ListDocumentsRequest {
+  string index_name = 1;
+  optional uint32 offset = 2;
+  optional uint32 limit = 3;
+}
+
+message ListDocumentsResponse {
+  bool success = 1;
+  repeated SearchResultItem documents = 2;
+  uint64 total = 3;
+  uint32 offset = 4;
+  uint32 limit = 5;
+  bool has_prev_page = 6;
+  bool has_next_page = 7;
+  string message = 8;
 }

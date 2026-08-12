@@ -151,6 +151,7 @@ impl RestService {
                 .route("/indices/:index_name/docs", post(add_document_handler))
                 .route("/indices/:index_name/docs/:doc_id", get(get_document_handler))
                 .route("/indices/:index_name/docs/:doc_id/delete", delete(delete_document_handler))
+                .route("/indices/:index_name/docs/list", get(list_documents_handler))
                 .route("/indices/:index_name/search", get(search_handler))
                 .route("/indices/:index_name/search/multi", post(search_multi_field_handler))
                 .route("/stats", get(get_index_stats_handler))
@@ -1146,6 +1147,22 @@ pub struct MultiFieldSearchRequest {
     pub limit: Option<usize>,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct ListDocumentsQuery {
+    pub offset: Option<usize>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Serialize)]
+pub struct ListDocumentsResponse {
+    pub documents: Vec<SearchResultResponse>,
+    pub total: u64,
+    pub offset: usize,
+    pub limit: usize,
+    pub has_prev_page: bool,
+    pub has_next_page: bool,
+}
+
 #[derive(Serialize)]
 pub struct IndexStatsResponse {
     pub total_indices: usize,
@@ -1311,6 +1328,34 @@ async fn get_document_handler(
             Ok(Json(ApiResponse::success(Some(response))))
         }
         Ok(None) => Ok(Json(ApiResponse::success(None))),
+        Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
+    }
+}
+
+async fn list_documents_handler(
+    State((index_service, _, _, _)): State<IndexSharedState>,
+    Path(index_name): Path<String>,
+    Query(query): Query<ListDocumentsQuery>,
+) -> Result<Json<ApiResponse<ListDocumentsResponse>>, ApiError> {
+    match index_service.scan_documents(&index_name, query.offset, query.limit).await {
+        Ok(page) => {
+            let documents: Vec<_> = page.documents.iter()
+                .map(|r| SearchResultResponse {
+                    doc_id: r.doc_id.clone(),
+                    score: r.score,
+                    fields: r.fields.clone(),
+                })
+                .collect();
+            let response = ListDocumentsResponse {
+                documents,
+                total: page.total,
+                offset: page.offset,
+                limit: page.limit,
+                has_prev_page: page.has_prev_page,
+                has_next_page: page.has_next_page,
+            };
+            Ok(Json(ApiResponse::success(response)))
+        }
         Err(e) => Ok(Json(ApiResponse::error(e.to_string()))),
     }
 }

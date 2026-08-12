@@ -387,6 +387,9 @@ pub struct FaceServiceConfig {
     /// 人脸相似度判定阈值（点积 >= 此值视为同一人，默认 0.5）
     #[serde(default = "default_same_person_threshold")]
     pub same_person_threshold: f32,
+    /// 是否使用 CUDA GPU 推理（需编译时启用 cuda feature 且 onnxruntime-gpu 可用，默认 false=CPU）
+    #[serde(default)]
+    pub use_gpu: bool,
 }
 
 fn default_face_model_dir() -> String {

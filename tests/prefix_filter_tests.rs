@@ -101,7 +101,7 @@ async fn test_big_endian_ordering_in_rocksdb() {
             special_fields: Default::default(),
         };
 
-        let row_id = engine.add_row("test_table", &row).await.unwrap();
+        let row_id = engine.add_row("test_table", &row, None).await.unwrap();
         row_ids.push(row_id);
     }
 
@@ -155,7 +155,7 @@ async fn test_scan_with_prefix_filter() {
             special_fields: Default::default(),
         };
 
-        engine.add_row("users", &row).await.unwrap();
+        engine.add_row("users", &row, None).await.unwrap();
     }
 
     let tables = engine.list_tables().await.unwrap();
@@ -194,7 +194,7 @@ async fn test_row_id_monotonic_increasing() {
             special_fields: Default::default(),
         };
 
-        let row_id = engine.add_row("test_table", &row).await.unwrap();
+        let row_id = engine.add_row("test_table", &row, None).await.unwrap();
 
         assert!(row_id > previous_id, "Row IDs should be strictly increasing");
         previous_id = row_id;
@@ -245,7 +245,7 @@ async fn test_get_row_by_id() {
         special_fields: Default::default(),
     };
 
-    let row_id = engine.add_row("products", &row).await.unwrap();
+    let row_id = engine.add_row("products", &row, None).await.unwrap();
 
     let retrieved_row = engine.get_row("products", row_id).await.unwrap();
     assert!(retrieved_row.is_some());
@@ -285,7 +285,7 @@ async fn test_delete_row() {
         special_fields: Default::default(),
     };
 
-    let row_id = engine.add_row("items", &row).await.unwrap();
+    let row_id = engine.add_row("items", &row, None).await.unwrap();
 
     assert!(engine.get_row("items", row_id).await.unwrap().is_some());
 
@@ -324,7 +324,7 @@ async fn test_update_row() {
         special_fields: Default::default(),
     };
 
-    let row_id = engine.add_row("items", &row1).await.unwrap();
+    let row_id = engine.add_row("items", &row1, None).await.unwrap();
 
     let mut name_field2 = Field {
         value: Some(Value::StringValue(PbString { value: "updated".to_string(), special_fields: Default::default() })),
@@ -376,7 +376,7 @@ async fn test_snowflake_id_distribution() {
             special_fields: Default::default(),
         };
 
-        let row_id = engine.add_row("test_table", &row).await.unwrap();
+        let row_id = engine.add_row("test_table", &row, None).await.unwrap();
         ids.push(row_id);
     }
 
@@ -445,7 +445,7 @@ async fn test_prefix_scan_with_timestamp() {
             special_fields: Default::default(),
         };
 
-        let row_id = engine.add_row("events", &row).await.unwrap();
+        let row_id = engine.add_row("events", &row, None).await.unwrap();
         inserted_ids.push(row_id);
 
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -494,7 +494,7 @@ async fn test_snowflake_id_timestamp_prefix() {
             special_fields: Default::default(),
         };
 
-        let row_id = engine.add_row("records", &row).await.unwrap();
+        let row_id = engine.add_row("records", &row, None).await.unwrap();
         ids.push(row_id);
 
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -568,7 +568,7 @@ async fn test_query_with_cnf_filters() {
             special_fields: Default::default(),
         };
 
-        engine.add_row("products", &row).await.unwrap();
+        engine.add_row("products", &row, None).await.unwrap();
     }
 
     let query = Query {
@@ -667,7 +667,7 @@ async fn test_scan_rows_in_key_range() {
             special_fields: Default::default(),
         };
 
-        let row_id = engine.add_row("scan_test", &row).await.unwrap();
+        let row_id = engine.add_row("scan_test", &row, None).await.unwrap();
         row_ids.push(row_id);
     }
 
@@ -745,7 +745,7 @@ async fn test_parallel_row_insertion_order() {
             special_fields: Default::default(),
         };
 
-        let row_id = engine.add_row("parallel_test", &row).await.unwrap();
+        let row_id = engine.add_row("parallel_test", &row, None).await.unwrap();
         row_ids.push(row_id);
 
         tokio::task::yield_now().await;

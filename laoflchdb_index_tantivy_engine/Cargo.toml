@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 tantivy = "0.26"
+tantivy-jieba = "0.20"
 laoflchdb_engines = { path = "../laoflchdb_engines" }
 snowflake_me = { version = "0.5", features = ["ip-fallback"] }
 async-trait = "0.1"

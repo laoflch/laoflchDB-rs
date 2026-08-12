@@ -39,6 +39,10 @@ pub enum TantivyEngineError {
     LockError(String),
     #[error("Query parse error: {0}")]
     QueryParseError(String),
+    #[error("Invalid doc_id (must be numeric): {0}")]
+    InvalidDocId(String),
+    #[error("Duplicate doc_id: {0}")]
+    DuplicateDocId(String),
 }
 
 struct TableIndex {
@@ -91,7 +95,7 @@ impl TantivyStorageEngine {
                     let text_options = TextOptions::default()
                         .set_indexing_options(
                             schema::TextFieldIndexing::default()
-                                .set_tokenizer("en_stem")
+                                .set_tokenizer("jieba")
                                 .set_index_option(schema::IndexRecordOption::WithFreqsAndPositions)
                         )
                         .set_stored();
@@ -183,6 +187,9 @@ impl StorageEngine for TantivyStorageEngine {
 
         let directory = MmapDirectory::open(&table_path)?;
         let index = Index::create(directory, tantivy_schema.clone(), IndexSettings::default())?;
+        index
+            .tokenizers()
+            .register("jieba", tantivy_jieba::JiebaTokenizer::default());
         let writer = index.writer(50_000_000)?;
 
         let table_index = TableIndex {
@@ -280,7 +287,7 @@ impl StorageEngine for TantivyStorageEngine {
         Ok(columns)
     }
 
-    async fn add_row(&mut self, table: &str, row: &Row) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+    async fn add_row(&mut self, table: &str, row: &Row, doc_id: Option<&str>) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
         {
             let tables_guard = self.tables.read().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock tables: {}", e)))?;
             if !tables_guard.contains_key(table) {
@@ -288,7 +295,19 @@ impl StorageEngine for TantivyStorageEngine {
             }
         }
 
-        let row_id = self.get_next_row_id(table);
+        // 传入 doc_id 为空时自动生成；非空时解析为数字 row_id，并做重复检测
+        let row_id = match doc_id {
+            Some(did) if !did.trim().is_empty() => {
+                let parsed = did.trim().parse::<u64>()
+                    .map_err(|_| Box::new(TantivyEngineError::InvalidDocId(did.to_string())) as Box<dyn std::error::Error + Send + Sync>)?;
+                if self.get_row(table, parsed).await?.is_some() {
+                    return Err(Box::new(TantivyEngineError::DuplicateDocId(did.to_string())));
+                }
+                parsed
+            }
+            _ => self.get_next_row_id(table),
+        };
+
         let cols = self.list_table_cols(table).await?;
 
         {
@@ -449,7 +468,8 @@ impl StorageEngine for TantivyStorageEngine {
 
     async fn update_row(&mut self, table: &str, row_id: u64, row: &Row) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.delete_row(table, row_id).await?;
-        self.add_row(table, row).await?;
+        // 更新时保留原 row_id，避免重复检测误判为新 id
+        self.add_row(table, row, Some(&row_id.to_string())).await?;
         Ok(())
     }
 
@@ -603,7 +623,7 @@ impl StorageEngine for TantivyStorageEngine {
         })
     }
 
-    async fn scan_table(&self, table: &str, limit: Option<usize>) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>> {
+    async fn scan_table(&self, table: &str, offset: Option<usize>, limit: Option<usize>) -> Result<Vec<(u64, Row)>, Box<dyn std::error::Error + Send + Sync>> {
         {
             let tables_guard = self.tables.read().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock tables: {}", e)))?;
             if !tables_guard.contains_key(table) {
@@ -621,54 +641,63 @@ impl StorageEngine for TantivyStorageEngine {
         let searcher = reader.searcher();
 
         let all_query = tantivy::query::AllQuery;
-        let top_docs = searcher.search(&all_query, &TopDocs::with_limit(limit.unwrap_or(10000)).order_by_score())?;
-        
+        let start = offset.unwrap_or(0);
+        // 需要先取 offset + limit 条，再按 offset 切片，否则 offset 会被 limit 截断
+        let fetch_limit = start + limit.unwrap_or(10000);
+        let top_docs = searcher.search(&all_query, &TopDocs::with_limit(fetch_limit).order_by_score())?;
+
+        let page_docs = if start >= top_docs.len() {
+            &[][..]
+        } else {
+            &top_docs[start..]
+        };
+
         let mut results: Vec<(u64, Row)> = Vec::new();
 
-        for (_score, doc_address) in top_docs {
-            match searcher.doc::<tantivy::TantivyDocument>(doc_address) {
+        for (_score, doc_address) in page_docs {
+            match searcher.doc::<tantivy::TantivyDocument>(*doc_address) {
                 Ok(retrieved_doc) => {
                     let mut row_data: Vec<Vec<u8>> = Vec::new();
+                    // list_table_cols 会跳过 _row_id 字段，因此需要显式从文档读取 _row_id 作为 row_id
                     let mut row_id: u64 = doc_address.doc_id as u64;
+                    if let Some(row_id_field) = table_index.field_map.get("_row_id") {
+                        if let Some(value) = retrieved_doc.get_first(*row_id_field) {
+                            row_id = value.as_u64().unwrap_or(doc_address.doc_id as u64);
+                        }
+                    }
 
                     for col in &cols {
                         if let Some(field) = table_index.field_map.get(&col.column_name) {
-                            if col.column_name == "_row_id" {
-                                if let Some(value) = retrieved_doc.get_first(*field) {
-                                    row_id = value.as_u64().unwrap_or(doc_address.doc_id as u64);
-                                }
-                            } else {
-                                let field_entry = table_index.schema.get_field_entry(*field);
-                                let field_type = field_entry.field_type();
-                                
-                                if let Some(value) = retrieved_doc.get_first(*field) {
-                                    let s = match field_type {
-                                        schema::FieldType::Str(_) => {
-                                            match value.as_str() {
-                                                Some(s) => s.to_string(),
-                                                None => {
-                                                    let bytes = value.as_bytes().unwrap_or_default();
-                                                    String::from_utf8_lossy(bytes).to_string()
-                                                }
+                            let field_entry = table_index.schema.get_field_entry(*field);
+                            let field_type = field_entry.field_type();
+                            
+                            if let Some(value) = retrieved_doc.get_first(*field) {
+                                let s = match field_type {
+                                    schema::FieldType::Str(_) => {
+                                        match value.as_str() {
+                                            Some(s) => s.to_string(),
+                                            None => {
+                                                let bytes = value.as_bytes().unwrap_or_default();
+                                                String::from_utf8_lossy(bytes).to_string()
                                             }
                                         }
-                                        schema::FieldType::I64(_) => {
-                                            format!("{}", value.as_i64().unwrap_or(0))
-                                        }
-                                        schema::FieldType::U64(_) => {
-                                            format!("{}", value.as_u64().unwrap_or(0))
-                                        }
-                                        schema::FieldType::F64(_) => {
-                                            format!("{}", value.as_f64().unwrap_or(0.0))
-                                        }
-                                        _ => {
-                                            format!("{:?}", value).trim_matches('"').to_string()
-                                        }
-                                    };
-                                    row_data.push(s.as_bytes().to_vec());
-                                } else {
-                                    row_data.push(Vec::new());
-                                }
+                                    }
+                                    schema::FieldType::I64(_) => {
+                                        format!("{}", value.as_i64().unwrap_or(0))
+                                    }
+                                    schema::FieldType::U64(_) => {
+                                        format!("{}", value.as_u64().unwrap_or(0))
+                                    }
+                                    schema::FieldType::F64(_) => {
+                                        format!("{}", value.as_f64().unwrap_or(0.0))
+                                    }
+                                    _ => {
+                                        format!("{:?}", value).trim_matches('"').to_string()
+                                    }
+                                };
+                                row_data.push(s.as_bytes().to_vec());
+                            } else {
+                                row_data.push(Vec::new());
                             }
                         } else {
                             row_data.push(Vec::new());
@@ -737,6 +766,24 @@ impl StorageEngine for TantivyStorageEngine {
 }
 
 impl TantivyStorageEngine {
+    /// 统计某个表（索引）中的文档数量
+    pub async fn count_rows(&self, table: &str) -> Result<u64, Box<dyn std::error::Error + Send + Sync>> {
+        {
+            let tables_guard = self.tables.read().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock tables: {}", e)))?;
+            if !tables_guard.contains_key(table) {
+                return Err(Box::new(TantivyEngineError::TableNotFound(table.to_string())));
+            }
+        }
+
+        let table_indices_guard = self.table_indices.read().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock table indices: {}", e)))?;
+        let table_index_mutex = table_indices_guard.get(table).ok_or(TantivyEngineError::TableNotFound(table.to_string()))?;
+        let table_index = table_index_mutex.lock().map_err(|e| TantivyEngineError::LockError(format!("Failed to lock table index: {}", e)))?;
+
+        let reader = table_index.index.reader()?;
+        let searcher = reader.searcher();
+        Ok(searcher.num_docs() as u64)
+    }
+
     pub async fn search(
         &self, 
         table: &str, 
@@ -876,7 +923,7 @@ mod tests {
             special_fields: SpecialFields::new(),
         };
 
-        let row_id = engine.add_row("users", &row).await.unwrap();
+        let row_id = engine.add_row("users", &row, None).await.unwrap();
         assert_ne!(row_id, 0);
 
         let retrieved = engine.get_row("users", row_id).await.unwrap();
@@ -902,7 +949,7 @@ mod tests {
             special_fields: SpecialFields::new(),
         };
 
-        let row_id = engine.add_row("test_table", &row).await.unwrap();
+        let row_id = engine.add_row("test_table", &row, None).await.unwrap();
         
         assert!(engine.get_row("test_table", row_id).await.unwrap().is_some());
         
@@ -926,13 +973,21 @@ mod tests {
                 data: vec![format!("Item {}", i).as_bytes().to_vec()],
                 special_fields: SpecialFields::new(),
             };
-            engine.add_row("test_table", &row).await.unwrap();
+            engine.add_row("test_table", &row, None).await.unwrap();
         }
 
-        let results = engine.scan_table("test_table", Some(3)).await.unwrap();
+        let results = engine.scan_table("test_table", Some(0), Some(3)).await.unwrap();
         assert_eq!(results.len(), 3);
 
-        let all_results = engine.scan_table("test_table", None).await.unwrap();
+        let all_results = engine.scan_table("test_table", None, None).await.unwrap();
         assert_eq!(all_results.len(), 5);
+
+        // 分页测试：第二页（offset=3）
+        let page2 = engine.scan_table("test_table", Some(3), Some(3)).await.unwrap();
+        assert_eq!(page2.len(), 2);
+
+        // 越界 offset 返回空
+        let beyond = engine.scan_table("test_table", Some(10), Some(3)).await.unwrap();
+        assert!(beyond.is_empty());
     }
 }
