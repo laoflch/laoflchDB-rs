@@ -278,6 +278,8 @@ impl LaoflchDBServer {
                     prefix_zh: ts_cfg.prefix_zh.clone(),
                     prefix_en: ts_cfg.prefix_en.clone(),
                     dtype: ts_cfg.dtype.clone(),
+                    repetition_penalty: ts_cfg.repetition_penalty,
+                    no_repeat_ngram_size: ts_cfg.no_repeat_ngram_size,
                 };
                 match laoflchdb_text_summarize_service::TextSummarizeService::new(ts_config) {
                     Ok(svc) => {

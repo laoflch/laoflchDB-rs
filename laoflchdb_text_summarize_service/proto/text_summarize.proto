@@ -22,8 +22,12 @@ message SummarizeRequest {
     int32 min_length = 4;
     // 采样温度（0 = 贪婪，默认 0）
     float temperature = 5;
-    // beam 大小（默认 1）
+    // beam 大小（默认 1，保留未实现）
     int32 num_beams = 6;
+    // 重复惩罚系数（默认 1.2，1.0 = 不惩罚）
+    float repetition_penalty = 7;
+    // n-gram 去重大小（默认 2，0 = 关闭）
+    int32 no_repeat_ngram_size = 8;
 }
 
 // 摘要响应

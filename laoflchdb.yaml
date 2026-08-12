@@ -107,7 +107,7 @@ face_service:
 text_summarize:
   enabled: true
   model_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_model/mt5-xlsum
-  use_cuda: false
+  use_cuda: true
   dtype: f32
   max_input_tokens: 1024
   default_max_length: 150

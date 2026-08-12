@@ -44,6 +44,10 @@ pub struct TextSummarizeServiceConfig {
     pub prefix_en: String,
     /// 权重精度: "f32" / "f16"（fp16 可大幅降低显存占用）
     pub dtype: String,
+    /// 重复惩罚系数（1.0 = 不惩罚，1.2 推荐，越大越抑制重复词）
+    pub repetition_penalty: f32,
+    /// n-gram 去重大小（0 = 关闭，2 表示禁止出现 2 次的 2-gram）
+    pub no_repeat_ngram_size: usize,
 }
 
 impl Default for TextSummarizeServiceConfig {
@@ -57,6 +61,8 @@ impl Default for TextSummarizeServiceConfig {
             prefix_zh: "请用中文总结以下内容：\n".to_string(),
             prefix_en: "summarize: ".to_string(),
             dtype: "f32".to_string(),
+            repetition_penalty: 1.2,
+            no_repeat_ngram_size: 2,
         }
     }
 }
@@ -147,6 +153,8 @@ impl TextSummarizeService {
         max_length: i32,
         min_length: i32,
         temperature: f32,
+        repetition_penalty: f32,
+        no_repeat_ngram_size: i32,
     ) -> anyhow::Result<(String, String, u128, usize, usize)> {
         let start = Instant::now();
 
@@ -196,6 +204,13 @@ impl TextSummarizeService {
         };
         let temperature = if temperature > 0.0 { temperature } else { 0.0 };
 
+        let repetition_penalty = if repetition_penalty > 0.0 { repetition_penalty } else { 1.0 };
+        let no_repeat_ngram = if no_repeat_ngram_size > 0 {
+            no_repeat_ngram_size as usize
+        } else {
+            0
+        };
+
         // 自回归生成
         let mut model = self.model.lock().unwrap();
         let input_tensor = Tensor::new(input_ids.as_slice(), &self.device)?.unsqueeze(0)?;
@@ -209,7 +224,54 @@ impl TextSummarizeService {
             let logits = model.decode(&decoder_input_ids, &encoder_output)?;
             model.clear_kv_cache();
             // decode 已内部取最后一个位置的 logits 并投影到词表，输出形状为 [batch, vocab]
-            let last_logits = logits.squeeze(0)?;
+            let mut last_logits = logits.squeeze(0)?;
+
+            // 1. 重复惩罚（repetition penalty）：对已生成的 token 降低概率
+            if repetition_penalty != 1.0 && !output_ids.is_empty() {
+                let mut logits_vec = last_logits.to_vec1::<f32>()?;
+                let mut seen = std::collections::HashSet::new();
+                for &tid in &output_ids {
+                    seen.insert(tid as usize);
+                }
+                for &tid in &seen {
+                    if tid < logits_vec.len() {
+                        let score = logits_vec[tid];
+                        if score > 0.0 {
+                            logits_vec[tid] = score / repetition_penalty;
+                        } else {
+                            logits_vec[tid] = score * repetition_penalty;
+                        }
+                    }
+                }
+                last_logits = Tensor::new(logits_vec.as_slice(), &self.device)?;
+            }
+
+            // 2. no_repeat_ngram_size：禁止生成已经出现过的 n-gram 的下一个词
+            if no_repeat_ngram > 0 && output_ids.len() + 1 >= no_repeat_ngram {
+                let mut logits_vec = last_logits.to_vec1::<f32>()?;
+                let vocab_size = logits_vec.len();
+                // 当前已生成序列为 output_ids，下一个 token 组成的 ngram 为 (output_ids[len-n+1..], next_token)
+                let prefix_len = no_repeat_ngram - 1;
+                let current_prefix: Vec<u32> = output_ids[output_ids.len() - prefix_len..].to_vec();
+
+                // 找出所有之前出现过的相同前缀对应的后续 token
+                for i in 0..=(output_ids.len().saturating_sub(no_repeat_ngram)) {
+                    let mut match_prefix = true;
+                    for j in 0..prefix_len {
+                        if output_ids[i + j] != current_prefix[j] {
+                            match_prefix = false;
+                            break;
+                        }
+                    }
+                    if match_prefix {
+                        let bad_token = output_ids[i + prefix_len] as usize;
+                        if bad_token < vocab_size {
+                            logits_vec[bad_token] = f32::NEG_INFINITY;
+                        }
+                    }
+                }
+                last_logits = Tensor::new(logits_vec.as_slice(), &self.device)?;
+            }
 
             let next_token: u32 = if temperature > 0.0 && output_ids.len() >= min_len {
                 // 温度采样
@@ -350,6 +412,8 @@ impl TextSummarizeServiceTrait for Arc<TextSummarizeService> {
             req.max_length,
             req.min_length,
             req.temperature,
+            if req.repetition_penalty > 0.0 { req.repetition_penalty } else { self.service_config.repetition_penalty },
+            if req.no_repeat_ngram_size > 0 { req.no_repeat_ngram_size } else { self.service_config.no_repeat_ngram_size as i32 },
         ) {
             Ok((summary, detected, elapsed_ms, input_len, output_len)) => {
                 Ok(Response::new(SummarizeResponse {

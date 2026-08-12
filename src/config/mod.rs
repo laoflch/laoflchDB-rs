@@ -442,9 +442,17 @@ pub struct TextSummarizeServiceConfig {
     /// 权重精度: "f32" / "f16"
     #[serde(default = "default_dtype")]
     pub dtype: String,
+    /// 重复惩罚系数（1.0 = 不惩罚，默认 1.2）
+    #[serde(default = "default_ts_repetition_penalty")]
+    pub repetition_penalty: f32,
+    /// n-gram 去重大小（0 = 关闭，默认 2）
+    #[serde(default = "default_ts_no_repeat_ngram")]
+    pub no_repeat_ngram_size: usize,
 }
 
 fn default_dtype() -> String { "f32".to_string() }
+fn default_ts_repetition_penalty() -> f32 { 1.2 }
+fn default_ts_no_repeat_ngram() -> usize { 2 }
 
 fn default_ts_model_path() -> String {
     "laoflch_db_model/flan-t5-small".to_string()
