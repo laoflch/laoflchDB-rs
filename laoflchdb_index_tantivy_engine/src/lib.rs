@@ -45,6 +45,28 @@ pub enum TantivyEngineError {
     DuplicateDocId(String),
 }
 
+/// 每个表持久化存储的元数据（保存列定义，重启时用于恢复 schema 和字段映射）
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredColumnDef {
+    column_id: u32,
+    name: String,
+    col_type: i32, // ColumnType 的数值表示
+    comment: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredTableMeta {
+    table_id: u64,
+    table_name: String,
+    column_count: u32,
+    next_auto_inc_column_id: u64,
+    comment: String,
+    columns: Vec<StoredColumnDef>,
+    next_row_id: u64,
+}
+
+const META_FILE_NAME: &str = "_laoflch_meta.json";
+
 struct TableIndex {
     index: Index,
     writer: IndexWriter,
@@ -70,14 +92,145 @@ impl TantivyStorageEngine {
 
         let snowflake = Snowflake::new()?;
 
-        Ok(Self {
+        let mut engine = Self {
             base_path: base_path.to_string(),
             schema_name: schema_name.to_string(),
             tables: RwLock::new(HashMap::new()),
             table_indices: RwLock::new(HashMap::new()),
             next_row_id: RwLock::new(HashMap::new()),
             snowflake: Mutex::new(snowflake),
-        })
+        };
+
+        // 启动时扫描已有表目录，从磁盘恢复索引和元数据
+        if let Err(e) = engine.load_existing_tables() {
+            warn!("Failed to load existing tables from disk: {}", e);
+        }
+
+        Ok(engine)
+    }
+
+    /// 扫描 base_path 下的子目录，恢复已有表的索引和元数据
+    fn load_existing_tables(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let base_path = Path::new(&self.base_path);
+        if !base_path.exists() {
+            return Ok(());
+        }
+
+        for entry in std::fs::read_dir(base_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let table_name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name.to_string(),
+                None => continue,
+            };
+
+            // 尝试从 meta 文件恢复
+            let meta_path = path.join(META_FILE_NAME);
+            let stored_meta: StoredTableMeta = match std::fs::read_to_string(&meta_path) {
+                Ok(content) => match serde_json::from_str(&content) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        warn!("Failed to parse meta for table '{}': {}", table_name, e);
+                        continue;
+                    }
+                },
+                Err(_) => {
+                    // 没有 meta 文件，跳过（可能是旧格式或残留目录）
+                    debug!("No meta file for table '{}', skipping", table_name);
+                    continue;
+                }
+            };
+
+            // 打开 tantivy 索引
+            let directory = match MmapDirectory::open(&path) {
+                Ok(d) => d,
+                Err(e) => {
+                    warn!("Failed to open directory for table '{}': {}", table_name, e);
+                    continue;
+                }
+            };
+            let index = match Index::open(directory) {
+                Ok(idx) => {
+                    // 注册 jieba 分词器
+                    idx.tokenizers()
+                        .register("jieba", tantivy_jieba::JiebaTokenizer::default());
+                    idx
+                }
+                Err(e) => {
+                    warn!("Failed to open tantivy index for table '{}': {}", table_name, e);
+                    continue;
+                }
+            };
+            let schema = index.schema();
+            let writer = match index.writer(50_000_000) {
+                Ok(w) => w,
+                Err(e) => {
+                    warn!("Failed to create writer for table '{}': {}", table_name, e);
+                    continue;
+                }
+            };
+
+            // 构建 field_map
+            let mut field_map: HashMap<String, Field> = HashMap::new();
+            for col in &stored_meta.columns {
+                if let Ok(field) = schema.get_field(&col.name) {
+                    field_map.insert(col.name.clone(), field);
+                }
+            }
+            if let Ok(field) = schema.get_field("_row_id") {
+                field_map.insert("_row_id".to_string(), field);
+            }
+
+            let table_index = TableIndex {
+                index,
+                writer,
+                schema,
+                field_map,
+            };
+
+            let table_meta = TableMeta {
+                table_id: stored_meta.table_id,
+                table_name: stored_meta.table_name.clone(),
+                column_count: stored_meta.column_count,
+                comment: stored_meta.comment.clone(),
+                next_auto_inc_column_id: stored_meta.next_auto_inc_column_id,
+                special_fields: SpecialFields::new(),
+            };
+
+            {
+                let mut tables_guard = self.tables.write()
+                    .map_err(|e| TantivyEngineError::LockError(format!("Failed to lock tables: {}", e)))?;
+                tables_guard.insert(table_name.clone(), table_meta);
+            }
+            {
+                let mut table_indices_guard = self.table_indices.write()
+                    .map_err(|e| TantivyEngineError::LockError(format!("Failed to lock table indices: {}", e)))?;
+                table_indices_guard.insert(table_name.clone(), Mutex::new(table_index));
+            }
+            {
+                let mut next_row_id_guard = self.next_row_id.write().unwrap();
+                next_row_id_guard.insert(table_name.clone(), stored_meta.next_row_id);
+            }
+
+            info!("Loaded existing table '{}' from disk ({} rows indexed)", table_name, stored_meta.next_row_id.saturating_sub(1));
+        }
+
+        Ok(())
+    }
+
+    /// 写表元数据到磁盘
+    fn save_table_meta(
+        &self,
+        table: &str,
+        stored_meta: &StoredTableMeta,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let meta_path = Path::new(&self.base_path).join(table).join(META_FILE_NAME);
+        let json = serde_json::to_string_pretty(stored_meta)?;
+        std::fs::write(&meta_path, json)?;
+        Ok(())
     }
 
     pub fn get_schema_name(&self) -> &str {
@@ -217,6 +370,28 @@ impl StorageEngine for TantivyStorageEngine {
         let mut next_row_id_guard = self.next_row_id.write().unwrap();
         next_row_id_guard.insert(table.to_string(), 1);
 
+        // 持久化表元数据
+        let stored_meta = StoredTableMeta {
+            table_id,
+            table_name: table.to_string(),
+            column_count,
+            next_auto_inc_column_id: columns.len() as u64,
+            comment: table_comment.unwrap_or("").to_string(),
+            columns: columns
+                .iter()
+                .map(|(id, name, col_type, comment)| StoredColumnDef {
+                    column_id: *id,
+                    name: name.to_string(),
+                    col_type: *col_type as i32,
+                    comment: comment.unwrap_or("").to_string(),
+                })
+                .collect(),
+            next_row_id: 1,
+        };
+        if let Err(e) = self.save_table_meta(table, &stored_meta) {
+            warn!("Failed to save meta for table '{}': {}", table, e);
+        }
+
         info!("Created table '{}' with {} columns in schema '{}'", table, column_count, self.schema_name);
         Ok(table_id)
     }
@@ -332,6 +507,22 @@ impl StorageEngine for TantivyStorageEngine {
 
             table_index.writer.add_document(doc_builder)?;
             table_index.writer.commit()?;
+        }
+
+        // 更新 meta 文件中的 next_row_id（保存当前最大 row_id + 1，用于重启后恢复计数）
+        {
+            let meta_path = Path::new(&self.base_path).join(table).join(META_FILE_NAME);
+            if let Ok(content) = std::fs::read_to_string(&meta_path) {
+                if let Ok(mut stored) = serde_json::from_str::<StoredTableMeta>(&content) {
+                    let new_next = row_id.saturating_add(1).max(stored.next_row_id);
+                    if new_next != stored.next_row_id {
+                        stored.next_row_id = new_next;
+                        if let Ok(json) = serde_json::to_string_pretty(&stored) {
+                            let _ = std::fs::write(&meta_path, json);
+                        }
+                    }
+                }
+            }
         }
         
         debug!("Added row {} to table '{}'", row_id, table);
