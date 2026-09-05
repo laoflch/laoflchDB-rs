@@ -247,7 +247,7 @@ impl TextSummarizeService {
             }
 
             // 2. no_repeat_ngram_size：禁止生成已经出现过的 n-gram 的下一个词
-            if no_repeat_ngram > 0 && output_ids.len() + 1 >= no_repeat_ngram {
+            if no_repeat_ngram > 0 && output_ids.len() >= no_repeat_ngram {
                 let mut logits_vec = last_logits.to_vec1::<f32>()?;
                 let vocab_size = logits_vec.len();
                 // 当前已生成序列为 output_ids，下一个 token 组成的 ngram 为 (output_ids[len-n+1..], next_token)
@@ -273,10 +273,19 @@ impl TextSummarizeService {
                 last_logits = Tensor::new(logits_vec.as_slice(), &self.device)?;
             }
 
+            // 3. 最小长度限制：未达到 min_len 前禁止生成 eos
+            if output_ids.len() < min_len {
+                let mut logits_vec = last_logits.to_vec1::<f32>()?;
+                let eos_id = self.eos_token_id as usize;
+                if eos_id < logits_vec.len() {
+                    logits_vec[eos_id] = f32::NEG_INFINITY;
+                }
+                last_logits = Tensor::new(logits_vec.as_slice(), &self.device)?;
+            }
+
             let next_token: u32 = if temperature > 0.0 && output_ids.len() >= min_len {
-                // 温度采样
-                let temp_t = Tensor::new(&[temperature], &self.device)?;
-                let scaled = (&last_logits).div(&temp_t)?;
+                // 温度采样：用标量缩放 logits（避免 [vocab] 与 [1] 张量形状不匹配）
+                let scaled = last_logits.affine(1.0 / temperature as f64, 0.0)?;
                 let probs = softmax(&scaled, 0)?;
                 let probs_cpu = probs.to_vec1::<f32>()?;
                 sample_from_probs(&probs_cpu)

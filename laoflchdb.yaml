@@ -11,8 +11,8 @@ vector_service:
   auto_load: true
   # 可指定启动时加载的模型名称列表（空列表表示加载 candle 目录下所有有效模型）
   #load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
-  #load_models: ["bge-small-zh-v1.5", "jina-clip-v2"]
-  load_models: ["bge-m3", "jina-clip-v2"]
+  load_models: ["bge-small-zh-v1.5", "jina-clip-v2"]
+  #load_models: ["bge-m3", "jina-clip-v2"]
   # 是否使用 CUDA GPU 加速（false=CPU，避免多屏卡顿）
   use_cuda: true
 
@@ -107,9 +107,9 @@ face_service:
 text_summarize:
   enabled: true
   model_path: /workspace/rust_space/laoflchDB-rust/laoflch_db_model/mt5-xlsum
-  use_cuda: true
+  use_cuda: false
   dtype: f32
-  max_input_tokens: 1024
+  max_input_tokens: 10240
   default_max_length: 150
   default_min_length: 40
   # XLSum 直接对文档生成摘要，无需任务前缀

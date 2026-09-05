@@ -10,7 +10,8 @@ vector_service:
   enabled: true
   auto_load: true
   # 可指定启动时加载的模型名称列表（空列表表示加载 candle 目录下所有有效模型）
-  load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
+  #load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
+  load_models: ["bge-m3", "jina-clip-v2"]
 
 # 嵌入向量索引服务配置
 embedding_index:
@@ -88,7 +89,7 @@ image_service:
 # 人脸服务配置（SCRFD 检测 + ArcFace 特征提取，基于 ort (ONNX Runtime)，支持 CUDA）
 face_service:
   enabled: true
-  model_dir: /workspace/rust_space/laoflchDB-rust/laoflch_db_model
+  model_dir: /app/model
   scrfd_model_file: scrfd_10g.onnx
   arcface_model_file: arcface_w600k_r50.onnx
   det_threshold: 0.5
@@ -101,11 +102,24 @@ face_service:
 # 文本摘要服务配置（基于 candle + T5/Flan-T5，支持中英文）
 text_summarize:
   enabled: true
-  model_path: /app/model/flan-t5-small
+  model_path: /app/model/mt5-xlsum
   use_cuda: false
-  max_input_tokens: 1024
+  dtype: f32
+  max_input_tokens: 10240
   default_max_length: 150
   default_min_length: 40
+  # XLSum 直接对文档生成摘要，无需任务前缀
+  prefix_zh: ""
+  prefix_en: ""
+
+# 精排服务配置（基于 candle + bge-reranker-v2-m3，OpenAI 兼容 /v1/rerank）
+# 两模型均以 fp16 加载，8GB 显存可同时容纳（各自约 1.1GB）
+reranker:
+  enabled: true
+  model_path: /app/model/bge-reranker-v2-m3
+  use_cuda: true
+  dtype: f32
+  max_seq_len: 1024
 
 
 # Log configuration
