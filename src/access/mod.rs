@@ -1581,7 +1581,6 @@ impl LaoflchDb for GrpcService {
                 groups: vec![],
                 total: 0,
                 noise_count: 0,
-                classify_index_name: String::new(),
             }));
         }
 
@@ -1594,7 +1593,6 @@ impl LaoflchDb for GrpcService {
                     groups: vec![],
                     total: 0,
                     noise_count: 0,
-                    classify_index_name: String::new(),
                 }));
             }
         };
@@ -1606,9 +1604,7 @@ impl LaoflchDb for GrpcService {
             bucket: req.bucket.clone(),
             index_name: req.index_name.clone(),
             min_cluster_size: req.min_cluster_size,
-            cut_percentile: req.cut_percentile,
-            write_to_index: req.write_to_index,
-            classify_index_name: req.classify_index_name.clone(),
+            min_samples: req.min_samples,
         };
         let resp = image_service
             .classify_images(tonic::Request::new(img_req))
@@ -1629,7 +1625,6 @@ impl LaoflchDb for GrpcService {
                 .collect(),
             total: resp.total,
             noise_count: resp.noise_count,
-            classify_index_name: resp.classify_index_name,
         }))
     }
 }

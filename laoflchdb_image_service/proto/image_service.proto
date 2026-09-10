@@ -25,8 +25,10 @@ service ImageService {
   rpc UpdateImageMetadata(UpdateImageMetadataRequest) returns (UpdateImageMetadataResponse);
   // 对已保存的图片建立向量索引（独立索引接口）
   rpc IndexImage(IndexImageRequest) returns (IndexImageResponse);
-  // 图片自动分类（HDBSCAN 聚类，结果写入全文索引）
+  // 图片自动分类（HDBSCAN 聚类，结果仅返回不写入全文索引）
   rpc ClassifyImages(ClassifyImagesRequest) returns (ClassifyImagesResponse);
+  // 已保存人脸自动分类（HDBSCAN 聚类，复用图片分类流程，默认向量索引 face）
+  rpc ClassifyFaces(ClassifyImagesRequest) returns (ClassifyImagesResponse);
 }
 
 // ── UploadImageChunk ──────────────────────────
@@ -290,12 +292,8 @@ message ClassifyImagesRequest {
   string index_name = 2;
   // 最少聚类点数（默认 3，低于此数量的簇归为噪声）
   int32 min_cluster_size = 3;
-  // MST 边权切割阈值分位数 0~1（默认 0.6）
-  double cut_percentile = 4;
-  // 是否将分类结果写入全文索引（默认 true）
-  bool write_to_index = 5;
-  // 全文索引名（默认 image_classification）
-  string classify_index_name = 6;
+  // 敏感度：密度估计近邻数 min_samples（默认 5，越大聚类越保守）
+  int32 min_samples = 4;
 }
 
 // 单个图片分类组
@@ -317,6 +315,4 @@ message ClassifyImagesResponse {
   int32 total = 4;
   // 未分类（噪声）图片数
   int32 noise_count = 5;
-  // 写入的全文索引名
-  string classify_index_name = 6;
 }

@@ -6,8 +6,8 @@ edition = "2021"
 [dependencies]
 # Proto 定义（抽出的独立 crate，避免 ltool 等纯客户端拉入 ort 等重型依赖）
 laoflchdb_face_service_proto = { path = "../laoflchdb_face_service_proto" }
-# 图片服务依赖（用于保存对齐后的人脸图片）
-laoflchdb_image_service = { path = "../laoflchdb_image_service" }
+# 图片服务依赖（用于保存对齐后的人脸图片、复用图片分类流程进行人脸聚类）
+laoflchdb_image_service = { path = "../laoflchdb_image_service", features = ["auto_index"] }
 laoflchdb_object_store_service = { path = "../laoflchdb_object_store_service" }
 # 向量索引服务依赖（用于把人脸特征向量写入 HNSW 索引）
 laoflchdb_embedding_service = { path = "../laoflchdb_embedding_service" }

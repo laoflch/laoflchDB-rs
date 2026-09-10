@@ -22,6 +22,9 @@ service FaceService {
   // 保存原图到 image_service（内部调用 ImageService，避免客户端二次上传）
   // 原图会自动向量化索引到 image 索引，遇重复自动跳过返回已有 key
   rpc SaveOriginalImage(SaveOriginalImageRequest) returns (SaveOriginalImageResponse);
+
+  // 已保存人脸自动分类（HDBSCAN 聚类，内部复用 image_service 的分类流程，结果仅返回不写入索引）
+  rpc ClassifyFaces(ClassifyFacesRequest) returns (ClassifyFacesResponse);
 }
 
 // ── DetectFaces ────────────────────────────
@@ -159,4 +162,36 @@ message SaveOriginalImageResponse {
   string message = 2;
   // 保存后的图片 key（Snowflake ID）
   string key = 3;
+}
+
+// ── ClassifyFaces ────────────────────────────
+
+message ClassifyFacesRequest {
+  // 人脸图片所在 bucket（留空用 "faces"）
+  string bucket = 1;
+  // 最少聚类点数（默认 3，低于此数量的簇归为噪声）
+  int32 min_cluster_size = 2;
+  // 敏感度：密度估计近邻数 min_samples（默认 5，越大聚类越保守）
+  int32 min_samples = 3;
+}
+
+// 人脸分类组
+message FaceClassGroup {
+  // 分类名称（如 "分类 1"）
+  string name = 1;
+  // 分类标签（如 "cat_0"）
+  string category = 2;
+  // 该分类下的人脸图片 key 列表
+  repeated string keys = 3;
+}
+
+message ClassifyFacesResponse {
+  bool success = 1;
+  string message = 2;
+  // 分类结果（按人脸数降序，不含噪声）
+  repeated FaceClassGroup groups = 3;
+  // 参与聚类的人脸数
+  int32 total = 4;
+  // 未分类（噪声）人脸数
+  int32 noise_count = 5;
 }

@@ -1335,6 +1335,49 @@ impl FaceService for FaceServiceImpl {
             }
         }
     }
+
+    /// 已保存人脸自动分类（HDBSCAN 聚类，内部复用 image_service 的 classify_faces 流程）
+    async fn classify_faces(
+        &self,
+        request: Request<ClassifyFacesRequest>,
+    ) -> Result<TonicResponse<ClassifyFacesResponse>, Status> {
+        let img_svc = self.image_service.as_ref().ok_or_else(|| {
+            Status::failed_precondition("image_service 未启用，无法对人脸分类")
+        })?;
+
+        use laoflchdb_image_service::proto::image_service_server::ImageService;
+        use laoflchdb_image_service::proto::ClassifyImagesRequest as ImageClassifyImagesRequest;
+
+        let req = request.into_inner();
+        let img_req = ImageClassifyImagesRequest {
+            bucket: req.bucket.clone(),
+            index_name: "face".to_string(),
+            min_cluster_size: req.min_cluster_size,
+            min_samples: req.min_samples,
+        };
+
+        let resp = img_svc
+            .classify_faces(Request::new(img_req))
+            .await
+            .map_err(|e| Status::internal(format!("人脸分类失败: {}", e)))?
+            .into_inner();
+
+        Ok(TonicResponse::new(ClassifyFacesResponse {
+            success: resp.success,
+            message: resp.message,
+            groups: resp
+                .groups
+                .into_iter()
+                .map(|g| FaceClassGroup {
+                    name: g.name,
+                    category: g.category,
+                    keys: g.keys,
+                })
+                .collect(),
+            total: resp.total,
+            noise_count: resp.noise_count,
+        }))
+    }
 }
 
 /// 保存对齐后的人脸图片到 image_service

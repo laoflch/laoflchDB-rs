@@ -79,30 +79,6 @@ pub struct ImageServiceImpl {
     /// 嵌入索引服务（可选，用于自动向量索引）
     #[cfg(feature = "auto_index")]
     embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
-    /// 全文索引写入接口（可选，用于保存图片分类结果）
-    #[cfg(feature = "auto_index")]
-    index_sink: Option<Arc<dyn ImageIndexSink>>,
-}
-
-/// 全文索引写入接口抽象
-/// 由主工程注入，用于将图片分类结果保存到全文索引（如 tantivy）
-#[tonic::async_trait]
-pub trait ImageIndexSink: Send + Sync + 'static {
-    /// 删除索引（索引不存在时返回 Ok）
-    async fn drop_index(&self, index_name: &str) -> Result<(), String>;
-    /// 创建索引，fields 为 (序号, 字段名, 字段类型码(0=字符串,1=整数), 注释)
-    async fn create_index(
-        &self,
-        index_name: &str,
-        fields: &[(u32, &str, u8, Option<&str>)],
-    ) -> Result<(), String>;
-    /// 写入一条文档
-    async fn add_document(
-        &self,
-        index_name: &str,
-        doc_id: &str,
-        fields: std::collections::HashMap<String, String>,
-    ) -> Result<(), String>;
 }
 
 impl ImageServiceImpl {
@@ -114,7 +90,6 @@ impl ImageServiceImpl {
         config: ImageServiceConfig,
         vector_service: Option<Arc<laoflchdb_vector_service::VectorServiceImpl>>,
         embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
-        index_sink: Option<Arc<dyn ImageIndexSink>>,
     ) -> Self {
         // 优先用默认配置（基于 IP 推导 machine_id）；失败时回退到 machine_id=0, data_center_id=0
         let snowflake = Snowflake::new().unwrap_or_else(|_| {
@@ -137,8 +112,6 @@ impl ImageServiceImpl {
             vector_service,
             #[cfg(feature = "auto_index")]
             embedding_service,
-            #[cfg(feature = "auto_index")]
-            index_sink,
         }
     }
 
@@ -419,6 +392,13 @@ impl proto::image_service_server::ImageService for std::sync::Arc<ImageServiceIm
         self.as_ref().classify_images(request).await
     }
 
+    async fn classify_faces(
+        &self,
+        request: tonic::Request<ClassifyImagesRequest>,
+    ) -> std::result::Result<tonic::Response<ClassifyImagesResponse>, tonic::Status> {
+        self.as_ref().classify_faces(request).await
+    }
+
     async fn upload_image_stream(
         &self,
         request: tonic::Request<tonic::Streaming<UploadImageChunk>>,
@@ -640,6 +620,135 @@ impl ImageServiceImpl {
         }
 
         Ok(results)
+    }
+
+    /// 通用对象分类（HDBSCAN 聚类）
+    ///
+    /// 拉取 bucket 下全部对象的 key，与指定向量索引（id = key）中的向量匹配后聚类。
+    /// 图片分类与已保存人脸分类共用此逻辑，仅 bucket/索引名不同。
+    /// 返回 (message, groups, total, noise_count)，结果仅返回不写入任何索引。
+    #[cfg(feature = "auto_index")]
+    async fn classify_objects(
+        &self,
+        bucket: &str,
+        vec_index: &str,
+        min_cluster_size: usize,
+        min_samples: usize,
+    ) -> Result<(String, Vec<ImageClassGroup>, usize, usize), Status> {
+        let embedding_svc = self
+            .embedding_service
+            .as_ref()
+            .ok_or_else(|| Status::failed_precondition("嵌入索引服务未启用"))?;
+
+        // 1. 循环分页拉取 bucket 全部对象 key
+        let mut all_keys: Vec<String> = Vec::new();
+        let mut marker = String::new();
+        loop {
+            let list_req = ListImagesRequest {
+                bucket: bucket.to_string(),
+                prefix: String::new(),
+                max_keys: 100,
+                marker: marker.clone(),
+                sort_order: "asc".to_string(),
+            };
+            let resp = self
+                .list_images(Request::new(list_req))
+                .await
+                .map_err(|e| Status::internal(format!("列出对象失败: {}", e)))?
+                .into_inner();
+            if !resp.success {
+                return Err(Status::internal(resp.message));
+            }
+            for img in &resp.images {
+                all_keys.push(img.key.clone());
+            }
+            if !resp.is_truncated || resp.next_marker.is_empty() {
+                break;
+            }
+            marker = resp.next_marker.clone();
+            if all_keys.len() > 50000 {
+                break;
+            }
+        }
+
+        if all_keys.is_empty() {
+            return Ok(("当前 bucket 没有对象".to_string(), Vec::new(), 0, 0));
+        }
+
+        // 2. 拉取向量索引全部条目（id 即对象 key）
+        use laoflchdb_embedding_service::proto::ListEmbeddingsRequest;
+        let emb_req = Request::new(ListEmbeddingsRequest {
+            index_name: vec_index.to_string(),
+            limit: 0,
+            offset: 0,
+        });
+        let emb_resp = embedding_svc
+            .list_embeddings(emb_req)
+            .await
+            .map_err(|e| Status::internal(format!("读取向量索引失败: {}", e)))?;
+        let emb = emb_resp.into_inner();
+        if !emb.success {
+            return Err(Status::internal(emb.message));
+        }
+
+        // 3. 匹配有向量的对象
+        let mut vec_map: HashMap<String, Vec<f32>> = HashMap::new();
+        for entry in &emb.entries {
+            if !entry.embedding.is_empty() {
+                vec_map.insert(entry.id.to_string(), entry.embedding.clone());
+            }
+        }
+        let mut samples: Vec<(String, Vec<f32>)> = Vec::new();
+        for key in &all_keys {
+            if let Some(v) = vec_map.get(key) {
+                samples.push((key.clone(), v.clone()));
+            }
+        }
+
+        if samples.len() < 2 {
+            return Ok((
+                format!("有向量的对象不足({} 个)，无法聚类", samples.len()),
+                Vec::new(),
+                samples.len(),
+                0,
+            ));
+        }
+
+        // 4. HDBSCAN 聚类
+        let vectors: Vec<Vec<f32>> = samples.iter().map(|s| s.1.clone()).collect();
+        let min_samples = min_samples.min(vectors.len() - 1).max(1);
+        let result = hdbscan_cluster(&vectors, min_cluster_size, min_samples);
+
+        // 5. 组装分类组（按对象数降序，不含噪声）
+        let mut groups_map: HashMap<i32, Vec<String>> = HashMap::new();
+        for (i, s) in samples.iter().enumerate() {
+            let label = result.labels[i];
+            if label == -1 {
+                continue;
+            }
+            groups_map.entry(label).or_default().push(s.0.clone());
+        }
+        let mut group_list: Vec<(i32, Vec<String>)> = groups_map.into_iter().collect();
+        group_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+
+        let mut groups: Vec<ImageClassGroup> = Vec::new();
+        for (idx, (_, keys)) in group_list.iter().enumerate() {
+            let category = format!("cat_{}", idx);
+            let name = format!("分类 {}", idx + 1);
+            groups.push(ImageClassGroup {
+                name,
+                category,
+                keys: keys.clone(),
+            });
+        }
+
+        let message = format!(
+            "分类完成: {} 个对象，{} 个分类，{} 个噪声",
+            samples.len(),
+            result.cluster_count,
+            result.noise_count
+        );
+        Ok((message, groups, samples.len(), result.noise_count))
     }
 }
 
@@ -1476,210 +1585,46 @@ impl ImageService for ImageServiceImpl {
         self.upload_image(Request::new(upload_req)).await
     }
 
-    /// 图片自动分类（HDBSCAN 聚类，结果可写入全文索引）
+    /// 图片自动分类（HDBSCAN 聚类，结果仅返回不写入全文索引）
     async fn classify_images(
         &self,
         request: Request<ClassifyImagesRequest>,
     ) -> Result<Response<ClassifyImagesResponse>, Status> {
         #[cfg(feature = "auto_index")]
         {
-        let req = request.into_inner();
-        let bucket = if req.bucket.is_empty() {
-            DEFAULT_BUCKET.to_string()
-        } else {
-            req.bucket.clone()
-        };
-        let vec_index = if req.index_name.is_empty() {
-            "image".to_string()
-        } else {
-            req.index_name.clone()
-        };
-        let classify_index = if req.classify_index_name.is_empty() {
-            "image_classification".to_string()
-        } else {
-            req.classify_index_name.clone()
-        };
-        let min_cluster_size = if req.min_cluster_size > 0 {
-            req.min_cluster_size as usize
-        } else {
-            3
-        };
-        let cut_percentile = if req.cut_percentile > 0.0 && req.cut_percentile < 1.0 {
-            req.cut_percentile
-        } else {
-            0.6
-        };
-
-        let embedding_svc = self
-            .embedding_service
-            .as_ref()
-            .ok_or_else(|| Status::failed_precondition("嵌入索引服务未启用"))?;
-
-        // 1. 循环分页拉取 bucket 全部图片 key
-        let mut all_keys: Vec<String> = Vec::new();
-        let mut marker = String::new();
-        loop {
-            let list_req = ListImagesRequest {
-                bucket: bucket.clone(),
-                prefix: String::new(),
-                max_keys: 100,
-                marker: marker.clone(),
-                sort_order: "asc".to_string(),
+            let req = request.into_inner();
+            let bucket = if req.bucket.is_empty() {
+                DEFAULT_BUCKET.to_string()
+            } else {
+                req.bucket.clone()
             };
-            let resp = self
-                .list_images(Request::new(list_req))
-                .await
-                .map_err(|e| Status::internal(format!("列出图片失败: {}", e)))?
-                .into_inner();
-            if !resp.success {
-                return Err(Status::internal(resp.message));
-            }
-            for img in &resp.images {
-                all_keys.push(img.key.clone());
-            }
-            if !resp.is_truncated || resp.next_marker.is_empty() {
-                break;
-            }
-            marker = resp.next_marker.clone();
-            if all_keys.len() > 50000 {
-                break;
-            }
-        }
+            let vec_index = if req.index_name.is_empty() {
+                "image".to_string()
+            } else {
+                req.index_name.clone()
+            };
+            let min_cluster_size = if req.min_cluster_size > 0 {
+                req.min_cluster_size as usize
+            } else {
+                3
+            };
+            let min_samples = if req.min_samples > 0 {
+                req.min_samples as usize
+            } else {
+                5
+            };
 
-        if all_keys.is_empty() {
-            return Ok(Response::new(ClassifyImagesResponse {
+            let (message, groups, total, noise_count) = self
+                .classify_objects(&bucket, &vec_index, min_cluster_size, min_samples)
+                .await?;
+
+            Ok(Response::new(ClassifyImagesResponse {
                 success: true,
-                message: "当前 bucket 没有图片".to_string(),
-                groups: vec![],
-                total: 0,
-                noise_count: 0,
-                classify_index_name: classify_index.clone(),
-            }));
-        }
-
-        // 2. 拉取向量索引全部条目（id 即图片 key）
-        use laoflchdb_embedding_service::proto::ListEmbeddingsRequest;
-        let emb_req = Request::new(ListEmbeddingsRequest {
-            index_name: vec_index.clone(),
-            limit: 0,
-            offset: 0,
-        });
-        let emb_resp = embedding_svc
-            .list_embeddings(emb_req)
-            .await
-            .map_err(|e| Status::internal(format!("读取向量索引失败: {}", e)))?;
-        let emb = emb_resp.into_inner();
-        if !emb.success {
-            return Err(Status::internal(emb.message));
-        }
-
-        // 3. 匹配有向量的图片
-        let mut vec_map: HashMap<String, Vec<f32>> = HashMap::new();
-        for entry in &emb.entries {
-            if !entry.embedding.is_empty() {
-                vec_map.insert(entry.id.to_string(), entry.embedding.clone());
-            }
-        }
-        let mut samples: Vec<(String, Vec<f32>)> = Vec::new();
-        for key in &all_keys {
-            if let Some(v) = vec_map.get(key) {
-                samples.push((key.clone(), v.clone()));
-            }
-        }
-
-        if samples.len() < 2 {
-            return Ok(Response::new(ClassifyImagesResponse {
-                success: true,
-                message: format!("向量化图片不足({} 张)，无法聚类", samples.len()),
-                groups: vec![],
-                total: samples.len() as i32,
-                noise_count: 0,
-                classify_index_name: classify_index.clone(),
-            }));
-        }
-
-        // 4. HDBSCAN 聚类
-        let vectors: Vec<Vec<f32>> = samples.iter().map(|s| s.1.clone()).collect();
-        let min_samples = 5.min(vectors.len() - 1).max(1);
-        let result = hdbscan_cluster(
-            &vectors,
-            min_cluster_size,
-            min_samples,
-            cut_percentile,
-        );
-
-        // 5. 组装分类组（按图片数降序，不含噪声）
-        let mut groups_map: HashMap<i32, Vec<String>> = HashMap::new();
-        for (i, s) in samples.iter().enumerate() {
-            let label = result.labels[i];
-            if label == -1 {
-                continue;
-            }
-            groups_map.entry(label).or_default().push(s.0.clone());
-        }
-        let mut group_list: Vec<(i32, Vec<String>)> = groups_map.into_iter().collect();
-        group_list.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
-
-        let mut groups: Vec<ImageClassGroup> = Vec::new();
-        let mut label_to_meta: HashMap<i32, (String, String)> = HashMap::new();
-        for (idx, (label, keys)) in group_list.iter().enumerate() {
-            let category = format!("cat_{}", idx);
-            let name = format!("分类 {}", idx + 1);
-            label_to_meta.insert(*label, (category.clone(), name.clone()));
-            groups.push(ImageClassGroup {
-                name,
-                category,
-                keys: keys.clone(),
-            });
-        }
-
-        // 6. 写入全文索引（可选）
-        if req.write_to_index {
-            let sink = self
-                .index_sink
-                .as_ref()
-                .ok_or_else(|| Status::failed_precondition("全文索引未启用，无法保存分类结果"))?;
-            sink.drop_index(&classify_index)
-                .await
-                .map_err(|e| Status::internal(format!("删除分类索引失败: {}", e)))?;
-            let fields: Vec<(u32, &str, u8, Option<&str>)> = vec![
-                (0, "key", 0, Some("图片 key")),
-                (1, "category", 0, Some("分类 ID")),
-                (2, "label", 0, Some("分类名称")),
-                (3, "bucket", 0, Some("所属 bucket")),
-            ];
-            sink.create_index(&classify_index, &fields)
-                .await
-                .map_err(|e| Status::internal(format!("创建分类索引失败: {}", e)))?;
-            for (i, s) in samples.iter().enumerate() {
-                let meta = match label_to_meta.get(&result.labels[i]) {
-                    Some((cat, name)) => (cat.clone(), name.clone()),
-                    None => ("noise".to_string(), "未分类".to_string()),
-                };
-                let mut doc_fields = HashMap::new();
-                doc_fields.insert("key".to_string(), s.0.clone());
-                doc_fields.insert("category".to_string(), meta.0);
-                doc_fields.insert("label".to_string(), meta.1);
-                doc_fields.insert("bucket".to_string(), bucket.clone());
-                sink.add_document(&classify_index, &s.0, doc_fields)
-                    .await
-                    .map_err(|e| Status::internal(format!("写入分类文档失败: {}", e)))?;
-            }
-        }
-
-        Ok(Response::new(ClassifyImagesResponse {
-            success: true,
-            message: format!(
-                "分类完成: {} 张图片，{} 个分类，{} 张噪声",
-                samples.len(),
-                result.cluster_count,
-                result.noise_count
-            ),
-            groups,
-            total: samples.len() as i32,
-            noise_count: result.noise_count as i32,
-            classify_index_name: classify_index,
-        }))
+                message,
+                groups,
+                total: total as i32,
+                noise_count: noise_count as i32,
+            }))
         }
         #[cfg(not(feature = "auto_index"))]
         {
@@ -1690,7 +1635,60 @@ impl ImageService for ImageServiceImpl {
                 groups: vec![],
                 total: 0,
                 noise_count: 0,
-                classify_index_name: String::new(),
+            }))
+        }
+    }
+
+    /// 已保存人脸自动分类（HDBSCAN 聚类，复用图片分类流程，默认向量索引 face）
+    async fn classify_faces(
+        &self,
+        request: Request<ClassifyImagesRequest>,
+    ) -> Result<Response<ClassifyImagesResponse>, Status> {
+        #[cfg(feature = "auto_index")]
+        {
+            let req = request.into_inner();
+            let bucket = if req.bucket.is_empty() {
+                "faces".to_string()
+            } else {
+                req.bucket.clone()
+            };
+            let vec_index = if req.index_name.is_empty() {
+                "face".to_string()
+            } else {
+                req.index_name.clone()
+            };
+            let min_cluster_size = if req.min_cluster_size > 0 {
+                req.min_cluster_size as usize
+            } else {
+                3
+            };
+            let min_samples = if req.min_samples > 0 {
+                req.min_samples as usize
+            } else {
+                5
+            };
+
+            let (message, groups, total, noise_count) = self
+                .classify_objects(&bucket, &vec_index, min_cluster_size, min_samples)
+                .await?;
+
+            Ok(Response::new(ClassifyImagesResponse {
+                success: true,
+                message,
+                groups,
+                total: total as i32,
+                noise_count: noise_count as i32,
+            }))
+        }
+        #[cfg(not(feature = "auto_index"))]
+        {
+            let _ = request;
+            Ok(Response::new(ClassifyImagesResponse {
+                success: false,
+                message: "auto_index feature 未启用，人脸分类不可用".to_string(),
+                groups: vec![],
+                total: 0,
+                noise_count: 0,
             }))
         }
     }
@@ -2262,7 +2260,6 @@ fn hdbscan_cluster(
     vectors: &[Vec<f32>],
     min_cluster_size: usize,
     min_samples: usize,
-    _cut_percentile: f64,
 ) -> HdbscanResult {
     let n = vectors.len();
     if n == 0 {
