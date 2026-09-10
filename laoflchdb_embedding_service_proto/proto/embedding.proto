@@ -12,6 +12,8 @@ service EmbeddingIndexService {
   rpc SearchEmbedding(SearchEmbeddingRequest) returns (SearchEmbeddingResponse);
   // 删除向量
   rpc DeleteEmbedding(DeleteEmbeddingRequest) returns (DeleteEmbeddingResponse);
+  // 按 ID 分别删除 RocksDB 和/或 HNSW 中的记录（反查不一致时清理用）
+  rpc DeleteEmbeddingEntry(DeleteEmbeddingEntryRequest) returns (DeleteEmbeddingEntryResponse);
   // 获取索引信息
   rpc GetIndexInfo(GetIndexInfoRequest) returns (GetIndexInfoResponse);
   // 手动保存快照
@@ -20,6 +22,8 @@ service EmbeddingIndexService {
   rpc LoadSnapshot(LoadSnapshotRequest) returns (LoadSnapshotResponse);
   // 列出索引中的所有向量
   rpc ListEmbeddings(ListEmbeddingsRequest) returns (ListEmbeddingsResponse);
+  // 根据向量 ID 反查索引中是否存在对应条目
+  rpc GetEmbeddingById(GetEmbeddingByIdRequest) returns (GetEmbeddingByIdResponse);
   // 分析 RocksDB 和 HNSW 一致性
   rpc AnalyzeConsistency(AnalyzeConsistencyRequest) returns (AnalyzeConsistencyResponse);
   // 从 RocksDB 重建 HNSW 索引
@@ -74,6 +78,22 @@ message DeleteEmbeddingRequest {
 message DeleteEmbeddingResponse {
   bool success = 1;
   string message = 2;
+}
+
+// ── DeleteEmbeddingEntry ────────────────────────────
+
+message DeleteEmbeddingEntryRequest {
+  uint64 id = 1;             // 向量 ID
+  string index_name = 2;     // 索引名称（默认 "default"）
+  bool delete_rocksdb = 3;   // 是否删除 RocksDB 中的记录
+  bool delete_hnsw = 4;      // 是否删除 HNSW 中的记录
+}
+
+message DeleteEmbeddingEntryResponse {
+  bool success = 1;
+  string message = 2;
+  bool deleted_rocksdb = 3;  // RocksDB 中是否实际删除了记录
+  bool deleted_hnsw = 4;     // HNSW 中是否实际删除了节点
 }
 
 // ── GetIndexInfo ────────────────────────────
@@ -146,6 +166,22 @@ message ListEmbeddingsResponse {
   uint64 total = 4;        // 总条目数
 }
 
+// ── GetEmbeddingById ────────────────────────────
+
+message GetEmbeddingByIdRequest {
+  uint64 id = 1;           // 向量 ID
+  string index_name = 2;   // 索引名称（默认 "default"）
+}
+
+message GetEmbeddingByIdResponse {
+  bool success = 1;
+  string message = 2;
+  uint64 id = 3;           // 查询的向量 ID
+  bool exists = 4;         // 索引中是否存在该 ID 的向量条目
+  int32 dim = 5;           // 条目的维度（存在时有效，否则 -1）
+  bool in_hnsw = 6;        // 该 ID 是否在 HNSW 索引中
+}
+
 // ── AnalyzeConsistency ────────────────────────────
 
 message AnalyzeConsistencyRequest {
@@ -171,4 +207,5 @@ message RebuildIndexFromRocksDBResponse {
   bool success = 1;
   string message = 2;
   uint64 rebuilt_count = 3;  // 重建了多少条
+  repeated string skipped = 4;  // 被跳过的条目及原因（格式: "id=... 原因=..."）
 }

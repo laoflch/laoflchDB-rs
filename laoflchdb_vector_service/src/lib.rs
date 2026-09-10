@@ -3,8 +3,10 @@ pub mod proto {
 }
 
 pub mod vision_encoder;
+pub mod text_encoder;
 
-use crate::vision_encoder::{VisionTransformer, try_load_vision_model};
+use crate::text_encoder::JinaBertTextEncoder;
+use crate::vision_encoder::{VisionModel, try_load_vision_model};
 use candle_core::{Device, Tensor, DType};
 use candle_nn::{VarBuilder, Dropout, Module, ModuleT};
 use log::{info, warn};
@@ -37,7 +39,9 @@ struct ModelInstance {
     /// 真实的 BERT 模型（如果已加载）
     bert_model: Option<RealBertModel>,
     /// 视觉模型（如果已加载）
-    vision_model: Option<VisionTransformer>,
+    vision_model: Option<VisionModel>,
+    /// JinaBERT 文本编码器（如果已加载，用于 jina-clip-v2 等双塔模型的文搜图）
+    text_encoder: Option<JinaBertTextEncoder>,
 }
 
 impl VectorServiceImpl {
@@ -192,9 +196,11 @@ impl VectorServiceImpl {
 
             // 尝试加载视觉模型（优先，不需要 tokenizer.json）
             let vision_model = try_load_vision_model(&model_path_str, device);
-            let (loaded, bert_model, vision_model) = if let Some(vm) = vision_model {
+            let (loaded, bert_model, vision_model, text_encoder) = if let Some(vm) = vision_model {
                 info!("模型 '{}' 自动加载为视觉模型 (dim={})", model_name, dim);
-                (true, None, Some(vm))
+                // 双塔模型（如 jina-clip-v2）额外加载文本编码器，用于文搜图
+                let text_encoder = crate::text_encoder::try_load_text_encoder(&model_path_str, device);
+                (true, None, Some(vm), text_encoder)
             } else {
                 // 尝试加载 BERT 文本模型
                 let bert_model = try_load_bert_model(&model_path_str, device);
@@ -204,7 +210,7 @@ impl VectorServiceImpl {
                 } else {
                     warn!("模型 '{}' 检测到文件但加载失败，仍注册为可用", model_name);
                 }
-                (loaded, bert_model, None)
+                (loaded, bert_model, None, None)
             };
 
             models.insert(
@@ -216,6 +222,7 @@ impl VectorServiceImpl {
                     device: device_str,
                     bert_model,
                     vision_model,
+                    text_encoder,
                 },
             );
         }
@@ -366,6 +373,32 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
             req.texts.len(),
             model.embedding_dim
         );
+
+        // 优先使用 JinaBERT 文本编码器（双塔模型，如 jina-clip-v2）
+        if let Some(ref text_encoder) = model.text_encoder {
+            for text in &req.texts {
+                match text_encoder.embed(text) {
+                    Ok(mut embedding) => {
+                        if target_dim > 0 && target_dim < embedding.len() {
+                            embedding.truncate(target_dim);
+                        }
+                        results.push(EmbeddingResult {
+                            text: text.clone(),
+                            embedding,
+                            dim: model.embedding_dim as i32,
+                        });
+                    }
+                    Err(e) => {
+                        return Err(Status::internal(format!("文本向量化失败: {}", e)));
+                    }
+                }
+            }
+            return Ok(Response::new(EmbeddingResponse {
+                success: true,
+                message: format!("成功生成 {} 条文本向量", results.len()),
+                results,
+            }));
+        }
 
         // 如果有真实 BERT 模型，使用它进行推理
         if let Some(ref bert_model) = model.bert_model {
@@ -618,6 +651,9 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                 req.model_name, hidden_size
             );
 
+            // 双塔模型（如 jina-clip-v2）额外加载文本编码器，用于文搜图
+            let text_encoder = crate::text_encoder::try_load_text_encoder(&req.model_path, &self.default_device);
+
             let mut models = self.models.write().await;
             models.insert(
                 req.model_name.clone(),
@@ -628,6 +664,7 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                     device: device_str,
                     bert_model: None,
                     vision_model,
+                    text_encoder,
                 },
             );
 
@@ -668,6 +705,7 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                 device: device_str,
                 bert_model: Some(bert_model),
                 vision_model: None,
+                text_encoder: None,
             },
         );
 

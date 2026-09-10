@@ -14,6 +14,8 @@ use proto::{
     AnalyzeConsistencyRequest, AnalyzeConsistencyResponse, RebuildIndexFromRocksDbRequest,
     RebuildIndexFromRocksDbResponse,
     SearchResult, SearchEmbeddingRequest, SearchEmbeddingResponse,
+    GetEmbeddingByIdRequest, GetEmbeddingByIdResponse,
+    DeleteEmbeddingEntryRequest, DeleteEmbeddingEntryResponse,
 };
 use anda_db_hnsw::{BoxError, DistanceMetric, HnswConfig, HnswIndex, SelectNeighborsStrategy};
 use laoflchdb_engines::{EngineOptions, StorageEngine};
@@ -598,6 +600,20 @@ impl proto::embedding_index_service_server::EmbeddingIndexService
         self.as_ref().list_embeddings(request).await
     }
 
+    async fn get_embedding_by_id(
+        &self,
+        request: tonic::Request<GetEmbeddingByIdRequest>,
+    ) -> std::result::Result<tonic::Response<GetEmbeddingByIdResponse>, tonic::Status> {
+        self.as_ref().get_embedding_by_id(request).await
+    }
+
+    async fn delete_embedding_entry(
+        &self,
+        request: tonic::Request<DeleteEmbeddingEntryRequest>,
+    ) -> std::result::Result<tonic::Response<DeleteEmbeddingEntryResponse>, tonic::Status> {
+        self.as_ref().delete_embedding_entry(request).await
+    }
+
     async fn analyze_consistency(
         &self,
         request: tonic::Request<AnalyzeConsistencyRequest>,
@@ -929,6 +945,73 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         }))
     }
 
+    /// 按 ID 分别删除 RocksDB 和/或 HNSW 中的记录（反查不一致时清理用）
+    async fn delete_embedding_entry(
+        &self,
+        request: Request<DeleteEmbeddingEntryRequest>,
+    ) -> Result<Response<DeleteEmbeddingEntryResponse>, Status> {
+        self.check_building()?;
+        let req = request.into_inner();
+        let index_name = if req.index_name.is_empty() {
+            "default"
+        } else {
+            &req.index_name
+        };
+
+        if !req.delete_rocksdb && !req.delete_hnsw {
+            return Err(Status::invalid_argument("至少选择删除 RocksDB 或 HNSW 中的记录"));
+        }
+
+        // 查找索引
+        let state = self.indices.get(index_name).ok_or_else(|| {
+            Status::not_found(format!("索引不存在: {}", index_name))
+        })?;
+
+        let mut deleted_rocksdb = false;
+        let mut deleted_hnsw = false;
+
+        // 1. 从 RocksDB 删除
+        if req.delete_rocksdb {
+            let table_name = format!("hnsw_{}", index_name);
+            let key = format!("v:{}", req.id).into_bytes();
+            let existed = {
+                let mut storage = self.storage.lock().await;
+                let existed = storage.get(&table_name, &key).await.ok().flatten().is_some();
+                if let Err(e) = storage.delete(&table_name, &key).await {
+                    log::error!("删除 RocksDB 向量失败: id={}, index={}, error={}", req.id, index_name, e);
+                    return Err(Status::internal(format!("删除 RocksDB 记录失败: {}", e)));
+                }
+                existed
+            };
+            deleted_rocksdb = existed;
+        }
+
+        // 2. 从 HNSW 删除
+        if req.delete_hnsw {
+            let ts = Self::unix_ms();
+            deleted_hnsw = {
+                let index = state.index.write().await;
+                index.remove(req.id, ts)
+            };
+        }
+
+        let mut parts = Vec::new();
+        if req.delete_rocksdb {
+            parts.push(format!("RocksDB: {}", if deleted_rocksdb { "已删除" } else { "不存在或已删除" }));
+        }
+        if req.delete_hnsw {
+            parts.push(format!("HNSW: {}", if deleted_hnsw { "已删除" } else { "不存在或已删除" }));
+        }
+        log::info!("向量条目删除处理完成: id={}, index={}, {}", req.id, index_name, parts.join(", "));
+
+        Ok(Response::new(DeleteEmbeddingEntryResponse {
+            success: true,
+            message: format!("id={} 删除处理完成: {}", req.id, parts.join(", ")),
+            deleted_rocksdb,
+            deleted_hnsw,
+        }))
+    }
+
     /// 获取指定索引的统计信息
     async fn get_index_info(
         &self,
@@ -1108,6 +1191,69 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         }))
     }
 
+    /// 根据向量 ID 反查索引中是否存在对应条目（并返回其维度）
+    async fn get_embedding_by_id(
+        &self,
+        request: Request<GetEmbeddingByIdRequest>,
+    ) -> Result<Response<GetEmbeddingByIdResponse>, Status> {
+        self.check_building()?;
+        let req = request.into_inner();
+        let index_name = if req.index_name.is_empty() {
+            "default"
+        } else {
+            &req.index_name
+        };
+
+        // 查找索引
+        let state = self.indices.get(index_name).ok_or_else(|| {
+            Status::not_found(format!("索引不存在: {}", index_name))
+        })?;
+
+        let table_name = format!("hnsw_{}", index_name);
+        self.ensure_table(index_name).await?;
+
+        // 1. 检查 RocksDB 中是否存在该条目的存储数据，并解码维度
+        let key = format!("v:{}", req.id).into_bytes();
+        let (exists, dim) = {
+            let storage = self.storage.lock().await;
+            match storage.get(&table_name, &key).await.ok().flatten() {
+                Some(bytes) => {
+                    if let Ok(se) = storage_proto::StoredEmbedding::decode(bytes.as_slice()) {
+                        (true, se.embedding.len() as i32)
+                    } else if bytes.len() % 4 == 0 {
+                        // 旧格式：值为 f32 字节序列
+                        (true, (bytes.len() / 4) as i32)
+                    } else {
+                        (true, -1)
+                    }
+                }
+                None => (false, -1),
+            }
+        };
+
+        // 2. 检查 HNSW 索引中是否存在该节点
+        let in_hnsw = {
+            let index = state.index.read().await;
+            index.get_node_with(req.id, |_| ()).is_ok()
+        };
+
+        Ok(Response::new(GetEmbeddingByIdResponse {
+            success: true,
+            message: if exists {
+                format!(
+                    "索引中存在向量 ID={} 的条目, 维度 {}, HNSW={}",
+                    req.id, dim, if in_hnsw { "是" } else { "否" }
+                )
+            } else {
+                format!("索引中不存在向量 ID={} 的条目", req.id)
+            },
+            id: req.id,
+            exists,
+            dim,
+            in_hnsw,
+        }))
+    }
+
     /// 分析 RocksDB 和 HNSW 索引的一致性
     async fn analyze_consistency(
         &self,
@@ -1209,8 +1355,9 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         let index_name_clone = index_name.to_string();
         let new_index_clone = new_index.clone();
         let total_entries = all_entries.len();
-        let rebuilt_count = tokio::task::spawn_blocking(move || {
+        let rebuilt_result = tokio::task::spawn_blocking(move || -> Result<(u64, Vec<String>), String> {
             let mut count = 0u64;
+            let mut skipped: Vec<String> = Vec::new();
             let mut last_log_ts = SystemTime::now();
             
             for (i, (key, value)) in all_entries.into_iter().enumerate() {
@@ -1226,33 +1373,52 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
                     Some(parsed_id) => parsed_id,
                     None => {
                         log::warn!("重建索引: 跳过无效的 key: {:?}", key);
+                        skipped.push(format!("key={:?} 原因=无效的 key", key));
                         continue;
                     }
                 };
 
-                // 解析 embedding（根据存储格式）
+                // 解析 embedding（兼容 protobuf 和旧 f32 两种存储格式）
+                // 旧格式: 4 字节对齐的 f32 序列; protobuf: StoredEmbedding 编码
                 let embedding: Vec<f32> = if is_protobuf {
                     match storage_proto::StoredEmbedding::decode(value.as_slice()) {
                         Ok(se) => se.embedding,
                         Err(e) => {
-                            log::warn!("重建索引: 解码 protobuf 失败 id={}: {}", id, e);
-                            continue;
+                            // protobuf 解码失败，尝试旧格式
+                            if value.len() % 4 == 0 {
+                                value
+                                    .chunks_exact(4)
+                                    .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                                    .collect()
+                            } else {
+                                log::warn!("重建索引: 解码 protobuf 失败 id={}: {}", id, e);
+                                skipped.push(format!("id={} 原因=protobuf 解码失败({})", id, e));
+                                continue;
+                            }
                         }
                     }
                 } else {
-                    // 旧格式
-                    if value.len() % 4 != 0 {
-                        log::warn!(
-                            "重建索引: 跳过无效的 value, id={}, value_len={} (不是 4 的倍数)",
-                            id,
-                            value.len()
-                        );
-                        continue;
+                    if value.len() % 4 == 0 {
+                        value
+                            .chunks_exact(4)
+                            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                            .collect()
+                    } else {
+                        // 旧格式解析失败，尝试 protobuf 格式（兼容混合存储）
+                        match storage_proto::StoredEmbedding::decode(value.as_slice()) {
+                            Ok(se) => se.embedding,
+                            Err(e) => {
+                                log::warn!(
+                                    "重建索引: 跳过无效的 value, id={}, value_len={} (不是 4 的倍数, protobuf 也解码失败: {})",
+                                    id,
+                                    value.len(),
+                                    e
+                                );
+                                skipped.push(format!("id={} 原因=value 长度({})不是4的倍数且 protobuf 解码失败({})", id, value.len(), e));
+                                continue;
+                            }
+                        }
                     }
-                    value
-                        .chunks_exact(4)
-                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect()
                 };
 
                 // 验证维度
@@ -1263,12 +1429,16 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
                         index_dim,
                         embedding.len()
                     );
+                    skipped.push(format!("id={} 原因=维度不匹配(期望 {}, 实际 {})", id, index_dim, embedding.len()));
                     continue;
                 }
 
                 // 检查向量是否包含 NaN 或 Inf
                 if embedding.iter().any(|&v| !v.is_finite()) {
+                    let nan_count = embedding.iter().filter(|&&v| v.is_nan()).count();
+                    let inf_count = embedding.iter().filter(|&&v| v.is_infinite()).count();
                     log::warn!("重建索引: 跳过包含无效值的向量 id={}", id);
+                    skipped.push(format!("id={} 原因=包含无效值(NaN {}个, Inf {}个)", id, nan_count, inf_count));
                     continue;
                 }
 
@@ -1299,13 +1469,14 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
                 }
             }
             log::info!("重建索引 [{}]: 完成处理所有 {} 条向量", index_name_clone, count);
-            Ok::<u64, String>(count)
+            Ok::<(u64, Vec<String>), String>((count, skipped))
         })
         .await
         .map_err(|e| Status::internal(format!("重建线程异常: {}", e)))?
         .map_err(|e| Status::internal(e))?;
 
-        log::info!("重建索引 [{}]: 插入完成，共 {} 条", index_name, rebuilt_count);
+        let (rebuilt_count, skipped_entries) = rebuilt_result;
+        log::info!("重建索引 [{}]: 插入完成，共 {} 条, 跳过 {} 条", index_name, rebuilt_count, skipped_entries.len());
 
         // 4. 替换旧索引（Arc 应只有一处引用，可直接 unwrap）
         let new_index = Arc::try_unwrap(new_index).unwrap_or_else(|_| {
@@ -1319,10 +1490,19 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
 
         log::info!("重建索引 [{}] 完成", index_name);
 
+        let mut message = format!("索引重建完成, 重建了 {} 条向量", rebuilt_count);
+        if !skipped_entries.is_empty() {
+            message.push_str(&format!(", 跳过 {} 条", skipped_entries.len()));
+            for s in &skipped_entries {
+                log::warn!("重建索引 [{}]: 跳过条目 {}", index_name, s);
+            }
+        }
+
         Ok(Response::new(RebuildIndexFromRocksDbResponse {
             success: true,
-            message: format!("索引重建完成, 重建了 {} 条向量", rebuilt_count),
+            message,
             rebuilt_count,
+            skipped: skipped_entries,
         }))
     }
 }

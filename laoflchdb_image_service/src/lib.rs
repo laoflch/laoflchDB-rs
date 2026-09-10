@@ -9,10 +9,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::{
     Router,
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{Json, Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use image::imageops::FilterType;
 use laoflchdb_object_store_service::proto::object_store_service_server::ObjectStoreService;
@@ -21,6 +21,7 @@ use laoflchdb_object_store_service::proto::{
     ListObjectsRequest, PutObjectRequest,
 };
 use log::info;
+use log::warn;
 use snowflake_me::Snowflake;
 use laoflchdb_embedding_service::proto::embedding_index_service_server::EmbeddingIndexService;
 use laoflchdb_vector_service::proto::vector_service_server::VectorService;
@@ -271,7 +272,43 @@ impl ImageServiceImpl {
             user_metadata,
             format: meta.get("format").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             name: meta.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            is_indexed: meta.get("is_indexed").and_then(|v| v.as_bool()).unwrap_or(false),
+            index_model: meta.get("index_model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         }
+    }
+
+    /// 保存图片元数据到对象存储
+    async fn save_metadata_to_store(
+        &self,
+        bucket: &str,
+        image_key: &str,
+        metadata: &ImageMetadata,
+    ) -> Result<(), Status> {
+        let meta_json = serde_json::json!({
+            "key": metadata.key,
+            "content_type": metadata.content_type,
+            "content_length": metadata.content_length,
+            "width": metadata.width,
+            "height": metadata.height,
+            "etag": metadata.etag,
+            "last_modified": metadata.last_modified,
+            "thumbnails": metadata.thumbnails,
+            "user_metadata": metadata.user_metadata,
+            "format": metadata.format,
+            "name": metadata.name,
+            "is_indexed": metadata.is_indexed,
+            "index_model": metadata.index_model,
+        });
+        let meta_key = Self::metadata_key(image_key);
+        let put_req = Request::new(PutObjectRequest {
+            bucket: bucket.to_string(),
+            key: meta_key,
+            data: meta_json.to_string().into_bytes(),
+            content_type: "application/json".to_string(),
+            metadata: HashMap::new(),
+        });
+        self.object_store.put_object(put_req).await?;
+        Ok(())
     }
 }
 
@@ -320,6 +357,34 @@ impl proto::image_service_server::ImageService for std::sync::Arc<ImageServiceIm
         self.as_ref().delete_image(request).await
     }
 
+    async fn search_images_by_text(
+        &self,
+        request: tonic::Request<SearchImagesByTextRequest>,
+    ) -> std::result::Result<tonic::Response<SearchImagesByTextResponse>, tonic::Status> {
+        self.as_ref().search_images_by_text(request).await
+    }
+
+    async fn search_images_by_image(
+        &self,
+        request: tonic::Request<SearchImagesByImageRequest>,
+    ) -> std::result::Result<tonic::Response<SearchImagesByImageResponse>, tonic::Status> {
+        self.as_ref().search_images_by_image(request).await
+    }
+
+    async fn update_image_metadata(
+        &self,
+        request: tonic::Request<UpdateImageMetadataRequest>,
+    ) -> std::result::Result<tonic::Response<UpdateImageMetadataResponse>, tonic::Status> {
+        self.as_ref().update_image_metadata(request).await
+    }
+
+    async fn index_image(
+        &self,
+        request: tonic::Request<IndexImageRequest>,
+    ) -> std::result::Result<tonic::Response<IndexImageResponse>, tonic::Status> {
+        self.as_ref().index_image(request).await
+    }
+
     async fn upload_image_stream(
         &self,
         request: tonic::Request<tonic::Streaming<UploadImageChunk>>,
@@ -336,15 +401,16 @@ impl ImageServiceImpl {
         &self,
         image_data: &[u8],
         model_name: &str,
+        index_name: &str,
     ) -> Result<(Vec<f32>, i32), Box<dyn std::error::Error + Send + Sync>> {
         let vector_svc = self.vector_service.as_ref().ok_or("向量服务未启用")?;
         let embedding_svc = self.embedding_service.as_ref().ok_or("嵌入索引服务未启用")?;
 
-        // 1. 获取 image 索引的维度
+        // 1. 获取索引的维度
         let index_dim = {
             use laoflchdb_embedding_service::proto::GetIndexInfoRequest;
             let info_req = tonic::Request::new(GetIndexInfoRequest {
-                index_name: "image".to_string(),
+                index_name: index_name.to_string(),
             });
             let info_resp = embedding_svc.get_index_info(info_req).await
                 .map_err(|e| format!("获取索引信息失败: {}", e))?;
@@ -427,6 +493,7 @@ impl ImageServiceImpl {
         &self,
         embedding: Vec<f32>,
         key: &str,
+        index_name: &str,
     ) -> Result<(String, i32), Box<dyn std::error::Error + Send + Sync>> {
         let embedding_svc = self.embedding_service.as_ref().ok_or("嵌入索引服务未启用")?;
 
@@ -437,7 +504,7 @@ impl ImageServiceImpl {
         let dim = embedding.len() as i32;
         let ins_req = tonic::Request::new(InsertEmbeddingRequest {
             id,
-            index_name: "image".to_string(),
+            index_name: index_name.to_string(),
             embedding,
             fields: Default::default(),
         });
@@ -449,6 +516,96 @@ impl ImageServiceImpl {
         }
 
         Ok((key.to_string(), dim))
+    }
+
+    /// 生成文本向量（用于文搜图）
+    #[cfg(feature = "auto_index")]
+    async fn generate_text_embedding(
+        &self,
+        text: &str,
+        model_name: &str,
+        index_name: &str,
+    ) -> Result<(Vec<f32>, i32), Box<dyn std::error::Error + Send + Sync>> {
+        let vector_svc = self.vector_service.as_ref().ok_or("向量服务未启用")?;
+        let embedding_svc = self.embedding_service.as_ref().ok_or("嵌入索引服务未启用")?;
+
+        // 1. 获取索引的维度
+        let index_dim = {
+            use laoflchdb_embedding_service::proto::GetIndexInfoRequest;
+            let info_req = tonic::Request::new(GetIndexInfoRequest {
+                index_name: index_name.to_string(),
+            });
+            let info_resp = embedding_svc.get_index_info(info_req).await
+                .map_err(|e| format!("获取索引信息失败: {}", e))?;
+            let info = info_resp.into_inner();
+            if info.success {
+                info.stats.map(|s| s.dim as i32).unwrap_or(512)
+            } else {
+                512
+            }
+        };
+
+        // 2. 调用向量服务生成文本向量
+        let model = if model_name.is_empty() { "jina-clip-v2" } else { model_name };
+        use laoflchdb_vector_service::proto::EmbeddingRequest;
+        let emb_req = tonic::Request::new(EmbeddingRequest {
+            model_name: model.to_string(),
+            texts: vec![text.to_string()],
+            dim: index_dim,
+            images: vec![],
+            image_keys: vec![],
+            image_bucket: String::new(),
+        });
+        let emb_resp = vector_svc.create_embedding(emb_req).await
+            .map_err(|e| format!("文本向量化失败: {}", e))?;
+        let emb = emb_resp.into_inner();
+        if !emb.success {
+            return Err(format!("文本向量化失败: {}", emb.message).into());
+        }
+        let embedding = emb.results.first()
+            .ok_or("向量化结果为空")?
+            .embedding.clone();
+
+        Ok((embedding, index_dim))
+    }
+
+    /// 用向量搜索相似图片（公共逻辑，文搜图和图搜图都用）
+    #[cfg(feature = "auto_index")]
+    async fn search_similar_images(
+        &self,
+        embedding: Vec<f32>,
+        top_k: i32,
+        index_name: &str,
+        bucket: &str,
+    ) -> Result<Vec<(ImageMetadata, f32)>, Box<dyn std::error::Error + Send + Sync>> {
+        let embedding_svc = self.embedding_service.as_ref().ok_or("嵌入索引服务未启用")?;
+
+        use laoflchdb_embedding_service::proto::SearchEmbeddingRequest;
+        let search_req = tonic::Request::new(SearchEmbeddingRequest {
+            query_embedding: embedding,
+            top_k: if top_k <= 0 { 10 } else { top_k },
+            index_name: index_name.to_string(),
+            field_filters: Default::default(),
+            filter_multiplier: 0.0,
+            max_filter_iterations: 0,
+            max_distance: 0.0,
+        });
+        let search_resp = embedding_svc.search_embedding(search_req).await
+            .map_err(|e| format!("搜索向量索引失败: {}", e))?;
+        let search = search_resp.into_inner();
+        if !search.success {
+            return Err(format!("向量搜索失败: {}", search.message).into());
+        }
+
+        let mut results: Vec<(ImageMetadata, f32)> = Vec::new();
+        for sr in &search.results {
+            let key = sr.id.to_string();
+            if let Ok(Some(meta)) = self.get_metadata_from_store(bucket, &key).await {
+                results.push((meta, sr.distance));
+            }
+        }
+
+        Ok(results)
     }
 }
 
@@ -466,7 +623,7 @@ impl ImageService for ImageServiceImpl {
         #[cfg(feature = "auto_index")]
         let (duplicate_info, cached_embedding, cached_dim) = if req.auto_index {
             // 先生成 embedding（仅一次 GPU 推理）
-            match self.generate_image_embedding(&req.data, &req.auto_index_model).await {
+            match self.generate_image_embedding(&req.data, &req.auto_index_model, "image").await {
                 Ok((embedding, dim)) => {
                     // 用同一 embedding 做去重检查
                     let dups = self.check_existing_image_with_embedding(&embedding, dim).await
@@ -643,7 +800,7 @@ impl ImageService for ImageServiceImpl {
         let now = Self::now_string();
 
         // 构建并存储图片元数据
-        let metadata = ImageMetadata {
+        let mut metadata = ImageMetadata {
             key: image_key.clone(),
             content_type: req.content_type.clone(),
             content_length: req.data.len() as i64,
@@ -655,31 +812,11 @@ impl ImageService for ImageServiceImpl {
             user_metadata: req.metadata.clone(),
             format: format_str,
             name: req.name.clone(),
+            is_indexed: false,
+            index_model: String::new(),
         };
 
-        let meta_json = serde_json::json!({
-            "key": metadata.key,
-            "content_type": metadata.content_type,
-            "content_length": metadata.content_length,
-            "width": metadata.width,
-            "height": metadata.height,
-            "etag": metadata.etag,
-            "last_modified": metadata.last_modified,
-            "thumbnails": metadata.thumbnails,
-            "user_metadata": metadata.user_metadata,
-            "format": metadata.format,
-            "name": metadata.name,
-        });
-
-        let meta_key = Self::metadata_key(&image_key);
-        let meta_put_req = Request::new(PutObjectRequest {
-            bucket: bucket.clone(),
-            key: meta_key,
-            data: meta_json.to_string().into_bytes(),
-            content_type: "application/json".to_string(),
-            metadata: HashMap::new(),
-        });
-        self.object_store.put_object(meta_put_req).await?;
+        self.save_metadata_to_store(&bucket, &image_key, &metadata).await?;
 
         info!(
             "图片上传成功: bucket='{}', key='{}', size={}x{}, format={}",
@@ -694,11 +831,21 @@ impl ImageService for ImageServiceImpl {
         #[cfg(feature = "auto_index")]
         if req.auto_index {
             if let Some(embedding) = cached_embedding {
-                match self.index_image_with_embedding(embedding, &image_key).await {
+                match self.index_image_with_embedding(embedding, &image_key, "image").await {
                     Ok((eid, edim)) => {
                         auto_indexed = true;
-                        embedding_id = eid;
+                        embedding_id = eid.clone();
                         embedding_dim = edim;
+                        // 更新元数据中的 is_indexed 标志
+                        metadata.is_indexed = true;
+                        metadata.index_model = if req.auto_index_model.is_empty() {
+                            "jina-clip-v2".to_string()
+                        } else {
+                            req.auto_index_model.clone()
+                        };
+                        if let Err(e) = self.save_metadata_to_store(&bucket, &image_key, &metadata).await {
+                            log::warn!("更新图片元数据 is_indexed 失败: {}", e);
+                        }
                         info!("图片自动向量索引成功: key='{}', id='{}'", image_key, embedding_id);
                     }
                     Err(e) => {
@@ -892,6 +1039,275 @@ impl ImageService for ImageServiceImpl {
         }))
     }
 
+    async fn search_images_by_text(
+        &self,
+        request: Request<SearchImagesByTextRequest>,
+    ) -> Result<Response<SearchImagesByTextResponse>, Status> {
+        #[cfg(feature = "auto_index")]
+        {
+            let req = request.into_inner();
+            let bucket = self.resolve_bucket(&req.bucket);
+            let index_name = if req.index_name.is_empty() {
+                "image".to_string()
+            } else {
+                req.index_name.clone()
+            };
+
+            let (embedding, _dim) = self.generate_text_embedding(
+                &req.text,
+                &req.model_name,
+                &index_name,
+            ).await.map_err(|e| Status::internal(format!("文本向量化失败: {}", e)))?;
+
+            let results = self.search_similar_images(
+                embedding,
+                req.top_k,
+                &index_name,
+                &bucket,
+            ).await.map_err(|e| Status::internal(format!("图片搜索失败: {}", e)))?;
+
+            let image_results: Vec<ImageSearchResult> = results
+                .into_iter()
+                .map(|(meta, score)| ImageSearchResult {
+                    metadata: Some(meta),
+                    score,
+                })
+                .collect();
+
+            Ok(Response::new(SearchImagesByTextResponse {
+                success: true,
+                message: "OK".to_string(),
+                results: image_results,
+            }))
+        }
+        #[cfg(not(feature = "auto_index"))]
+        {
+            let _ = request;
+            Ok(Response::new(SearchImagesByTextResponse {
+                success: false,
+                message: "auto_index feature 未启用，文搜图不可用".to_string(),
+                results: vec![],
+            }))
+        }
+    }
+
+    async fn search_images_by_image(
+        &self,
+        request: Request<SearchImagesByImageRequest>,
+    ) -> Result<Response<SearchImagesByImageResponse>, Status> {
+        #[cfg(feature = "auto_index")]
+        {
+            let req = request.into_inner();
+            let bucket = self.resolve_bucket(&req.bucket);
+            let index_name = if req.index_name.is_empty() {
+                "image".to_string()
+            } else {
+                req.index_name.clone()
+            };
+
+            let (embedding, _dim) = self.generate_image_embedding(
+                &req.image_data,
+                &req.model_name,
+                &index_name,
+            ).await.map_err(|e| Status::internal(format!("图片向量化失败: {}", e)))?;
+
+            let results = self.search_similar_images(
+                embedding,
+                req.top_k,
+                &index_name,
+                &bucket,
+            ).await.map_err(|e| Status::internal(format!("图片搜索失败: {}", e)))?;
+
+            let image_results: Vec<ImageSearchResult> = results
+                .into_iter()
+                .map(|(meta, score)| ImageSearchResult {
+                    metadata: Some(meta),
+                    score,
+                })
+                .collect();
+
+            Ok(Response::new(SearchImagesByImageResponse {
+                success: true,
+                message: "OK".to_string(),
+                results: image_results,
+            }))
+        }
+        #[cfg(not(feature = "auto_index"))]
+        {
+            let _ = request;
+            Ok(Response::new(SearchImagesByImageResponse {
+                success: false,
+                message: "auto_index feature 未启用，图搜图不可用".to_string(),
+                results: vec![],
+            }))
+        }
+    }
+
+    async fn update_image_metadata(
+        &self,
+        request: Request<UpdateImageMetadataRequest>,
+    ) -> Result<Response<UpdateImageMetadataResponse>, Status> {
+        let req = request.into_inner();
+        let bucket = self.resolve_bucket(&req.bucket);
+
+        // 获取现有元数据
+        let mut meta = match self.get_metadata_from_store(&bucket, &req.key).await? {
+            Some(m) => m,
+            None => {
+                return Ok(Response::new(UpdateImageMetadataResponse {
+                    success: false,
+                    message: "图片不存在".to_string(),
+                    metadata: None,
+                }));
+            }
+        };
+
+        // 更新名称
+        if !req.name.is_empty() {
+            meta.name = req.name;
+        }
+
+        // 更新/新增用户自定义 metadata
+        for (k, v) in req.user_metadata {
+            meta.user_metadata.insert(k, v);
+        }
+
+        // 删除用户自定义 metadata key
+        for k in &req.delete_user_metadata_keys {
+            meta.user_metadata.remove(k);
+        }
+
+        // 更新 last_modified
+        meta.last_modified = Self::now_string();
+
+        // 保存
+        self.save_metadata_to_store(&bucket, &req.key, &meta).await?;
+
+        Ok(Response::new(UpdateImageMetadataResponse {
+            success: true,
+            message: "OK".to_string(),
+            metadata: Some(meta),
+        }))
+    }
+
+    async fn index_image(
+        &self,
+        request: Request<IndexImageRequest>,
+    ) -> Result<Response<IndexImageResponse>, Status> {
+        #[cfg(feature = "auto_index")]
+        {
+            let req = request.into_inner();
+            let bucket = self.resolve_bucket(&req.bucket);
+            let index_name = if req.index_name.is_empty() {
+                "image".to_string()
+            } else {
+                req.index_name.clone()
+            };
+            let model_name = if req.model_name.is_empty() {
+                "jina-clip-v2".to_string()
+            } else {
+                req.model_name.clone()
+            };
+
+            // 1. 获取现有元数据（确认图片存在）
+            let mut meta = match self.get_metadata_from_store(&bucket, &req.key).await? {
+                Some(m) => m,
+                None => {
+                    return Ok(Response::new(IndexImageResponse {
+                        success: false,
+                        message: "图片不存在".to_string(),
+                        embedding_id: String::new(),
+                        embedding_dim: 0,
+                        metadata: None,
+                    }));
+                }
+            };
+
+            // 2. 读取图片数据
+            let get_req = Request::new(GetObjectRequest {
+                bucket: bucket.clone(),
+                key: req.key.clone(),
+            });
+            let obj_resp = self.object_store.get_object(get_req).await
+                .map_err(|e| Status::internal(format!("读取图片失败: {}", e)))?;
+            let obj = obj_resp.into_inner();
+            if !obj.success {
+                return Ok(Response::new(IndexImageResponse {
+                    success: false,
+                    message: format!("读取图片失败: {}", obj.message),
+                    embedding_id: String::new(),
+                    embedding_dim: 0,
+                    metadata: None,
+                }));
+            }
+
+            // 3. 生成向量
+            let (embedding, dim) = self.generate_image_embedding(
+                &obj.data,
+                &model_name,
+                &index_name,
+            ).await.map_err(|e| Status::internal(format!("图片向量化失败: {}", e)))?;
+
+            // 4. 插入向量索引（先做索引，成功后再更新 meta）
+            // 幂等：HNSW 持久化索引中可能已存在该 node 的 embedding（历史索引过但元数据
+            // is_indexed 未回写，导致"已索引却显示未索引"）。此时跳过插入，仅回写元数据。
+            let insert_result = self.index_image_with_embedding(
+                embedding,
+                &req.key,
+                &index_name,
+            ).await;
+            if let Err(e) = &insert_result {
+                if e.to_string().contains("already exists") {
+                    // 复用第 1 步已获取的 meta，标记为已索引即可
+                    meta.is_indexed = true;
+                    meta.index_model = model_name.clone();
+                    meta.last_modified = Self::now_string();
+                    if let Err(e2) = self.save_metadata_to_store(&bucket, &req.key, &meta).await {
+                        warn!("索引已存在但更新元数据 is_indexed 失败: {}", e2);
+                    }
+                    info!("图片已存在向量索引，回写元数据 is_indexed: key='{}', index='{}', model='{}'", req.key, index_name, model_name);
+                    return Ok(Response::new(IndexImageResponse {
+                        success: true,
+                        message: "图片已存在向量索引，已标记为已索引".to_string(),
+                        embedding_id: req.key.clone(),
+                        embedding_dim: 0,
+                        metadata: Some(meta),
+                    }));
+                }
+            }
+            let (eid, edim) = insert_result.map_err(|e| Status::internal(format!("向量索引失败: {}", e)))?;
+
+            // 5. 索引成功，更新元数据 is_indexed 标志
+            meta.is_indexed = true;
+            meta.index_model = model_name.clone();
+            meta.last_modified = Self::now_string();
+            if let Err(e) = self.save_metadata_to_store(&bucket, &req.key, &meta).await {
+                warn!("索引成功但更新元数据 is_indexed 失败: {}", e);
+            }
+
+            info!("图片独立向量索引成功: key='{}', index='{}', model='{}'", req.key, index_name, model_name);
+
+            Ok(Response::new(IndexImageResponse {
+                success: true,
+                message: "OK".to_string(),
+                embedding_id: eid,
+                embedding_dim: edim,
+                metadata: Some(meta),
+            }))
+        }
+        #[cfg(not(feature = "auto_index"))]
+        {
+            let _ = request;
+            Ok(Response::new(IndexImageResponse {
+                success: false,
+                message: "auto_index feature 未启用，图片索引不可用".to_string(),
+                embedding_id: String::new(),
+                embedding_dim: 0,
+                metadata: None,
+            }))
+        }
+    }
+
     async fn delete_image(
         &self,
         request: Request<DeleteImageRequest>,
@@ -1047,6 +1463,14 @@ pub fn create_rest_router(service: Arc<ImageServiceImpl>) -> Router {
         )
         // 获取缩略图: GET /:key/thumbnails/:size
         .route("/:key/thumbnails/:size", get(get_thumbnail_handler))
+        // 文搜图: POST /search/text
+        .route("/search/text", post(search_by_text_handler))
+        // 图搜图: POST /search/image
+        .route("/search/image", post(search_by_image_handler))
+        // 修改图片元数据: PUT /:key/meta
+        .route("/:key/meta", put(update_metadata_handler))
+        // 对已保存图片建立向量索引: POST /:key/index
+        .route("/:key/index", post(index_image_handler))
         .with_state(service)
 }
 
@@ -1083,25 +1507,7 @@ async fn list_images_handler(
             let images: Vec<serde_json::Value> = resp
                 .images
                 .iter()
-                .map(|m| {
-                    let thumbnails: serde_json::Value = m
-                        .thumbnails
-                        .iter()
-                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                        .collect();
-                    serde_json::json!({
-                        "key": m.key,
-                        "content_type": m.content_type,
-                        "content_length": m.content_length,
-                        "width": m.width,
-                        "height": m.height,
-                        "etag": m.etag,
-                        "last_modified": m.last_modified,
-                        "thumbnails": thumbnails,
-                        "format": m.format,
-                        "name": m.name,
-                    })
-                })
+                .map(|m| metadata_to_json(m))
                 .collect();
             let result = serde_json::json!({
                 "bucket": resp.bucket,
@@ -1113,6 +1519,52 @@ async fn list_images_handler(
                 StatusCode::OK,
                 serde_json::to_string(&result).unwrap_or_default(),
             )
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message().to_string()),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct IndexImageQuery {
+    #[serde(default)]
+    bucket: String,
+    #[serde(default)]
+    model_name: String,
+    #[serde(default)]
+    index_name: String,
+}
+
+async fn index_image_handler(
+    State(service): State<Arc<ImageServiceImpl>>,
+    Path(key): Path<String>,
+    Query(query): Query<IndexImageQuery>,
+) -> impl IntoResponse {
+    let req = tonic::Request::new(IndexImageRequest {
+        bucket: query.bucket,
+        key,
+        model_name: query.model_name,
+        index_name: query.index_name,
+    });
+    match service.index_image(req).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            if resp.success {
+                let meta = resp.metadata.as_ref()
+                    .map(metadata_to_json)
+                    .unwrap_or(serde_json::Value::Null);
+                let result = serde_json::json!({
+                    "success": true,
+                    "embedding_id": resp.embedding_id,
+                    "embedding_dim": resp.embedding_dim,
+                    "metadata": meta,
+                });
+                (
+                    StatusCode::OK,
+                    serde_json::to_string(&result).unwrap_or_default(),
+                )
+            } else {
+                (StatusCode::NOT_FOUND, resp.message)
+            }
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message().to_string()),
     }
@@ -1147,23 +1599,7 @@ async fn upload_image_handler(
             let resp = resp.into_inner();
             if resp.success {
                 let metadata_json = if let Some(ref m) = resp.metadata {
-                    let thumbnails: serde_json::Value = m
-                        .thumbnails
-                        .iter()
-                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                        .collect();
-                    serde_json::json!({
-                        "key": m.key,
-                        "content_type": m.content_type,
-                        "content_length": m.content_length,
-                        "width": m.width,
-                        "height": m.height,
-                        "etag": m.etag,
-                        "last_modified": m.last_modified,
-                        "thumbnails": thumbnails,
-                        "format": m.format,
-                        "name": m.name,
-                    })
+                    metadata_to_json(m)
                 } else {
                     serde_json::Value::Null
                 };
@@ -1313,29 +1749,7 @@ async fn get_image_meta_handler(
             let resp = resp.into_inner();
             if resp.success {
                 if let Some(ref m) = resp.metadata {
-                    let thumbnails: serde_json::Value = m
-                        .thumbnails
-                        .iter()
-                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                        .collect();
-                    let user_metadata: serde_json::Value = m
-                        .user_metadata
-                        .iter()
-                        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
-                        .collect();
-                    let result = serde_json::json!({
-                        "key": m.key,
-                        "content_type": m.content_type,
-                        "content_length": m.content_length,
-                        "width": m.width,
-                        "height": m.height,
-                        "etag": m.etag,
-                        "last_modified": m.last_modified,
-                        "thumbnails": thumbnails,
-                        "user_metadata": user_metadata,
-                        "format": m.format,
-                        "name": m.name,
-                    });
+                    let result = metadata_to_json(m);
                     (
                         StatusCode::OK,
                         serde_json::to_string(&result).unwrap_or_default(),
@@ -1382,3 +1796,195 @@ async fn delete_image_handler(
 
 // re-export for metadata access
 pub use laoflchdb_object_store_service::ObjectStoreServiceImpl;
+
+// ==================== REST Handlers for Search & Update ====================
+
+#[derive(serde::Deserialize)]
+struct SearchByTextBody {
+    text: String,
+    #[serde(default = "default_top_k")]
+    top_k: i32,
+    #[serde(default)]
+    bucket: String,
+    #[serde(default)]
+    model_name: String,
+    #[serde(default)]
+    index_name: String,
+}
+
+fn default_top_k() -> i32 { 10 }
+
+fn metadata_to_json(m: &ImageMetadata) -> serde_json::Value {
+    let thumbnails: serde_json::Value = m
+        .thumbnails
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+        .collect();
+    let user_metadata: serde_json::Value = m
+        .user_metadata
+        .iter()
+        .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+        .collect();
+    serde_json::json!({
+        "key": m.key,
+        "content_type": m.content_type,
+        "content_length": m.content_length,
+        "width": m.width,
+        "height": m.height,
+        "etag": m.etag,
+        "last_modified": m.last_modified,
+        "thumbnails": thumbnails,
+        "user_metadata": user_metadata,
+        "format": m.format,
+        "name": m.name,
+        "is_indexed": m.is_indexed,
+        "index_model": m.index_model,
+    })
+}
+
+async fn search_by_text_handler(
+    State(service): State<Arc<ImageServiceImpl>>,
+    Json(body): Json<SearchByTextBody>,
+) -> impl IntoResponse {
+    let req = tonic::Request::new(SearchImagesByTextRequest {
+        text: body.text,
+        top_k: body.top_k,
+        bucket: body.bucket,
+        model_name: body.model_name,
+        index_name: body.index_name,
+    });
+    match service.search_images_by_text(req).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            if resp.success {
+                let results: Vec<serde_json::Value> = resp
+                    .results
+                    .iter()
+                    .map(|r| {
+                        let meta = r.metadata.as_ref()
+                            .map(metadata_to_json)
+                            .unwrap_or(serde_json::Value::Null);
+                        serde_json::json!({
+                            "metadata": meta,
+                            "score": r.score,
+                        })
+                    })
+                    .collect();
+                let result = serde_json::json!({
+                    "success": true,
+                    "results": results,
+                });
+                (
+                    StatusCode::OK,
+                    serde_json::to_string(&result).unwrap_or_default(),
+                )
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, resp.message)
+            }
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message().to_string()),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SearchByImageQuery {
+    #[serde(default)]
+    top_k: i32,
+    #[serde(default)]
+    bucket: String,
+    #[serde(default)]
+    model_name: String,
+    #[serde(default)]
+    index_name: String,
+}
+
+async fn search_by_image_handler(
+    State(service): State<Arc<ImageServiceImpl>>,
+    Query(query): Query<SearchByImageQuery>,
+    body: Bytes,
+) -> impl IntoResponse {
+    let req = tonic::Request::new(SearchImagesByImageRequest {
+        image_data: body.to_vec(),
+        top_k: if query.top_k > 0 { query.top_k } else { 10 },
+        bucket: query.bucket,
+        model_name: query.model_name,
+        index_name: query.index_name,
+    });
+    match service.search_images_by_image(req).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            if resp.success {
+                let results: Vec<serde_json::Value> = resp
+                    .results
+                    .iter()
+                    .map(|r| {
+                        let meta = r.metadata.as_ref()
+                            .map(metadata_to_json)
+                            .unwrap_or(serde_json::Value::Null);
+                        serde_json::json!({
+                            "metadata": meta,
+                            "score": r.score,
+                        })
+                    })
+                    .collect();
+                let result = serde_json::json!({
+                    "success": true,
+                    "results": results,
+                });
+                (
+                    StatusCode::OK,
+                    serde_json::to_string(&result).unwrap_or_default(),
+                )
+            } else {
+                (StatusCode::INTERNAL_SERVER_ERROR, resp.message)
+            }
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message().to_string()),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct UpdateMetadataBody {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    user_metadata: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    delete_keys: Vec<String>,
+}
+
+async fn update_metadata_handler(
+    State(service): State<Arc<ImageServiceImpl>>,
+    Path(key): Path<String>,
+    Query(query): Query<BucketQuery>,
+    Json(body): Json<UpdateMetadataBody>,
+) -> impl IntoResponse {
+    let req = tonic::Request::new(UpdateImageMetadataRequest {
+        bucket: query.bucket,
+        key,
+        name: body.name,
+        user_metadata: body.user_metadata,
+        delete_user_metadata_keys: body.delete_keys,
+    });
+    match service.update_image_metadata(req).await {
+        Ok(resp) => {
+            let resp = resp.into_inner();
+            if resp.success {
+                let meta = resp.metadata.as_ref()
+                    .map(metadata_to_json)
+                    .unwrap_or(serde_json::Value::Null);
+                let result = serde_json::json!({
+                    "success": true,
+                    "metadata": meta,
+                });
+                (
+                    StatusCode::OK,
+                    serde_json::to_string(&result).unwrap_or_default(),
+                )
+            } else {
+                (StatusCode::NOT_FOUND, resp.message)
+            }
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.message().to_string()),
+    }
+}

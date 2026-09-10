@@ -17,6 +17,14 @@ service ImageService {
   rpc DeleteImage(DeleteImageRequest) returns (DeleteImageResponse);
   // 流式上传图片（支持大文件切片上传）
   rpc UploadImageStream(stream UploadImageChunk) returns (UploadImageResponse);
+  // 文搜图（用文本搜索相似图片，基于 CLIP 向量索引）
+  rpc SearchImagesByText(SearchImagesByTextRequest) returns (SearchImagesByTextResponse);
+  // 图搜图（用图片搜索相似图片
+  rpc SearchImagesByImage(SearchImagesByImageRequest) returns (SearchImagesByImageResponse);
+  // 修改图片元数据（用户自定义 metadata 和 名称）
+  rpc UpdateImageMetadata(UpdateImageMetadataRequest) returns (UpdateImageMetadataResponse);
+  // 对已保存的图片建立向量索引（独立索引接口）
+  rpc IndexImage(IndexImageRequest) returns (IndexImageResponse);
 }
 
 // ── UploadImageChunk ──────────────────────────
@@ -80,6 +88,10 @@ message ImageMetadata {
   string format = 10;
   // 图片名称（上传时指定的名称，默认为本地文件路径）
   string name = 11;
+  // 是否已建立向量索引
+  bool is_indexed = 12;
+  // 向量化模型名称
+  string index_model = 13;
 }
 
 message UploadImageResponse {
@@ -180,4 +192,89 @@ message DeleteImageResponse {
   string message = 2;
   // 实际删除的对象 key 列表（原图 + 缩略图 + 元数据）
   repeated string deleted_keys = 3;
+}
+
+// ── SearchImagesByText 文搜图 ────────────────────────────
+
+message SearchImagesByTextRequest {
+  // 搜索文本
+  string text = 1;
+  // 返回 top-K 结果（默认 10）
+  int32 top_k = 2;
+  // 存储桶（默认 images）
+  string bucket = 3;
+  // 向量化模型（默认 jina-clip-v2）
+  string model_name = 4;
+  // 索引名称（默认 image）
+  string index_name = 5;
+}
+
+message ImageSearchResult {
+  ImageMetadata metadata = 1;
+  float score = 2; // 相似度分数（距离，越小越相似）
+}
+
+message SearchImagesByTextResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ImageSearchResult results = 3;
+}
+
+// ── SearchImagesByImage 图搜图 ────────────────────────────
+
+message SearchImagesByImageRequest {
+  // 图片二进制数据
+  bytes image_data = 1;
+  // 返回 top-K 结果（默认 10）
+  int32 top_k = 2;
+  // 存储桶（默认 images）
+  string bucket = 3;
+  // 向量化模型（默认 jina-clip-v2）
+  string model_name = 4;
+  // 索引名称（默认 image）
+  string index_name = 5;
+}
+
+message SearchImagesByImageResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ImageSearchResult results = 3;
+}
+
+// ── UpdateImageMetadata 修改图片元数据 ────────────────────────────
+
+message UpdateImageMetadataRequest {
+  string bucket = 1;
+  string key = 2;
+  // 新的图片名称（不更新传空）
+  string name = 3;
+  // 要更新/新增的用户自定义 metadata
+  map<string, string> user_metadata = 4;
+  // 要删除的用户自定义 metadata key 列表
+  repeated string delete_user_metadata_keys = 5;
+}
+
+message UpdateImageMetadataResponse {
+  bool success = 1;
+  string message = 2;
+  ImageMetadata metadata = 3;
+}
+
+// ── IndexImage 对已保存图片建立向量索引 ────────────────────────────
+
+message IndexImageRequest {
+  string bucket = 1;
+  string key = 2;
+  // 向量化模型（默认 jina-clip-v2）
+  string model_name = 3;
+  // 索引名称（默认 image）
+  string index_name = 4;
+}
+
+message IndexImageResponse {
+  bool success = 1;
+  string message = 2;
+  string embedding_id = 3;
+  int32 embedding_dim = 4;
+  ImageMetadata metadata = 5;
 }
