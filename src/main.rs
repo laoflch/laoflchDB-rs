@@ -64,28 +64,34 @@ async fn start_server(
     let index_path = format!("{}/indexes", effective_index_path);
     info!("尝试初始化全文索引服务，路径: {}", index_path);
     
-    let access_service = match IndexServiceImpl::new(&index_path, "fulltext").await {
-        Ok(index_service) => {
-            info!("全文索引服务已成功初始化");
-            let permission_checker = Arc::new(PermissionChecker::new(true));
-            Arc::new(AccessService::with_permissions_and_index(
-                service.clone(),
-                permission_checker,
-                Arc::new(index_service)
-            ))
-        },
-        Err(e) => {
-            log::error!("全文索引服务初始化失败，路径: {}, 错误: {}", index_path, e);
-            log::warn!("将不启用索引功能，REST API 的索引端点将不可用");
-            Arc::new(AccessService::new(service.clone()))
-        }
-    };
+    let (access_service, index_service): (Arc<AccessService>, Option<Arc<dyn IndexService>>) =
+        match IndexServiceImpl::new(&index_path, "fulltext").await {
+            Ok(index_svc) => {
+                info!("全文索引服务已成功初始化");
+                let index_svc: Arc<dyn IndexService> = Arc::new(index_svc);
+                let permission_checker = Arc::new(PermissionChecker::new(true));
+                (
+                    Arc::new(AccessService::with_permissions_and_index(
+                        service.clone(),
+                        permission_checker,
+                        index_svc.clone(),
+                    )),
+                    Some(index_svc),
+                )
+            },
+            Err(e) => {
+                log::error!("全文索引服务初始化失败，路径: {}, 错误: {}", index_path, e);
+                log::warn!("将不启用索引功能，REST API 的索引端点将不可用");
+                (Arc::new(AccessService::new(service.clone())), None)
+            }
+        };
     
     let mut server = LaoflchDBServer::new(
         service.schema_manager().clone(),
         sql_engine,
         service,
         access_service,
+        index_service,
         config,
     ).await;
     

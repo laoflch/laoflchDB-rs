@@ -25,6 +25,8 @@ service ImageService {
   rpc UpdateImageMetadata(UpdateImageMetadataRequest) returns (UpdateImageMetadataResponse);
   // 对已保存的图片建立向量索引（独立索引接口）
   rpc IndexImage(IndexImageRequest) returns (IndexImageResponse);
+  // 图片自动分类（HDBSCAN 聚类，结果写入全文索引）
+  rpc ClassifyImages(ClassifyImagesRequest) returns (ClassifyImagesResponse);
 }
 
 // ── UploadImageChunk ──────────────────────────
@@ -277,4 +279,44 @@ message IndexImageResponse {
   string embedding_id = 3;
   int32 embedding_dim = 4;
   ImageMetadata metadata = 5;
+}
+
+// ── ClassifyImages 图片自动分类（HDBSCAN）────────────────────────────
+
+message ClassifyImagesRequest {
+  // 图片 bucket（默认 images）
+  string bucket = 1;
+  // 图片向量索引名（默认 image）
+  string index_name = 2;
+  // 最少聚类点数（默认 3，低于此数量的簇归为噪声）
+  int32 min_cluster_size = 3;
+  // MST 边权切割阈值分位数 0~1（默认 0.6）
+  double cut_percentile = 4;
+  // 是否将分类结果写入全文索引（默认 true）
+  bool write_to_index = 5;
+  // 全文索引名（默认 image_classification）
+  string classify_index_name = 6;
+}
+
+// 单个图片分类组
+message ImageClassGroup {
+  // 分类名称：分类 1
+  string name = 1;
+  // 分类 ID：cat_0
+  string category = 2;
+  // 属于该分类的图片 key 列表
+  repeated string keys = 3;
+}
+
+message ClassifyImagesResponse {
+  bool success = 1;
+  string message = 2;
+  // 分类结果（按图片数降序，不含噪声）
+  repeated ImageClassGroup groups = 3;
+  // 参与聚类的图片数
+  int32 total = 4;
+  // 未分类（噪声）图片数
+  int32 noise_count = 5;
+  // 写入的全文索引名
+  string classify_index_name = 6;
 }

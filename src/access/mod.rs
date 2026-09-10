@@ -42,6 +42,8 @@ use crate::pb::rpc::{
     GetDocumentRequest, GetDocumentResponse,
     DeleteDocumentRequest, DeleteDocumentResponse,
     ListDocumentsRequest, ListDocumentsResponse,
+    ClassifyImagesRequest, ClassifyImagesResponse,
+    ImageClassGroup,
 };
 use crate::config::PermissionAction;
 use sha2::{Sha256, Digest};
@@ -57,6 +59,7 @@ fn hash_password(password: &str) -> String {
 use protobuf::Enum;
 use laoflchdb_engines::{ColumnMeta, Row, ColumnType, Query, QueryRow, SpecialFields};
 use std::sync::Arc;
+use std::sync::Mutex;
 use tonic::{Request, Response, Status};
 
 pub mod rest;
@@ -73,6 +76,8 @@ pub struct GrpcService {
     permission_checker: Option<Arc<PermissionChecker>>,
     service_id: String,
     token_manager: Arc<TokenManager>,
+    image_service: Option<Arc<laoflchdb_image_service::ImageServiceImpl>>,
+    embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
 }
 
 impl GrpcService {
@@ -83,12 +88,25 @@ impl GrpcService {
             permission_checker: None,
             service_id: "default".to_string(),
             token_manager: Arc::new(TokenManager::default()),
+            image_service: None,
+            embedding_service: None,
         }
     }
 
     /// 设置 IndexService
     pub fn with_index_service(mut self, index_service: Arc<dyn IndexService>) -> Self {
         self.index_service = Some(index_service);
+        self
+    }
+
+    /// 设置图片服务与向量索引服务（用于图片自动分类）
+    pub fn with_classify_services(
+        mut self,
+        image_service: Option<Arc<laoflchdb_image_service::ImageServiceImpl>>,
+        embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
+    ) -> Self {
+        self.image_service = image_service;
+        self.embedding_service = embedding_service;
         self
     }
     
@@ -123,6 +141,8 @@ impl GrpcService {
             permission_checker: Some(permission_checker),
             service_id,
             token_manager: Arc::new(TokenManager::default()),
+            image_service: None,
+            embedding_service: None,
         }
     }
 
@@ -138,6 +158,8 @@ impl GrpcService {
             permission_checker,
             service_id,
             token_manager,
+            image_service: None,
+            embedding_service: None,
         }
     }
 
@@ -251,6 +273,8 @@ pub struct AccessService {
     index_service: Option<Arc<dyn IndexService>>,
     permission_checker: Option<Arc<PermissionChecker>>,
     token_manager: Arc<TokenManager>,
+    image_service: Mutex<Option<Arc<laoflchdb_image_service::ImageServiceImpl>>>,
+    embedding_service: Mutex<Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>>,
 }
 
 impl AccessService {
@@ -260,6 +284,8 @@ impl AccessService {
             index_service: None,
             permission_checker: None,
             token_manager: Arc::new(TokenManager::default()),
+            image_service: Mutex::new(None),
+            embedding_service: Mutex::new(None),
         }
     }
 
@@ -269,6 +295,8 @@ impl AccessService {
             index_service: None,
             permission_checker: Some(permission_checker),
             token_manager: Arc::new(TokenManager::default()),
+            image_service: Mutex::new(None),
+            embedding_service: Mutex::new(None),
         }
     }
 
@@ -278,6 +306,8 @@ impl AccessService {
             index_service: Some(index_service),
             permission_checker: Some(permission_checker),
             token_manager: Arc::new(TokenManager::default()),
+            image_service: Mutex::new(None),
+            embedding_service: Mutex::new(None),
         }
     }
 
@@ -287,6 +317,8 @@ impl AccessService {
             index_service: None,
             permission_checker,
             token_manager,
+            image_service: Mutex::new(None),
+            embedding_service: Mutex::new(None),
         }
     }
 
@@ -294,6 +326,17 @@ impl AccessService {
     pub fn with_index_service(mut self, index_service: Arc<dyn IndexService>) -> Self {
         self.index_service = Some(index_service);
         self
+    }
+
+    /// 设置图片服务与向量索引服务（用于图片自动分类）
+    /// 在 LaoflchDBServer::start 阶段调用，早于 get_grpc_service
+    pub fn with_classify_services(
+        &self,
+        image_service: Option<Arc<laoflchdb_image_service::ImageServiceImpl>>,
+        embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
+    ) {
+        *self.image_service.lock().unwrap() = image_service;
+        *self.embedding_service.lock().unwrap() = embedding_service;
     }
 
     pub fn get_grpc_service(&self, service_id: Option<String>) -> GrpcService {
@@ -329,7 +372,11 @@ impl AccessService {
         } else {
             grpc_service
         };
-        grpc_service
+        // 注入图片服务与向量索引服务（图片自动分类）
+        grpc_service.with_classify_services(
+            self.image_service.lock().unwrap().clone(),
+            self.embedding_service.lock().unwrap().clone(),
+        )
     }
 
     pub fn get_rest_service(&self, service_id: Option<String>) -> RestService {
@@ -1520,5 +1567,69 @@ impl LaoflchDb for GrpcService {
                 message: e.to_string(),
             })),
         }
+    }
+
+    /// 图片自动分类（HDBSCAN，转发到图片服务）
+    async fn classify_images(
+        &self,
+        request: Request<ClassifyImagesRequest>,
+    ) -> Result<Response<ClassifyImagesResponse>, Status> {
+        if let Err(e) = self.validate_auth(&request).await {
+            return Ok(Response::new(ClassifyImagesResponse {
+                success: false,
+                message: e.message().to_string(),
+                groups: vec![],
+                total: 0,
+                noise_count: 0,
+                classify_index_name: String::new(),
+            }));
+        }
+
+        let image_service = match self.image_service.as_ref() {
+            Some(s) => s,
+            None => {
+                return Ok(Response::new(ClassifyImagesResponse {
+                    success: false,
+                    message: "图片服务未启用".to_string(),
+                    groups: vec![],
+                    total: 0,
+                    noise_count: 0,
+                    classify_index_name: String::new(),
+                }));
+            }
+        };
+
+        use laoflchdb_image_service::proto::image_service_server::ImageService;
+        use laoflchdb_image_service::proto::ClassifyImagesRequest as ImageClassifyImagesRequest;
+        let req = request.into_inner();
+        let img_req = ImageClassifyImagesRequest {
+            bucket: req.bucket.clone(),
+            index_name: req.index_name.clone(),
+            min_cluster_size: req.min_cluster_size,
+            cut_percentile: req.cut_percentile,
+            write_to_index: req.write_to_index,
+            classify_index_name: req.classify_index_name.clone(),
+        };
+        let resp = image_service
+            .classify_images(tonic::Request::new(img_req))
+            .await
+            .map_err(|e| e)?
+            .into_inner();
+        Ok(Response::new(ClassifyImagesResponse {
+            success: resp.success,
+            message: resp.message,
+            groups: resp
+                .groups
+                .into_iter()
+                .map(|g| ImageClassGroup {
+                    name: g.name,
+                    category: g.category,
+                    keys: g.keys,
+                })
+                .collect(),
+            total: resp.total,
+            noise_count: resp.noise_count,
+            classify_index_name: resp.classify_index_name,
+        }))
     }
 }

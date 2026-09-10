@@ -1,10 +1,62 @@
 use crate::service::SchemaManager;
 use crate::service::DatabaseService;
+use crate::service::IndexService;
 use crate::access::{AccessService, PermissionChecker};
 use crate::config::DatabaseConfig;
 use laoflchdb_engines::SQLEngine;
+use laoflchdb_engines::ColumnType;
 use std::sync::Arc;
+use std::collections::HashMap;
 use log::info;
+
+/// 将主工程全文索引服务适配为图片分类结果写入接口
+struct ImageIndexSinkAdapter {
+    index: Arc<dyn IndexService>,
+}
+
+#[tonic::async_trait]
+impl laoflchdb_image_service::ImageIndexSink for ImageIndexSinkAdapter {
+    async fn drop_index(&self, index_name: &str) -> Result<(), String> {
+        // 索引不存在时 drop_index 可能报错，忽略即可
+        let _ = self.index.drop_index(index_name).await;
+        Ok(())
+    }
+
+    async fn create_index(
+        &self,
+        index_name: &str,
+        fields: &[(u32, &str, u8, Option<&str>)],
+    ) -> Result<(), String> {
+        let converted: Vec<(u32, &str, ColumnType, Option<&str>)> = fields
+            .iter()
+            .map(|(i, name, ty, comment)| {
+                let ct = match *ty {
+                    1 => ColumnType::COLUMN_TYPE_INT64,
+                    _ => ColumnType::COLUMN_TYPE_STRING,
+                };
+                (*i, *name, ct, *comment)
+            })
+            .collect();
+        self.index
+            .create_index(index_name, &converted)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    async fn add_document(
+        &self,
+        index_name: &str,
+        doc_id: &str,
+        fields: HashMap<String, String>,
+    ) -> Result<(), String> {
+        self.index
+            .add_document(index_name, doc_id, fields)
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}
 
 pub struct LaoflchDBServer {
     schema_manager: Arc<SchemaManager>,
@@ -12,6 +64,7 @@ pub struct LaoflchDBServer {
     service: Arc<dyn DatabaseService>,
     access_service: Arc<AccessService>,
     embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
+    index_service: Option<Arc<dyn IndexService>>,
 }
 
 impl LaoflchDBServer {
@@ -20,6 +73,7 @@ impl LaoflchDBServer {
         sql_engine: Arc<tokio::sync::RwLock<dyn SQLEngine>>,
         service: Arc<dyn DatabaseService>,
         _access_service: Arc<AccessService>,
+        index_service: Option<Arc<dyn IndexService>>,
         config: &DatabaseConfig,
     ) -> Self {
         let global_default = config.get_global_default_policy();
@@ -39,6 +93,7 @@ impl LaoflchDBServer {
             service,
             access_service,
             embedding_service: None,
+            index_service,
         }
     }
 
@@ -196,6 +251,10 @@ impl LaoflchDBServer {
                     img_config,
                     Some(vector_service.clone()),
                     embedding_service.clone(),
+                    self.index_service.as_ref().map(|idx| {
+                        Arc::new(ImageIndexSinkAdapter { index: idx.clone() })
+                            as Arc<dyn laoflchdb_image_service::ImageIndexSink>
+                    }),
                 );
                 info!("图片服务已启动");
                 Some(Arc::new(img_svc))
@@ -209,6 +268,10 @@ impl LaoflchDBServer {
                 None
             }
         };
+
+        // 注入图片服务与向量索引服务到 AccessService（图片自动分类 gRPC 使用）
+        self.access_service
+            .with_classify_services(image_service.clone(), embedding_service.clone());
 
         // 设置图片获取回调（VectorService 通过 image_key 获取图片数据时需要）
         if let Some(ref img_svc) = image_service {

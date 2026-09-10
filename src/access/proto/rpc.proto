@@ -60,6 +60,9 @@ service LaoflchDb {
   rpc GetDocument(GetDocumentRequest) returns (GetDocumentResponse);
   rpc DeleteDocument(DeleteDocumentRequest) returns (DeleteDocumentResponse);
   rpc ListDocuments(ListDocumentsRequest) returns (ListDocumentsResponse);
+
+  // 图片自动分类（HDBSCAN，转发到图片服务）
+  rpc ClassifyImages(ClassifyImagesRequest) returns (ClassifyImagesResponse);
 }
 
 message RefreshTablesRequest {
@@ -579,4 +582,30 @@ message ListDocumentsResponse {
   bool has_prev_page = 6;
   bool has_next_page = 7;
   string message = 8;
+}
+
+// 图片自动分类（HDBSCAN）请求
+message ClassifyImagesRequest {
+  string bucket = 1;              // 图片 bucket，默认 images
+  string index_name = 2;          // 图片向量索引名，默认 image
+  int32 min_cluster_size = 3;     // 最少聚类点数，默认 3
+  double cut_percentile = 4;      // 保留参数（hdbscan-rs 使用 min_samples）
+  bool write_to_index = 5;        // 是否将分类结果写入全文索引，默认 true
+  string classify_index_name = 6; // 全文索引名，默认 image_classification
+}
+
+// 单个图片分类组
+message ImageClassGroup {
+  string name = 1;       // 分类名称：分类 1
+  string category = 2;   // 分类 ID：cat_0
+  repeated string keys = 3; // 属于该分类的图片 key 列表
+}
+
+message ClassifyImagesResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ImageClassGroup groups = 3; // 分类结果（按图片数降序，不含噪声）
+  int32 total = 4;                     // 参与聚类的图片数
+  int32 noise_count = 5;               // 未分类（噪声）图片数
+  string classify_index_name = 6;      // 写入的全文索引名
 }

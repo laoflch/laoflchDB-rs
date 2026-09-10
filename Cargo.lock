@@ -3057,6 +3057,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
 
 [[package]]
+name = "hdbscan-rs"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1561ee3ddcc3c4ba9245eeeffe6279d8535b62eeaaf58c54727009fc6498c0fc"
+dependencies = [
+ "log",
+ "ndarray",
+ "num-traits",
+ "ordered-float 4.6.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3811,6 +3824,7 @@ dependencies = [
  "axum 0.7.9",
  "bytes",
  "futures",
+ "hdbscan-rs",
  "image",
  "laoflchdb_embedding_service",
  "laoflchdb_embedding_service_proto",
@@ -3818,6 +3832,7 @@ dependencies = [
  "laoflchdb_vector_service",
  "laoflchdb_vector_service_proto",
  "log",
+ "ndarray",
  "prost",
  "serde",
  "serde_json",
@@ -4758,6 +4773,15 @@ name = "ordered-float"
 version = "2.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68f19d67e5a2795c94e73e0bb1cc1a7edeb2e28efd39e2e1c9b7a40c1108b11c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "ordered-float"
+version = "4.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
 ]
