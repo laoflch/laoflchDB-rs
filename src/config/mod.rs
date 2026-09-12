@@ -130,6 +130,16 @@ pub struct VectorServiceConfig {
     /// 是否使用 CUDA GPU 加速（false=CPU，避免多屏卡顿）
     #[serde(default = "default_vector_use_cuda")]
     pub use_cuda: bool,
+    /// 是否加载双塔模型的文本编码器（如 jina-clip-v2 的文本塔，用于文搜图）
+    #[serde(default = "default_text_encoder_enabled")]
+    pub text_encoder_enabled: bool,
+    /// 文本编码器加载设备: "gpu"(跟随 use_cuda) / "cpu" / "cuda"（空则跟随 use_cuda）
+    #[serde(default)]
+    pub text_encoder_device: String,
+}
+
+fn default_text_encoder_enabled() -> bool {
+    true
 }
 
 fn default_vector_use_cuda() -> bool {

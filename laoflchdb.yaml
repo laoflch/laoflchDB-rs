@@ -15,6 +15,12 @@ vector_service:
   #load_models: ["bge-m3", "jina-clip-v2"]
   # 是否使用 CUDA GPU 加速（false=CPU，避免多屏卡顿）
   use_cuda: true
+  # 是否加载双塔模型的文本编码器（如 jina-clip-v2 的文本塔，用于文搜图）
+  # 显存不足时设为 false 可节省一份文本塔权重
+  text_encoder_enabled: true
+  # 文本编码器加载设备: "cpu" / "gpu" / "cuda"（留空则跟随 use_cuda）
+  # 例如视觉塔跑 GPU、文本塔跑 CPU 时设: text_encoder_device: cpu
+  text_encoder_device: cpu
 
 # 嵌入向量索引服务配置
 embedding_index:

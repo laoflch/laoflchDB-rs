@@ -153,11 +153,24 @@ impl LaoflchDBServer {
         };
 
         // 创建向量化服务实例（在图片服务之前创建，因为图片服务需要引用）
-        let use_cuda = config.vector_service.as_ref().map(|c| c.use_cuda).unwrap_or(true);
-        let vector_service = Arc::new(laoflchdb_vector_service::VectorServiceImpl::new_with_config_and_device(
+        let (use_cuda, text_encoder_enabled, text_encoder_device) = config
+            .vector_service
+            .as_ref()
+            .map(|c| {
+                let device = if c.text_encoder_device.trim().is_empty() {
+                    None
+                } else {
+                    Some(c.text_encoder_device.trim())
+                };
+                (c.use_cuda, c.text_encoder_enabled, device)
+            })
+            .unwrap_or((true, true, None));
+        let vector_service = Arc::new(laoflchdb_vector_service::VectorServiceImpl::new_with_text_encoder_config(
             &config.model_path,
             auto_load_models.clone(),
             use_cuda,
+            text_encoder_enabled,
+            text_encoder_device,
         ));
 
         // 创建对象存储服务（如果配置启用）

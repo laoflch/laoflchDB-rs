@@ -27,6 +27,10 @@ pub struct VectorServiceImpl {
     models: AsyncRwLock<HashMap<String, ModelInstance>>,
     default_device: Device,
     model_dir: String,
+    /// 是否加载双塔模型的文本编码器（用于文搜图）
+    text_encoder_enabled: bool,
+    /// 文本编码器加载设备（独立于主设备，可指定 CPU 以节省显存）
+    text_encoder_device: Device,
     /// 图片获取回调（用于通过 image_key 获取图片数据）
     image_fetcher: Mutex<Option<ImageFetcher>>,
 }
@@ -65,13 +69,47 @@ impl VectorServiceImpl {
     /// 创建服务实例，指定模型目录、自动加载配置和设备选择
     /// - `use_cuda`: true=使用 GPU, false=使用 CPU（避免多屏卡顿）
     pub fn new_with_config_and_device(model_dir: &str, auto_load_models: Option<Vec<String>>, use_cuda: bool) -> Self {
+        Self::new_with_text_encoder_config(model_dir, auto_load_models, use_cuda, true, None)
+    }
+
+    /// 创建服务实例，指定模型目录、自动加载配置、设备选择及文本编码器配置
+    /// - `use_cuda`: true=使用 GPU, false=使用 CPU（避免多屏卡顿）
+    /// - `text_encoder_enabled`: 是否加载双塔模型的文本编码器（文搜图需要，节省显存时可关闭）
+    /// - `text_encoder_device`: 文本编码器加载设备（"cpu"=CPU, "gpu"/"cuda"=GPU, None=跟随 use_cuda）
+    pub fn new_with_text_encoder_config(
+        model_dir: &str,
+        auto_load_models: Option<Vec<String>>,
+        use_cuda: bool,
+        text_encoder_enabled: bool,
+        text_encoder_device: Option<&str>,
+    ) -> Self {
         let device = Self::detect_device(use_cuda);
+        // 解析文本编码器设备：未指定时跟随主设备
+        let text_encoder_device = match text_encoder_device {
+            Some(d) if d.eq_ignore_ascii_case("cpu") => {
+                info!("文本编码器配置为 CPU 加载");
+                Device::Cpu
+            }
+            Some(d) if d.eq_ignore_ascii_case("gpu") || d.eq_ignore_ascii_case("cuda") => {
+                info!("文本编码器配置为 GPU 加载");
+                Self::detect_device(true)
+            }
+            _ => device.clone(),
+        };
         let model_dir = model_dir.to_string();
         let candle_dir = Path::new(&model_dir).join("candle");
-        let models = Self::init_models_from_dir(&candle_dir, &device, auto_load_models);
+        let models = Self::init_models_from_dir(
+            &candle_dir,
+            &device,
+            auto_load_models,
+            text_encoder_enabled,
+            &text_encoder_device,
+        );
         info!(
-            "VectorService 初始化完成: device={:?}, candle_dir='{}', 已加载 {} 个模型",
+            "VectorService 初始化完成: device={:?}, text_encoder_enabled={}, text_encoder_device={:?}, candle_dir='{}', 已加载 {} 个模型",
             device,
+            text_encoder_enabled,
+            text_encoder_device,
             candle_dir.display(),
             models.len()
         );
@@ -79,6 +117,8 @@ impl VectorServiceImpl {
             models: AsyncRwLock::new(models),
             default_device: device,
             model_dir,
+            text_encoder_enabled,
+            text_encoder_device,
             image_fetcher: Mutex::new(None),
         }
     }
@@ -89,6 +129,8 @@ impl VectorServiceImpl {
         candle_dir: &Path,
         device: &Device,
         auto_load_models: Option<Vec<String>>,
+        text_encoder_enabled: bool,
+        text_encoder_device: &Device,
     ) -> HashMap<String, ModelInstance> {
         if !candle_dir.exists() || !candle_dir.is_dir() {
             info!(
@@ -199,7 +241,13 @@ impl VectorServiceImpl {
             let (loaded, bert_model, vision_model, text_encoder) = if let Some(vm) = vision_model {
                 info!("模型 '{}' 自动加载为视觉模型 (dim={})", model_name, dim);
                 // 双塔模型（如 jina-clip-v2）额外加载文本编码器，用于文搜图
-                let text_encoder = crate::text_encoder::try_load_text_encoder(&model_path_str, device);
+                // 是否加载及加载设备由配置控制（text_encoder_enabled / text_encoder_device）
+                let text_encoder = if text_encoder_enabled {
+                    crate::text_encoder::try_load_text_encoder(&model_path_str, text_encoder_device)
+                } else {
+                    info!("文本编码器已禁用（text_encoder_enabled=false），跳过 '{}' 的文本塔加载", model_name);
+                    None
+                };
                 (true, None, Some(vm), text_encoder)
             } else {
                 // 尝试加载 BERT 文本模型
@@ -652,7 +700,13 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
             );
 
             // 双塔模型（如 jina-clip-v2）额外加载文本编码器，用于文搜图
-            let text_encoder = crate::text_encoder::try_load_text_encoder(&req.model_path, &self.default_device);
+            // 是否加载及加载设备由配置控制（text_encoder_enabled / text_encoder_device）
+            let text_encoder = if self.text_encoder_enabled {
+                crate::text_encoder::try_load_text_encoder(&req.model_path, &self.text_encoder_device)
+            } else {
+                info!("文本编码器已禁用（text_encoder_enabled=false），跳过 '{}' 的文本塔加载", req.model_name);
+                None
+            };
 
             let mut models = self.models.write().await;
             models.insert(
