@@ -1212,22 +1212,27 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
         let table_name = format!("hnsw_{}", index_name);
         self.ensure_table(index_name).await?;
 
-        // 1. 检查 RocksDB 中是否存在该条目的存储数据，并解码维度
+        // 1. 检查 RocksDB 中是否存在该条目的存储数据，并解码维度与 embedding
         let key = format!("v:{}", req.id).into_bytes();
-        let (exists, dim) = {
+        let (exists, dim, embedding) = {
             let storage = self.storage.lock().await;
             match storage.get(&table_name, &key).await.ok().flatten() {
                 Some(bytes) => {
                     if let Ok(se) = storage_proto::StoredEmbedding::decode(bytes.as_slice()) {
-                        (true, se.embedding.len() as i32)
+                        let dim = se.embedding.len() as i32;
+                        (true, dim, se.embedding)
                     } else if bytes.len() % 4 == 0 {
                         // 旧格式：值为 f32 字节序列
-                        (true, (bytes.len() / 4) as i32)
+                        let vec: Vec<f32> = bytes
+                            .chunks_exact(4)
+                            .map(|c| f32::from_le_bytes(c.try_into().unwrap_or([0u8; 4])))
+                            .collect();
+                        (true, (bytes.len() / 4) as i32, vec)
                     } else {
-                        (true, -1)
+                        (true, -1, Vec::new())
                     }
                 }
-                None => (false, -1),
+                None => (false, -1, Vec::new()),
             }
         };
 
@@ -1251,6 +1256,7 @@ impl EmbeddingIndexService for EmbeddingIndexServiceImpl {
             exists,
             dim,
             in_hnsw,
+            embedding,
         }))
     }
 

@@ -25,6 +25,20 @@ service FaceService {
 
   // 已保存人脸自动分类（HDBSCAN 聚类，内部复用 image_service 的分类流程，结果仅返回不写入索引）
   rpc ClassifyFaces(ClassifyFacesRequest) returns (ClassifyFacesResponse);
+
+  // 新增人脸分类：将指定人脸组的向量计算 medoid 并保存（供后续归属分类召回）
+  rpc CreateFaceClass(CreateFaceClassRequest) returns (CreateFaceClassResponse);
+  // 删除人脸分类：删除全文索引中的分类文档、人脸归属文档及 face_class 索引中的 medoid 向量
+  rpc DeleteFaceClass(DeleteFaceClassRequest) returns (DeleteFaceClassResponse);
+
+  // 列出已保存的人脸分类：从全文索引 face_class 读取分类列表
+  rpc ListFaceClasses(ListFaceClassesRequest) returns (ListFaceClassesResponse);
+
+  // 将当前人脸保存到指定人脸分类：把人脸 key 加入分类，重算 medoid 并更新索引
+  rpc SaveFaceToClass(SaveFaceToClassRequest) returns (SaveFaceToClassResponse);
+
+  // 从指定人脸分类中移除人脸：把人脸 key 从分类中移除，重算 medoid 并更新索引
+  rpc RemoveFaceFromClass(RemoveFaceFromClassRequest) returns (RemoveFaceFromClassResponse);
 }
 
 // ── DetectFaces ────────────────────────────
@@ -194,4 +208,104 @@ message ClassifyFacesResponse {
   int32 total = 4;
   // 未分类（噪声）人脸数
   int32 noise_count = 5;
+}
+
+// ── CreateFaceClass ────────────────────────────
+
+message CreateFaceClassRequest {
+  // 分类名称（用户自定义，如"张三"）
+  string name = 1;
+  // 该分类下的人脸图片 key 列表（用于计算 medoid）
+  repeated string keys = 2;
+  // 人脸图片所在 bucket（默认 faces）
+  string bucket = 3;
+}
+
+message CreateFaceClassResponse {
+  bool success = 1;
+  string message = 2;
+  // 分类 ID（Snowflake）
+  int64 class_id = 3;
+  // 保存的 medoid 向量维度
+  int32 medoid_dim = 4;
+  // 参与计算的向量数
+  int32 vector_count = 5;
+}
+
+// ── DeleteFaceClass ────────────────────────────
+
+message DeleteFaceClassRequest {
+  // 分类 ID（Snowflake）
+  int64 class_id = 1;
+  // 人脸图片所在 bucket（默认 faces）
+  string bucket = 2;
+}
+
+message DeleteFaceClassResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ── ListFaceClasses ────────────────────────────
+
+message ListFaceClassesRequest {
+  // 人脸图片所在 bucket（默认 faces，兼容保留）
+  string bucket = 1;
+}
+
+// 已保存的人脸分类条目
+message FaceClassItem {
+  // 分类 ID（Snowflake）
+  int64 class_id = 1;
+  // 分类名称
+  string name = 2;
+  // 该分类下的人脸图片 key 列表
+  repeated string keys = 3;
+  // 创建时间戳（秒）
+  int64 created_at = 4;
+  // Medoid 对应的人脸图片 key（作为分类的展示图片）
+  string medoid_key = 5;
+}
+
+message ListFaceClassesResponse {
+  bool success = 1;
+  string message = 2;
+  // 分类列表（按分类 ID 降序）
+  repeated FaceClassItem classes = 3;
+}
+
+// ── SaveFaceToClass ────────────────────────────
+
+message SaveFaceToClassRequest {
+  // 目标分类 ID（Snowflake）
+  int64 class_id = 1;
+  // 当前人脸 key（即 face 索引中的向量 ID）
+  int64 face_id = 2;
+}
+
+message SaveFaceToClassResponse {
+  bool success = 1;
+  string message = 2;
+  // 更新后的分类 ID
+  int64 class_id = 3;
+  // 更新后 Medoid 对应的人脸图片 key
+  string medoid_key = 4;
+}
+
+// ── RemoveFaceFromClass ────────────────────────────
+
+message RemoveFaceFromClassRequest {
+  // 目标分类 ID（Snowflake）
+  int64 class_id = 1;
+  // 待移除的人脸 key（即 face 索引中的向量 ID）
+  int64 face_id = 2;
+}
+
+message RemoveFaceFromClassResponse {
+  bool success = 1;
+  string message = 2;
+  // 更新后的分类 ID
+  int64 class_id = 3;
+  // 更新后 Medoid 对应的人脸图片 key
+  string medoid_key = 4;
 }

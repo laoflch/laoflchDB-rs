@@ -63,7 +63,14 @@ embedding_index:
       max_elements: 1000000
       distance_metric: Cosine
       storage_format: protobuf
-
+    - name: face_class
+      dim: 512
+      m: 16
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 1000000
+      distance_metric: Cosine
+      storage_format: protobuf
 # 对象存储服务配置（S3 兼容，基于 RocksDB BlobDB）
 object_store:
   enabled: true

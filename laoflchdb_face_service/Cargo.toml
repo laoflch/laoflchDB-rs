@@ -11,6 +11,8 @@ laoflchdb_image_service = { path = "../laoflchdb_image_service", features = ["au
 laoflchdb_object_store_service = { path = "../laoflchdb_object_store_service" }
 # 向量索引服务依赖（用于把人脸特征向量写入 HNSW 索引）
 laoflchdb_embedding_service = { path = "../laoflchdb_embedding_service" }
+# 全文索引服务 trait（由主 crate 的 IndexServiceImpl 实现并注入，用于保存人脸分类元数据与归属关系）
+async-trait = "0.1"
 # gRPC
 tonic = "0.11"
 prost = "0.12"

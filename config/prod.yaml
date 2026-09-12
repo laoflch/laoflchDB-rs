@@ -46,6 +46,13 @@ embedding_index:
       ef_search: 50
       max_elements: 1000000
       distance_metric: Cosine
+    - name: face_class
+      dim: 512
+      m: 16
+      ef_construction: 200
+      ef_search: 50
+      max_elements: 1000000
+      distance_metric: Cosine
     - name: memory
       dim: 768
       m: 16

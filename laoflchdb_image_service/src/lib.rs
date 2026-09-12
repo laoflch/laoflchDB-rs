@@ -152,6 +152,11 @@ impl ImageServiceImpl {
         self.config.default_bucket.clone()
     }
 
+    /// 返回内部对象存储服务引用（供其他服务读写元数据）
+    pub fn object_store(&self) -> Arc<laoflchdb_object_store_service::ObjectStoreServiceImpl> {
+        self.object_store.clone()
+    }
+
     /// 确保 bucket 存在
     async fn ensure_bucket(&self, bucket: &str) -> Result<(), Status> {
         let req = Request::new(CreateBucketRequest {

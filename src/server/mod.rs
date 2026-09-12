@@ -258,10 +258,16 @@ impl LaoflchDBServer {
                     same_person_threshold: face_cfg.same_person_threshold,
                     use_gpu: face_cfg.use_gpu,
                 };
+                // 将全文索引服务注入人脸服务，用于保存人脸分类元数据与"人脸→分类"归属关系
+                let face_index_svc = self.index_service.clone().map(|arc| {
+                    let adapter = crate::service::index::FaceClassIndexStoreAdapter::new(arc);
+                    Arc::new(adapter) as Arc<dyn laoflchdb_face_service::FaceClassIndexStore>
+                });
                 let face_svc = laoflchdb_face_service::FaceServiceImpl::new(
                     face_config,
                     Some(img_svc.clone()),
                     embedding_service.clone(),
+                    face_index_svc,
                 );
                 info!("人脸服务已启动");
                 Some(Arc::new(face_svc))

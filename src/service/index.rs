@@ -494,6 +494,122 @@ impl Clone for IndexServiceImpl {
     }
 }
 
+// 让 server 持有的 `Arc<dyn IndexService>` 满足 face_service 的 FaceClassIndexStore trait，
+// 以便将人脸分类元数据（含人脸列表）与"人脸 key → 分类"归属关系保存到全文索引。
+// 两个无关 trait 对象之间不能用 `as` 直接转换，故通过 newtype 适配器包装。
+pub struct FaceClassIndexStoreAdapter(Arc<dyn IndexService>);
+
+impl FaceClassIndexStoreAdapter {
+    /// 用已有的全文索引服务创建适配器
+    pub fn new(index_service: Arc<dyn IndexService>) -> Self {
+        Self(index_service)
+    }
+}
+
+#[async_trait::async_trait]
+impl laoflchdb_face_service::FaceClassIndexStore for FaceClassIndexStoreAdapter {
+    async fn ensure_face_class_index(&self) -> Result<(), String> {
+        let indices = self
+            .0
+            .list_indices()
+            .await
+            .map_err(|e| format!("列出全文索引失败: {}", e))?;
+        if indices.contains(&"face_class".to_string()) {
+            // 校验是否已含 medoid_key 列；旧索引缺列时需重建（tantivy schema 固定，无法加列）
+            let fields = self
+                .0
+                .get_index_fields("face_class")
+                .await
+                .map_err(|e| format!("读取 face_class 索引字段失败: {}", e))?;
+            let has_medoid_key = fields.iter().any(|c| c.column_name == "medoid_key");
+            if has_medoid_key {
+                return Ok(());
+            }
+            log::info!("face_class 索引缺少 medoid_key 列，重建索引（分类元数据文档将重新创建）");
+            self.0
+                .drop_index("face_class")
+                .await
+                .map_err(|e| format!("重建 face_class 索引前删除旧索引失败: {}", e))?;
+        }
+        // 索引字段：doc_type(1)/class_id(2)/name(3)/keys(4)/face_count(5)/created_at(6)/medoid(7)/class_name(8)/medoid_key(9)
+        let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
+            (1, "doc_type", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("文档类型: class=分类")),
+            (2, "class_id", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("分类 ID")),
+            (3, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("分类名称")),
+            (4, "keys", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("分类包含的人脸 key 列表(JSON)")),
+            (5, "face_count", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("人脸数量")),
+            (6, "created_at", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("创建时间戳")),
+            (7, "medoid", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("Medoid 向量(JSON)")),
+            (8, "class_name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("人脸归属文档中的分类名称")),
+            (9, "medoid_key", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("Medoid 对应的人脸图片 key（分类展示图片）")),
+        ];
+        self.0
+            .create_index("face_class", &fields)
+            .await
+            .map(|_| ())
+            .map_err(|e| format!("创建 face_class 索引失败: {}", e))
+    }
+
+    async fn add_document(
+        &self,
+        index_name: &str,
+        doc_id: &str,
+        fields: HashMap<String, String>,
+    ) -> Result<(), String> {
+        IndexService::add_document(&*self.0, index_name, doc_id, fields)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    async fn get_document(
+        &self,
+        index_name: &str,
+        doc_id: &str,
+    ) -> Result<Option<HashMap<String, String>>, String> {
+        match IndexService::get_document(&*self.0, index_name, doc_id).await {
+            Ok(Some(result)) => Ok(Some(result.fields)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    async fn delete_document(&self, index_name: &str, doc_id: &str) -> Result<(), String> {
+        IndexService::delete_document(&*self.0, index_name, doc_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn list_documents(
+        &self,
+        index_name: &str,
+    ) -> Result<Vec<(String, HashMap<String, String>)>, String> {
+        // 分页扫描全部文档（每页 100 条）
+        let mut all = Vec::new();
+        let mut offset = 0usize;
+        let page_size = 100usize;
+        loop {
+            let page = IndexService::scan_documents(&*self.0, index_name, Some(offset), Some(page_size))
+                .await
+                .map_err(|e| e.to_string())?;
+            if page.documents.is_empty() {
+                break;
+            }
+            // 先取出文档再取长度，避免借用已移动的值
+            let page_docs = page.documents;
+            let page_len = page_docs.len();
+            for doc in page_docs {
+                all.push((doc.doc_id, doc.fields));
+            }
+            offset += page_len;
+            if !page.has_next_page {
+                break;
+            }
+        }
+        Ok(all)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

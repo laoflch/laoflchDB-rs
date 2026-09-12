@@ -180,6 +180,7 @@ message GetEmbeddingByIdResponse {
   bool exists = 4;         // 索引中是否存在该 ID 的向量条目
   int32 dim = 5;           // 条目的维度（存在时有效，否则 -1）
   bool in_hnsw = 6;        // 该 ID 是否在 HNSW 索引中
+  repeated float embedding = 7;  // 条目存储的 embedding 向量（存在时返回）
 }
 
 // ── AnalyzeConsistency ────────────────────────────
