@@ -610,6 +610,122 @@ impl laoflchdb_face_service::FaceClassIndexStore for FaceClassIndexStoreAdapter 
     }
 }
 
+// 让 server 持有的 `Arc<dyn IndexService>` 满足 image_service 的 ImageTagIndexStore trait，
+// 以便图片标签（标签实体 + 图片→标签映射）保存到全文索引。
+pub struct ImageTagIndexStoreAdapter(Arc<dyn IndexService>);
+
+impl ImageTagIndexStoreAdapter {
+    /// 用已有的全文索引服务创建适配器
+    pub fn new(index_service: Arc<dyn IndexService>) -> Self {
+        Self(index_service)
+    }
+}
+
+#[async_trait::async_trait]
+impl laoflchdb_image_service::ImageTagIndexStore for ImageTagIndexStoreAdapter {
+    /// 确保 `image_tag`（标签实体）与 `image_tag_map`（图片→标签映射）索引存在
+    async fn ensure_image_tag_indexes(&self) -> Result<(), String> {
+        let indices = self
+            .0
+            .list_indices()
+            .await
+            .map_err(|e| format!("列出全文索引失败: {}", e))?;
+        // 1. 标签实体索引：doc_id = 标签 id（Snowflake）
+        if !indices.contains(&"image_tag".to_string()) {
+            // 字段：tag_id(1)/name(2)/description(3)/image_count(4)/created_at(5)
+            let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
+                (1, "tag_id", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签 ID")),
+                (2, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签名称(全文索引)")),
+                (3, "description", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签描述(全文索引)")),
+                (4, "image_count", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("包含图片数量")),
+                (5, "created_at", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("创建时间戳")),
+            ];
+            self.0
+                .create_index("image_tag", &fields)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("创建 image_tag 索引失败: {}", e))?;
+            log::info!("已创建 image_tag 全文索引（标签实体）");
+        }
+        // 2. 图片→标签映射索引：doc_id = 图片 id，tag_ids 列支持按标签 id 检索
+        if !indices.contains(&"image_tag_map".to_string()) {
+            let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
+                (1, "image_id", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("图片 ID")),
+                (2, "tag_ids", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("图片拥有的标签 id 列表(JSON数组，支持按标签 id 检索)")),
+            ];
+            self.0
+                .create_index("image_tag_map", &fields)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("创建 image_tag_map 索引失败: {}", e))?;
+            log::info!("已创建 image_tag_map 全文索引（图片→标签映射）");
+        }
+        Ok(())
+    }
+
+    async fn add_document(
+        &self,
+        index_name: &str,
+        doc_id: &str,
+        fields: HashMap<String, String>,
+    ) -> Result<(), String> {
+        IndexService::add_document(&*self.0, index_name, doc_id, fields)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    async fn get_document(
+        &self,
+        index_name: &str,
+        doc_id: &str,
+    ) -> Result<Option<HashMap<String, String>>, String> {
+        match IndexService::get_document(&*self.0, index_name, doc_id).await {
+            Ok(Some(result)) => Ok(Some(result.fields)),
+            Ok(None) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    async fn delete_document(&self, index_name: &str, doc_id: &str) -> Result<(), String> {
+        IndexService::delete_document(&*self.0, index_name, doc_id)
+            .await
+            .map_err(|e| e.to_string())
+    }
+
+    async fn scan_documents(
+        &self,
+        index_name: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<(String, HashMap<String, String>)>, u64, bool), String> {
+        let page = IndexService::scan_documents(&*self.0, index_name, Some(offset), Some(limit))
+            .await
+            .map_err(|e| e.to_string())?;
+        let docs = page
+            .documents
+            .into_iter()
+            .map(|d| (d.doc_id, d.fields))
+            .collect();
+        Ok((docs, page.total, page.has_next_page))
+    }
+
+    async fn search(
+        &self,
+        index_name: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, HashMap<String, String>)>, String> {
+        let results = IndexService::search(&*self.0, index_name, query, Some(limit))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(results
+            .into_iter()
+            .map(|r| (r.doc_id, r.fields))
+            .collect())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

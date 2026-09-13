@@ -210,11 +210,17 @@ impl LaoflchDBServer {
                     default_bucket: img_cfg.default_bucket.clone(),
                     image_duplicate_distance: img_cfg.image_duplicate_distance,
                 };
+                // 将全文索引服务注入图片服务，用于图片标签（标签实体与图片→标签映射）
+                let image_index_svc = self.index_service.clone().map(|arc| {
+                    let adapter = crate::service::index::ImageTagIndexStoreAdapter::new(arc);
+                    Arc::new(adapter) as Arc<dyn laoflchdb_image_service::ImageTagIndexStore>
+                });
                 let img_svc = laoflchdb_image_service::ImageServiceImpl::new(
                     os_svc.clone(),
                     img_config,
                     Some(vector_service.clone()),
                     embedding_service.clone(),
+                    image_index_svc,
                 );
                 info!("图片服务已启动");
                 Some(Arc::new(img_svc))

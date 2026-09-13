@@ -66,6 +66,46 @@ impl Default for ImageServiceConfig {
     }
 }
 
+// ── 全文索引存储 trait ────────────────────────────────
+// 由主 crate 的 IndexServiceImpl 实现并注入 image_service，
+// 用于将图片标签（标签实体 + 图片→标签映射）保存到全文索引。
+
+/// 全文索引存储接口（最小子集，避免 image_service 反向依赖主 crate）
+#[async_trait::async_trait]
+pub trait ImageTagIndexStore: Send + Sync + 'static {
+    /// 确保 `image_tag`（标签实体）与 `image_tag_map`（图片→标签映射）索引存在
+    async fn ensure_image_tag_indexes(&self) -> Result<(), String>;
+    /// 向指定索引添加文档（doc_id 作为主键，重复添加返回错误）
+    async fn add_document(
+        &self,
+        index_name: &str,
+        doc_id: &str,
+        fields: HashMap<String, String>,
+    ) -> Result<(), String>;
+    /// 按 doc_id 读取文档（返回 None 表示不存在）
+    async fn get_document(
+        &self,
+        index_name: &str,
+        doc_id: &str,
+    ) -> Result<Option<HashMap<String, String>>, String>;
+    /// 删除指定 doc_id 的文档
+    async fn delete_document(&self, index_name: &str, doc_id: &str) -> Result<(), String>;
+    /// 分页扫描索引下全部文档，返回 (文档列表, 总数, 是否有下一页)
+    async fn scan_documents(
+        &self,
+        index_name: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<(Vec<(String, HashMap<String, String>)>, u64, bool), String>;
+    /// 全文搜索（query 形如 `field:value`，用于按标签 id 检索图片）
+    async fn search(
+        &self,
+        index_name: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, HashMap<String, String>)>, String>;
+}
+
 /// 图片服务实现
 /// 基于 ObjectStoreService 提供图片上传（自动生成缩略图）和浏览功能
 pub struct ImageServiceImpl {
@@ -79,17 +119,21 @@ pub struct ImageServiceImpl {
     /// 嵌入索引服务（可选，用于自动向量索引）
     #[cfg(feature = "auto_index")]
     embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
+    /// 全文索引服务（可选，用于图片标签：标签实体与图片→标签映射）
+    index_service: Option<Arc<dyn ImageTagIndexStore>>,
 }
 
 impl ImageServiceImpl {
     /// 创建图片服务
     /// object_store: 已初始化的对象存储服务实例
+    /// index_service: 全文索引服务适配器（用于图片标签功能，可空）
     #[allow(unused_variables)]
     pub fn new(
         object_store: Arc<laoflchdb_object_store_service::ObjectStoreServiceImpl>,
         config: ImageServiceConfig,
         vector_service: Option<Arc<laoflchdb_vector_service::VectorServiceImpl>>,
         embedding_service: Option<Arc<laoflchdb_embedding_service::EmbeddingIndexServiceImpl>>,
+        index_service: Option<Arc<dyn ImageTagIndexStore>>,
     ) -> Self {
         // 优先用默认配置（基于 IP 推导 machine_id）；失败时回退到 machine_id=0, data_center_id=0
         let snowflake = Snowflake::new().unwrap_or_else(|_| {
@@ -112,6 +156,7 @@ impl ImageServiceImpl {
             vector_service,
             #[cfg(feature = "auto_index")]
             embedding_service,
+            index_service,
         }
     }
 
@@ -409,6 +454,62 @@ impl proto::image_service_server::ImageService for std::sync::Arc<ImageServiceIm
         request: tonic::Request<tonic::Streaming<UploadImageChunk>>,
     ) -> std::result::Result<tonic::Response<UploadImageResponse>, tonic::Status> {
         self.as_ref().upload_image_stream(request).await
+    }
+
+    async fn list_image_tags(
+        &self,
+        request: tonic::Request<ListImageTagsRequest>,
+    ) -> std::result::Result<tonic::Response<ListImageTagsResponse>, tonic::Status> {
+        self.as_ref().list_image_tags(request).await
+    }
+
+    async fn create_image_tag(
+        &self,
+        request: tonic::Request<CreateImageTagRequest>,
+    ) -> std::result::Result<tonic::Response<CreateImageTagResponse>, tonic::Status> {
+        self.as_ref().create_image_tag(request).await
+    }
+
+    async fn update_image_tag(
+        &self,
+        request: tonic::Request<UpdateImageTagRequest>,
+    ) -> std::result::Result<tonic::Response<UpdateImageTagResponse>, tonic::Status> {
+        self.as_ref().update_image_tag(request).await
+    }
+
+    async fn delete_image_tag(
+        &self,
+        request: tonic::Request<DeleteImageTagRequest>,
+    ) -> std::result::Result<tonic::Response<DeleteImageTagResponse>, tonic::Status> {
+        self.as_ref().delete_image_tag(request).await
+    }
+
+    async fn get_image_tags(
+        &self,
+        request: tonic::Request<GetImageTagsRequest>,
+    ) -> std::result::Result<tonic::Response<GetImageTagsResponse>, tonic::Status> {
+        self.as_ref().get_image_tags(request).await
+    }
+
+    async fn add_image_tag(
+        &self,
+        request: tonic::Request<AddImageTagRequest>,
+    ) -> std::result::Result<tonic::Response<AddImageTagResponse>, tonic::Status> {
+        self.as_ref().add_image_tag(request).await
+    }
+
+    async fn remove_image_tag(
+        &self,
+        request: tonic::Request<RemoveImageTagRequest>,
+    ) -> std::result::Result<tonic::Response<RemoveImageTagResponse>, tonic::Status> {
+        self.as_ref().remove_image_tag(request).await
+    }
+
+    async fn search_images_by_tag(
+        &self,
+        request: tonic::Request<SearchImagesByTagRequest>,
+    ) -> std::result::Result<tonic::Response<SearchImagesByTagResponse>, tonic::Status> {
+        self.as_ref().search_images_by_tag(request).await
     }
 }
 
@@ -754,6 +855,132 @@ impl ImageServiceImpl {
             result.noise_count
         );
         Ok((message, groups, samples.len(), result.noise_count))
+    }
+}
+
+// ── 图片标签内部辅助方法（通过全文索引存储实现） ──
+
+impl ImageServiceImpl {
+    /// 获取全文索引服务引用，未启用时返回错误
+    fn require_index_service(&self) -> Result<&Arc<dyn ImageTagIndexStore>, Status> {
+        self.index_service.as_ref().ok_or_else(|| {
+            Status::failed_precondition("全文索引服务未启用，无法使用图片标签功能")
+        })
+    }
+
+    /// 确保标签相关索引存在
+    async fn ensure_tag_indexes(&self) -> Result<(), Status> {
+        self.require_index_service()?
+            .ensure_image_tag_indexes()
+            .await
+            .map_err(|e| Status::internal(format!("初始化图片标签索引失败: {}", e)))
+    }
+
+    /// 读取图片的标签 id 列表（解析 image_tag_map 文档的 tag_ids JSON 字段）
+    async fn read_image_tag_ids(&self, image_id: &str) -> Result<Vec<String>, Status> {
+        let svc = self.require_index_service()?;
+        match svc.get_document("image_tag_map", image_id).await {
+            Ok(Some(fields)) => {
+                let raw = fields
+                    .get("tag_ids")
+                    .cloned()
+                    .unwrap_or_else(|| "[]".to_string());
+                match serde_json::from_str::<Vec<String>>(&raw) {
+                    Ok(ids) => Ok(ids),
+                    Err(_) => Ok(raw
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()),
+                }
+            }
+            Ok(None) => Ok(Vec::new()),
+            Err(e) => Err(Status::internal(format!("读取图片标签失败: {}", e))),
+        }
+    }
+
+    /// 保存图片的标签 id 列表（读取→删除→重建，避免 update 语义差异）
+    async fn write_image_tag_ids(&self, image_id: &str, tag_ids: &[String]) -> Result<(), Status> {
+        let svc = self.require_index_service()?;
+        if let Ok(Some(_)) = svc.get_document("image_tag_map", image_id).await {
+            svc.delete_document("image_tag_map", image_id)
+                .await
+                .map_err(|e| Status::internal(format!("删除图片标签映射失败: {}", e)))?;
+        }
+        if tag_ids.is_empty() {
+            return Ok(());
+        }
+        let mut fields = HashMap::new();
+        fields.insert("image_id".to_string(), image_id.to_string());
+        fields.insert(
+            "tag_ids".to_string(),
+            serde_json::to_string(tag_ids).unwrap_or_default(),
+        );
+        svc.add_document("image_tag_map", image_id, fields)
+            .await
+            .map_err(|e| Status::internal(format!("保存图片标签映射失败: {}", e)))
+    }
+
+    /// 读取标签实体文档，返回字段映射
+    async fn read_tag_document(
+        &self,
+        tag_id: &str,
+    ) -> Result<Option<HashMap<String, String>>, Status> {
+        let svc = self.require_index_service()?;
+        svc.get_document("image_tag", tag_id)
+            .await
+            .map_err(|e| Status::internal(format!("读取标签失败: {}", e)))
+    }
+
+    /// 保存标签实体文档（读取→删除→重建）
+    async fn write_tag_document(
+        &self,
+        tag_id: &str,
+        fields: HashMap<String, String>,
+    ) -> Result<(), Status> {
+        let svc = self.require_index_service()?;
+        if let Ok(Some(_)) = svc.get_document("image_tag", tag_id).await {
+            svc.delete_document("image_tag", tag_id)
+                .await
+                .map_err(|e| Status::internal(format!("删除标签失败: {}", e)))?;
+        }
+        svc.add_document("image_tag", tag_id, fields)
+            .await
+            .map_err(|e| Status::internal(format!("保存标签失败: {}", e)))
+    }
+
+    /// 调整标签的包含图片数量（delta 可为正负），返回最新数量
+    async fn adjust_tag_image_count(&self, tag_id: &str, delta: i64) -> Result<i64, Status> {
+        let fields = self
+            .read_tag_document(tag_id)
+            .await?
+            .ok_or_else(|| Status::not_found(format!("标签不存在: {}", tag_id)))?;
+        let current: i64 = fields
+            .get("image_count")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let new_count = (current + delta).max(0);
+        let mut new_fields = fields.clone();
+        new_fields.insert("image_count".to_string(), new_count.to_string());
+        self.write_tag_document(tag_id, new_fields).await?;
+        Ok(new_count)
+    }
+
+    /// 构造 ImageTagInfo（供 gRPC 返回）
+    fn build_tag_info(tag_id: &str, fields: &HashMap<String, String>) -> ImageTagInfo {
+        ImageTagInfo {
+            tag_id: tag_id.to_string(),
+            name: fields.get("name").cloned().unwrap_or_default(),
+            description: fields.get("description").cloned().unwrap_or_default(),
+            image_count: fields
+                .get("image_count")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            created_at: fields
+                .get("created_at")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+        }
     }
 }
 
@@ -1696,6 +1923,255 @@ impl ImageService for ImageServiceImpl {
                 noise_count: 0,
             }))
         }
+    }
+
+    // ── 图片标签 ─────────────────────────────────────────────
+
+    async fn list_image_tags(
+        &self,
+        request: Request<ListImageTagsRequest>,
+    ) -> Result<Response<ListImageTagsResponse>, Status> {
+        let req = request.into_inner();
+        self.ensure_tag_indexes().await?;
+        let offset = req.offset as usize;
+        let limit = if req.limit == 0 { 50 } else { req.limit as usize };
+        let svc = self.require_index_service()?;
+        let (docs, total, has_next_page) = svc
+            .scan_documents("image_tag", offset, limit)
+            .await
+            .map_err(|e| Status::internal(format!("列出标签失败: {}", e)))?;
+        let tags: Vec<ImageTagInfo> = docs
+            .into_iter()
+            .map(|(doc_id, fields)| Self::build_tag_info(&doc_id, &fields))
+            .collect();
+        Ok(Response::new(ListImageTagsResponse {
+            success: true,
+            message: "OK".to_string(),
+            tags,
+            total: total as u32,
+            has_next_page,
+        }))
+    }
+
+    async fn create_image_tag(
+        &self,
+        request: Request<CreateImageTagRequest>,
+    ) -> Result<Response<CreateImageTagResponse>, Status> {
+        let req = request.into_inner();
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Ok(Response::new(CreateImageTagResponse {
+                success: false,
+                message: "标签名称不能为空".to_string(),
+                tag_id: String::new(),
+            }));
+        }
+        self.ensure_tag_indexes().await?;
+        // 标签 id 使用 Snowflake ID（与图片 key 同一生成器）
+        let tag_id = self.generate_image_key();
+        let mut fields = HashMap::new();
+        fields.insert("tag_id".to_string(), tag_id.clone());
+        fields.insert("name".to_string(), name);
+        fields.insert("description".to_string(), req.description);
+        fields.insert("image_count".to_string(), "0".to_string());
+        fields.insert("created_at".to_string(), Self::now_string());
+        self.write_tag_document(&tag_id, fields).await?;
+        Ok(Response::new(CreateImageTagResponse {
+            success: true,
+            message: "OK".to_string(),
+            tag_id,
+        }))
+    }
+
+    async fn update_image_tag(
+        &self,
+        request: Request<UpdateImageTagRequest>,
+    ) -> Result<Response<UpdateImageTagResponse>, Status> {
+        let req = request.into_inner();
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Ok(Response::new(UpdateImageTagResponse {
+                success: false,
+                message: "标签名称不能为空".to_string(),
+            }));
+        }
+        self.ensure_tag_indexes().await?;
+        let fields = self
+            .read_tag_document(&req.tag_id)
+            .await?
+            .ok_or_else(|| Status::not_found(format!("标签不存在: {}", req.tag_id)))?;
+        let mut new_fields = fields.clone();
+        new_fields.insert("name".to_string(), name);
+        new_fields.insert("description".to_string(), req.description);
+        self.write_tag_document(&req.tag_id, new_fields).await?;
+        Ok(Response::new(UpdateImageTagResponse {
+            success: true,
+            message: "OK".to_string(),
+        }))
+    }
+
+    async fn delete_image_tag(
+        &self,
+        request: Request<DeleteImageTagRequest>,
+    ) -> Result<Response<DeleteImageTagResponse>, Status> {
+        let req = request.into_inner();
+        self.ensure_tag_indexes().await?;
+        let svc = self.require_index_service()?;
+        // 1. 删除标签实体
+        if let Ok(Some(_)) = svc.get_document("image_tag", &req.tag_id).await {
+            svc.delete_document("image_tag", &req.tag_id)
+                .await
+                .map_err(|e| Status::internal(format!("删除标签失败: {}", e)))?;
+        }
+        // 2. 从所有图片中移除该标签（分页扫描）
+        let mut offset = 0usize;
+        const PAGE: usize = 100;
+        loop {
+            let (docs, _, has_next) = svc
+                .scan_documents("image_tag_map", offset, PAGE)
+                .await
+                .map_err(|e| Status::internal(format!("扫描图片标签映射失败: {}", e)))?;
+            if docs.is_empty() {
+                break;
+            }
+            for (image_id, fields) in docs {
+                let raw = fields
+                    .get("tag_ids")
+                    .cloned()
+                    .unwrap_or_else(|| "[]".to_string());
+                let ids: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+                let original_len = ids.len();
+                let remaining: Vec<String> = ids
+                    .into_iter()
+                    .filter(|id| id != &req.tag_id)
+                    .collect();
+                if remaining.len() != original_len {
+                    self.write_image_tag_ids(&image_id, &remaining).await?;
+                }
+            }
+            offset += PAGE;
+            if !has_next {
+                break;
+            }
+        }
+        Ok(Response::new(DeleteImageTagResponse {
+            success: true,
+            message: "OK".to_string(),
+        }))
+    }
+
+    async fn get_image_tags(
+        &self,
+        request: Request<GetImageTagsRequest>,
+    ) -> Result<Response<GetImageTagsResponse>, Status> {
+        let req = request.into_inner();
+        self.ensure_tag_indexes().await?;
+        let tag_ids = self.read_image_tag_ids(&req.image_id).await?;
+        let mut tags = Vec::new();
+        for tag_id in &tag_ids {
+            if let Some(fields) = self.read_tag_document(tag_id).await? {
+                tags.push(Self::build_tag_info(tag_id, &fields));
+            }
+        }
+        Ok(Response::new(GetImageTagsResponse {
+            success: true,
+            message: "OK".to_string(),
+            tags,
+        }))
+    }
+
+    async fn add_image_tag(
+        &self,
+        request: Request<AddImageTagRequest>,
+    ) -> Result<Response<AddImageTagResponse>, Status> {
+        let req = request.into_inner();
+        self.ensure_tag_indexes().await?;
+        // 校验标签存在
+        if self.read_tag_document(&req.tag_id).await?.is_none() {
+            return Ok(Response::new(AddImageTagResponse {
+                success: false,
+                message: format!("标签不存在: {}", req.tag_id),
+                image_count: 0,
+            }));
+        }
+        let mut tag_ids = self.read_image_tag_ids(&req.image_id).await?;
+        if tag_ids.contains(&req.tag_id) {
+            // 已打标，直接返回当前数量
+            let count = self
+                .read_tag_document(&req.tag_id)
+                .await?
+                .and_then(|f| f.get("image_count").and_then(|v| v.parse().ok()))
+                .unwrap_or(0);
+            return Ok(Response::new(AddImageTagResponse {
+                success: true,
+                message: "已打标".to_string(),
+                image_count: count,
+            }));
+        }
+        tag_ids.push(req.tag_id.clone());
+        self.write_image_tag_ids(&req.image_id, &tag_ids).await?;
+        let image_count = self.adjust_tag_image_count(&req.tag_id, 1).await?;
+        Ok(Response::new(AddImageTagResponse {
+            success: true,
+            message: "OK".to_string(),
+            image_count,
+        }))
+    }
+
+    async fn remove_image_tag(
+        &self,
+        request: Request<RemoveImageTagRequest>,
+    ) -> Result<Response<RemoveImageTagResponse>, Status> {
+        let req = request.into_inner();
+        self.ensure_tag_indexes().await?;
+        let mut tag_ids = self.read_image_tag_ids(&req.image_id).await?;
+        if !tag_ids.contains(&req.tag_id) {
+            return Ok(Response::new(RemoveImageTagResponse {
+                success: true,
+                message: "未打标".to_string(),
+                image_count: 0,
+            }));
+        }
+        tag_ids.retain(|id| id != &req.tag_id);
+        self.write_image_tag_ids(&req.image_id, &tag_ids).await?;
+        let image_count = self.adjust_tag_image_count(&req.tag_id, -1).await?;
+        Ok(Response::new(RemoveImageTagResponse {
+            success: true,
+            message: "OK".to_string(),
+            image_count,
+        }))
+    }
+
+    async fn search_images_by_tag(
+        &self,
+        request: Request<SearchImagesByTagRequest>,
+    ) -> Result<Response<SearchImagesByTagResponse>, Status> {
+        let req = request.into_inner();
+        self.ensure_tag_indexes().await?;
+        let limit = if req.limit == 0 { 100 } else { req.limit as usize };
+        let svc = self.require_index_service()?;
+        // 通过 tag_ids 列检索被打标的图片（QueryParser 解析 `tag_ids:<id>`）
+        let query = format!("tag_ids:{}", req.tag_id);
+        let results = svc
+            .search("image_tag_map", &query, limit)
+            .await
+            .map_err(|e| Status::internal(format!("按标签检索图片失败: {}", e)))?;
+        // 二次校验，确保返回的文档确实包含该标签 id
+        let mut image_ids = Vec::new();
+        for (doc_id, fields) in results {
+            let raw = fields.get("tag_ids").cloned().unwrap_or_default();
+            let ids: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+            if ids.contains(&req.tag_id) {
+                image_ids.push(doc_id);
+            }
+        }
+        let total = image_ids.len() as u32;
+        Ok(Response::new(SearchImagesByTagResponse {
+            success: true,
+            message: "OK".to_string(),
+            image_ids,
+            total,
+        }))
     }
 }
 

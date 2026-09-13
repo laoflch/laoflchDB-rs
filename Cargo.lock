@@ -3822,6 +3822,7 @@ dependencies = [
 name = "laoflchdb_image_service"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum 0.7.9",
  "bytes",
  "futures",

@@ -29,6 +29,22 @@ service ImageService {
   rpc ClassifyImages(ClassifyImagesRequest) returns (ClassifyImagesResponse);
   // 已保存人脸自动分类（HDBSCAN 聚类，复用图片分类流程，默认向量索引 face）
   rpc ClassifyFaces(ClassifyImagesRequest) returns (ClassifyImagesResponse);
+  // 列出全部图片标签（分页）
+  rpc ListImageTags(ListImageTagsRequest) returns (ListImageTagsResponse);
+  // 新增图片标签（服务端生成 Snowflake 标签 ID）
+  rpc CreateImageTag(CreateImageTagRequest) returns (CreateImageTagResponse);
+  // 修改图片标签（名称/描述）
+  rpc UpdateImageTag(UpdateImageTagRequest) returns (UpdateImageTagResponse);
+  // 删除图片标签（同时从所有图片中移除该标签）
+  rpc DeleteImageTag(DeleteImageTagRequest) returns (DeleteImageTagResponse);
+  // 获取指定图片的标签列表
+  rpc GetImageTags(GetImageTagsRequest) returns (GetImageTagsResponse);
+  // 给图片打标签
+  rpc AddImageTag(AddImageTagRequest) returns (AddImageTagResponse);
+  // 从图片移除标签
+  rpc RemoveImageTag(RemoveImageTagRequest) returns (RemoveImageTagResponse);
+  // 通过标签 id 检索被打标的图片 id 列表（基于 image_tag_map 索引的 tag_ids 列）
+  rpc SearchImagesByTag(SearchImagesByTagRequest) returns (SearchImagesByTagResponse);
 }
 
 // ── UploadImageChunk ──────────────────────────
@@ -315,4 +331,129 @@ message ClassifyImagesResponse {
   int32 total = 4;
   // 未分类（噪声）图片数
   int32 noise_count = 5;
+}
+
+// ── 图片标签 ─────────────────────────────────────────────────────────
+//
+// 数据模型（全文索引）：
+//   1. `image_tag` 索引：标签实体，doc_id = 标签 id（Snowflake），
+//      字段：tag_id / name / description / image_count / created_at，name 与 description 全文索引
+//   2. `image_tag_map` 索引：图片→标签映射，doc_id = 图片 id，
+//      字段：image_id / tag_ids（JSON 数组，tag_ids 列支持按标签 id 检索被打标的图片）
+
+// 标签实体信息
+message ImageTagInfo {
+  // 标签 id（Snowflake，字符串避免前端精度丢失）
+  string tag_id = 1;
+  // 标签名称
+  string name = 2;
+  // 标签描述
+  string description = 3;
+  // 包含图片数量
+  int64 image_count = 4;
+  // 创建时间戳（毫秒）
+  int64 created_at = 5;
+}
+
+message ListImageTagsRequest {
+  // 分页偏移
+  uint32 offset = 1;
+  // 分页大小（0 表示默认 50）
+  uint32 limit = 2;
+}
+
+message ListImageTagsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ImageTagInfo tags = 3;
+  // 总标签数
+  uint32 total = 4;
+  bool has_next_page = 5;
+}
+
+message CreateImageTagRequest {
+  // 标签名称（必填）
+  string name = 1;
+  // 标签描述（可空）
+  string description = 2;
+}
+
+message CreateImageTagResponse {
+  bool success = 1;
+  string message = 2;
+  // 新生成的标签 id
+  string tag_id = 3;
+}
+
+message UpdateImageTagRequest {
+  string tag_id = 1;
+  // 新的标签名称（必填）
+  string name = 2;
+  // 新的标签描述
+  string description = 3;
+}
+
+message UpdateImageTagResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DeleteImageTagRequest {
+  string tag_id = 1;
+}
+
+message DeleteImageTagResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetImageTagsRequest {
+  // 图片 id（即图片 key）
+  string image_id = 1;
+}
+
+message GetImageTagsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ImageTagInfo tags = 3;
+}
+
+message AddImageTagRequest {
+  // 图片 id（即图片 key）
+  string image_id = 1;
+  string tag_id = 2;
+}
+
+message AddImageTagResponse {
+  bool success = 1;
+  string message = 2;
+  // 该标签最新的包含图片数量
+  int64 image_count = 3;
+}
+
+message RemoveImageTagRequest {
+  // 图片 id（即图片 key）
+  string image_id = 1;
+  string tag_id = 2;
+}
+
+message RemoveImageTagResponse {
+  bool success = 1;
+  string message = 2;
+  // 该标签最新的包含图片数量
+  int64 image_count = 3;
+}
+
+message SearchImagesByTagRequest {
+  string tag_id = 1;
+  // 返回数量上限（0 表示默认 100）
+  uint32 limit = 2;
+}
+
+message SearchImagesByTagResponse {
+  bool success = 1;
+  string message = 2;
+  // 被打上该标签的图片 id 列表
+  repeated string image_ids = 3;
+  uint32 total = 4;
 }
