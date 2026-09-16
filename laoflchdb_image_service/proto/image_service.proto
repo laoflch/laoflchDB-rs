@@ -45,6 +45,8 @@ service ImageService {
   rpc RemoveImageTag(RemoveImageTagRequest) returns (RemoveImageTagResponse);
   // 通过标签 id 检索被打标的图片 id 列表（基于 image_tag_map 索引的 tag_ids 列）
   rpc SearchImagesByTag(SearchImagesByTagRequest) returns (SearchImagesByTagResponse);
+  // 列出全部存储桶（内部通过 storage_service 获取）
+  rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse);
 }
 
 // ── UploadImageChunk ──────────────────────────
@@ -383,6 +385,8 @@ message CreateImageTagResponse {
   string message = 2;
   // 新生成的标签 id
   string tag_id = 3;
+  // 创建时间（ISO8601 或时间戳字符串）
+  string created_at = 4;
 }
 
 message UpdateImageTagRequest {
@@ -422,6 +426,8 @@ message AddImageTagRequest {
   // 图片 id（即图片 key）
   string image_id = 1;
   string tag_id = 2;
+  // 图片所在 bucket；空则前端默认用 images
+  string bucket = 3;
 }
 
 message AddImageTagResponse {
@@ -435,6 +441,8 @@ message RemoveImageTagRequest {
   // 图片 id（即图片 key）
   string image_id = 1;
   string tag_id = 2;
+  // 图片所在 bucket；空则前端默认用 images
+  string bucket = 3;
 }
 
 message RemoveImageTagResponse {
@@ -456,4 +464,23 @@ message SearchImagesByTagResponse {
   // 被打上该标签的图片 id 列表
   repeated string image_ids = 3;
   uint32 total = 4;
+  // 与 image_ids 一一对应：每张图片所在的 bucket（空表示默认 images 桶）
+  repeated string buckets = 5;
+}
+
+// ── ListBuckets 存储桶列表 ────────────────────────────
+
+message ListBucketsRequest {
+}
+
+// 存储桶信息
+message BucketInfo {
+  string name = 1;
+  string creation_date = 2;
+}
+
+message ListBucketsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated BucketInfo buckets = 3;
 }

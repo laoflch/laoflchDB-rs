@@ -39,6 +39,9 @@ service FaceService {
 
   // 从指定人脸分类中移除人脸：把人脸 key 从分类中移除，重算 medoid 并更新索引
   rpc RemoveFaceFromClass(RemoveFaceFromClassRequest) returns (RemoveFaceFromClassResponse);
+
+  // 列出全部存储桶（内部通过 storage_service 获取）
+  rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse);
 }
 
 // ── DetectFaces ────────────────────────────
@@ -308,4 +311,21 @@ message RemoveFaceFromClassResponse {
   int64 class_id = 3;
   // 更新后 Medoid 对应的人脸图片 key
   string medoid_key = 4;
+}
+
+// ── ListBuckets 存储桶列表 ────────────────────────────
+
+message ListBucketsRequest {
+}
+
+// 存储桶信息
+message BucketInfo {
+  string name = 1;
+  string creation_date = 2;
+}
+
+message ListBucketsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated BucketInfo buckets = 3;
 }

@@ -202,6 +202,18 @@ impl ImageServiceImpl {
         self.object_store.clone()
     }
 
+    /// 列出全部存储桶（内部委托 storage_service），返回 (bucket 名, 创建时间) 列表
+    pub async fn list_bucket_names(&self) -> Result<Vec<(String, String)>, Status> {
+        let req = Request::new(laoflchdb_object_store_service::proto::ListBucketsRequest {});
+        let resp = self.object_store.list_buckets(req).await?;
+        Ok(resp
+            .into_inner()
+            .buckets
+            .into_iter()
+            .map(|b| (b.name, b.creation_date))
+            .collect())
+    }
+
     /// 确保 bucket 存在
     async fn ensure_bucket(&self, bucket: &str) -> Result<(), Status> {
         let req = Request::new(CreateBucketRequest {
@@ -510,6 +522,13 @@ impl proto::image_service_server::ImageService for std::sync::Arc<ImageServiceIm
         request: tonic::Request<SearchImagesByTagRequest>,
     ) -> std::result::Result<tonic::Response<SearchImagesByTagResponse>, tonic::Status> {
         self.as_ref().search_images_by_tag(request).await
+    }
+
+    async fn list_buckets(
+        &self,
+        request: tonic::Request<ListBucketsRequest>,
+    ) -> std::result::Result<tonic::Response<ListBucketsResponse>, tonic::Status> {
+        self.as_ref().list_buckets(request).await
     }
 }
 
@@ -900,7 +919,13 @@ impl ImageServiceImpl {
     }
 
     /// 保存图片的标签 id 列表（读取→删除→重建，避免 update 语义差异）
-    async fn write_image_tag_ids(&self, image_id: &str, tag_ids: &[String]) -> Result<(), Status> {
+    /// bucket 记录图片所在存储桶，支持标签跨 bucket 展示；空则前端默认用 images
+    async fn write_image_tag_ids(
+        &self,
+        image_id: &str,
+        tag_ids: &[String],
+        bucket: &str,
+    ) -> Result<(), Status> {
         let svc = self.require_index_service()?;
         if let Ok(Some(_)) = svc.get_document("image_tag_map", image_id).await {
             svc.delete_document("image_tag_map", image_id)
@@ -916,6 +941,9 @@ impl ImageServiceImpl {
             "tag_ids".to_string(),
             serde_json::to_string(tag_ids).unwrap_or_default(),
         );
+        if !bucket.is_empty() {
+            fields.insert("bucket".to_string(), bucket.to_string());
+        }
         svc.add_document("image_tag_map", image_id, fields)
             .await
             .map_err(|e| Status::internal(format!("保存图片标签映射失败: {}", e)))
@@ -1617,7 +1645,7 @@ impl ImageService for ImageServiceImpl {
             }
 
             // 3. 生成向量
-            let (embedding, dim) = self.generate_image_embedding(
+            let (embedding, _dim) = self.generate_image_embedding(
                 &obj.data,
                 &model_name,
                 &index_name,
@@ -1625,15 +1653,65 @@ impl ImageService for ImageServiceImpl {
 
             // 4. 插入向量索引（先做索引，成功后再更新 meta）
             // 幂等：HNSW 持久化索引中可能已存在该 node 的 embedding（历史索引过但元数据
-            // is_indexed 未回写，导致"已索引却显示未索引"）。此时跳过插入，仅回写元数据。
+            // is_indexed 未回写，导致"已索引却显示未索引"）。此时不能只回写元数据——若 embedding
+            // 模型已更新，旧图节点的向量已过期（KV 已被覆盖为新向量但图节点未更新），会导致该
+            // 图片检索不到。因此对 AlreadyExists 改为「删除旧节点 + 重新插入」。
             let insert_result = self.index_image_with_embedding(
-                embedding,
+                embedding.clone(),
                 &req.key,
                 &index_name,
             ).await;
             if let Err(e) = &insert_result {
                 if e.to_string().contains("already exists") {
-                    // 复用第 1 步已获取的 meta，标记为已索引即可
+                    // 删除旧向量节点（同时清 KV 与 HNSW 图节点），再重新插入新向量，
+                    // 使 KV 与图节点都更新为最新模型的向量。
+                    if let Some(embedding_svc) = &self.embedding_service {
+                        if let Ok(id) = req.key.parse::<u64>() {
+                            use laoflchdb_embedding_service::proto::DeleteEmbeddingRequest;
+                            let del_req = tonic::Request::new(DeleteEmbeddingRequest {
+                                id,
+                                index_name: index_name.clone(),
+                            });
+                            if embedding_svc.delete_embedding(del_req).await.is_ok() {
+                                match self.index_image_with_embedding(
+                                    embedding,
+                                    &req.key,
+                                    &index_name,
+                                ).await {
+                                    Ok((eid, edim)) => {
+                                        meta.is_indexed = true;
+                                        meta.index_model = model_name.clone();
+                                        meta.last_modified = Self::now_string();
+                                        if let Err(e3) = self.save_metadata_to_store(&bucket, &req.key, &meta).await {
+                                            warn!("索引重插成功但更新元数据 is_indexed 失败: {}", e3);
+                                        }
+                                        info!("图片向量索引已更新（删旧节点+重插）: key='{}', index='{}', model='{}'", req.key, index_name, model_name);
+                                        return Ok(Response::new(IndexImageResponse {
+                                            success: true,
+                                            message: "图片向量索引已更新".to_string(),
+                                            embedding_id: eid,
+                                            embedding_dim: edim,
+                                            metadata: Some(meta),
+                                        }));
+                                    }
+                                    Err(e3) => {
+                                        warn!("索引已存在，删除旧节点后重插失败 key='{}': {}", req.key, e3);
+                                        return Ok(Response::new(IndexImageResponse {
+                                            success: false,
+                                            message: format!("向量索引更新失败: {}", e3),
+                                            embedding_id: String::new(),
+                                            embedding_dim: 0,
+                                            metadata: None,
+                                        }));
+                                    }
+                                }
+                            } else {
+                                warn!("索引已存在，删除旧向量节点失败 key='{}'", req.key);
+                            }
+                        }
+                    }
+                    // 删除/重插路径不可用（无 embedding 服务、key 非数字、删除失败）时，
+                    // 退化为仅回写元数据 is_indexed，保证原有幂等行为不破坏。
                     meta.is_indexed = true;
                     meta.index_model = model_name.clone();
                     meta.last_modified = Self::now_string();
@@ -1964,6 +2042,7 @@ impl ImageService for ImageServiceImpl {
                 success: false,
                 message: "标签名称不能为空".to_string(),
                 tag_id: String::new(),
+                created_at: String::new(),
             }));
         }
         self.ensure_tag_indexes().await?;
@@ -1980,6 +2059,7 @@ impl ImageService for ImageServiceImpl {
             success: true,
             message: "OK".to_string(),
             tag_id,
+            created_at: Self::now_string(),
         }))
     }
 
@@ -2046,7 +2126,9 @@ impl ImageService for ImageServiceImpl {
                     .filter(|id| id != &req.tag_id)
                     .collect();
                 if remaining.len() != original_len {
-                    self.write_image_tag_ids(&image_id, &remaining).await?;
+                    // 保留原文档中的 bucket 字段（跨 bucket 支持）
+                    let bucket = fields.get("bucket").cloned().unwrap_or_default();
+                    self.write_image_tag_ids(&image_id, &remaining, &bucket).await?;
                 }
             }
             offset += PAGE;
@@ -2109,7 +2191,8 @@ impl ImageService for ImageServiceImpl {
             }));
         }
         tag_ids.push(req.tag_id.clone());
-        self.write_image_tag_ids(&req.image_id, &tag_ids).await?;
+        self.write_image_tag_ids(&req.image_id, &tag_ids, &req.bucket)
+            .await?;
         let image_count = self.adjust_tag_image_count(&req.tag_id, 1).await?;
         Ok(Response::new(AddImageTagResponse {
             success: true,
@@ -2133,7 +2216,8 @@ impl ImageService for ImageServiceImpl {
             }));
         }
         tag_ids.retain(|id| id != &req.tag_id);
-        self.write_image_tag_ids(&req.image_id, &tag_ids).await?;
+        self.write_image_tag_ids(&req.image_id, &tag_ids, &req.bucket)
+            .await?;
         let image_count = self.adjust_tag_image_count(&req.tag_id, -1).await?;
         Ok(Response::new(RemoveImageTagResponse {
             success: true,
@@ -2156,13 +2240,15 @@ impl ImageService for ImageServiceImpl {
             .search("image_tag_map", &query, limit)
             .await
             .map_err(|e| Status::internal(format!("按标签检索图片失败: {}", e)))?;
-        // 二次校验，确保返回的文档确实包含该标签 id
+        // 二次校验，确保返回的文档确实包含该标签 id，并收集每张图片所在的 bucket
         let mut image_ids = Vec::new();
+        let mut buckets = Vec::new();
         for (doc_id, fields) in results {
             let raw = fields.get("tag_ids").cloned().unwrap_or_default();
             let ids: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
             if ids.contains(&req.tag_id) {
                 image_ids.push(doc_id);
+                buckets.push(fields.get("bucket").cloned().unwrap_or_default());
             }
         }
         let total = image_ids.len() as u32;
@@ -2171,6 +2257,24 @@ impl ImageService for ImageServiceImpl {
             message: "OK".to_string(),
             image_ids,
             total,
+            buckets,
+        }))
+    }
+
+    async fn list_buckets(
+        &self,
+        _request: Request<ListBucketsRequest>,
+    ) -> Result<Response<ListBucketsResponse>, Status> {
+        let buckets = self
+            .list_bucket_names()
+            .await?
+            .into_iter()
+            .map(|(name, creation_date)| BucketInfo { name, creation_date })
+            .collect();
+        Ok(Response::new(ListBucketsResponse {
+            success: true,
+            message: "OK".to_string(),
+            buckets,
         }))
     }
 }

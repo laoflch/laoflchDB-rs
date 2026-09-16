@@ -2102,6 +2102,27 @@ impl FaceService for FaceServiceImpl {
             medoid_key,
         }))
     }
+
+    async fn list_buckets(
+        &self,
+        _request: Request<ListBucketsRequest>,
+    ) -> Result<TonicResponse<ListBucketsResponse>, Status> {
+        // 内部委托 image_service（image_service 再调 storage_service 获取存储桶列表）
+        let img_svc = self.image_service.as_ref().ok_or_else(|| {
+            Status::failed_precondition("image_service 未启用，无法获取存储桶列表")
+        })?;
+        let buckets = img_svc
+            .list_bucket_names()
+            .await?
+            .into_iter()
+            .map(|(name, creation_date)| BucketInfo { name, creation_date })
+            .collect();
+        Ok(TonicResponse::new(ListBucketsResponse {
+            success: true,
+            message: "OK".to_string(),
+            buckets,
+        }))
+    }
 }
 
 /// 保存对齐后的人脸图片到 image_service
