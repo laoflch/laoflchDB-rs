@@ -1438,6 +1438,46 @@ impl FaceService for FaceServiceImpl {
             }));
         }
         let keys = req.keys;
+        // 新建空分类：仅创建分类元数据，不计算/保存 Medoid；
+        // 人脸归属统一由 save_face_to_class 逐个写入（前端点「保存」按钮时触发）
+        if keys.is_empty() {
+            let class_id = self.generate_face_key();
+            let index_svc = self.index_service.as_ref().ok_or_else(|| {
+                Status::failed_precondition("全文索引服务未启用")
+            })?;
+            index_svc
+                .ensure_face_class_index()
+                .await
+                .map_err(|e| Status::internal(format!("确保 face_class 全文索引失败: {}", e)))?;
+            let created_at = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+            let mut class_fields: HashMap<String, String> = HashMap::new();
+            class_fields.insert("doc_type".to_string(), "class".to_string());
+            class_fields.insert("class_id".to_string(), class_id.to_string());
+            class_fields.insert("name".to_string(), name.clone());
+            class_fields.insert(
+                "keys".to_string(),
+                serde_json::to_string(&Vec::<String>::new()).unwrap_or_default(),
+            );
+            class_fields.insert("face_count".to_string(), "0".to_string());
+            class_fields.insert("created_at".to_string(), created_at.to_string());
+            class_fields.insert("medoid".to_string(), "[]".to_string());
+            class_fields.insert("medoid_key".to_string(), String::new());
+            index_svc
+                .add_document("face_class", &class_id.to_string(), class_fields)
+                .await
+                .map_err(|e| Status::internal(format!("保存人脸分类元数据到全文索引失败: {}", e)))?;
+            return Ok(TonicResponse::new(CreateFaceClassResponse {
+                success: true,
+                message: format!("人脸分类创建成功: {}（ID={}，0 张人脸）", name, class_id),
+                class_id: class_id as i64,
+                medoid_dim: 0,
+                vector_count: 0,
+            }));
+        }
+
         if keys.len() < 2 {
             return Ok(TonicResponse::new(CreateFaceClassResponse {
                 success: false,
@@ -1793,7 +1833,7 @@ impl FaceService for FaceServiceImpl {
                 vectors.push((k.clone(), v.clone()));
             }
         }
-        if vectors.len() < 2 {
+        if vectors.is_empty() {
             return Ok(TonicResponse::new(SaveFaceToClassResponse {
                 success: false,
                 message: format!("分类内可用向量不足（{} 个），无法重算 Medoid", vectors.len()),
@@ -1802,28 +1842,31 @@ impl FaceService for FaceServiceImpl {
             }));
         }
 
-        // 5. 重算 Medoid（与 create_face_class 相同算法：到其余向量平均余弦距离最小者）
+        // 5. 重算 Medoid（与 create_face_class 相同算法：到其余向量平均余弦距离最小者；
+        //    仅 1 张向量时自身即 Medoid）
         let n = vectors.len();
         let mut best_idx = 0usize;
         let mut best_avg = f32::MAX;
-        for i in 0..n {
-            let mut sum = 0f32;
-            for j in 0..n {
-                if i == j {
-                    continue;
+        if n > 1 {
+            for i in 0..n {
+                let mut sum = 0f32;
+                for j in 0..n {
+                    if i == j {
+                        continue;
+                    }
+                    let dot: f32 = vectors[i]
+                        .1
+                        .iter()
+                        .zip(vectors[j].1.iter())
+                        .map(|(a, b)| a * b)
+                        .sum();
+                    sum += 1.0 - dot;
                 }
-                let dot: f32 = vectors[i]
-                    .1
-                    .iter()
-                    .zip(vectors[j].1.iter())
-                    .map(|(a, b)| a * b)
-                    .sum();
-                sum += 1.0 - dot;
-            }
-            let avg = sum / (n - 1) as f32;
-            if avg < best_avg {
-                best_avg = avg;
-                best_idx = i;
+                let avg = sum / (n - 1) as f32;
+                if avg < best_avg {
+                    best_avg = avg;
+                    best_idx = i;
+                }
             }
         }
         let medoid = vectors[best_idx].1.clone();
@@ -2098,6 +2141,182 @@ impl FaceService for FaceServiceImpl {
                 "已从分类 '{}' 移除人脸（key={}），Medoid 已更新",
                 name, face_id
             ),
+            class_id,
+            medoid_key,
+        }))
+    }
+
+    /// 重新计算人脸分类的 Medoid：基于分类内当前全部人脸向量重算并保存更新
+    async fn recompute_face_class_medoid(
+        &self,
+        request: Request<RecomputeFaceClassMedoidRequest>,
+    ) -> Result<TonicResponse<RecomputeFaceClassMedoidResponse>, Status> {
+        let req = request.into_inner();
+        let class_id = req.class_id;
+
+        let index_svc = self.index_service.as_ref().ok_or_else(|| {
+            Status::failed_precondition("全文索引服务未启用")
+        })?;
+        let emb_svc = self.embedding_service.as_ref().ok_or_else(|| {
+            Status::failed_precondition("向量索引服务未启用")
+        })?;
+
+        // 1. 确保 face_class 索引存在
+        index_svc
+            .ensure_face_class_index()
+            .await
+            .map_err(|e| Status::internal(format!("确保 face_class 索引失败: {}", e)))?;
+
+        // 2. 读取分类文档（doc_id = class_id）
+        let doc = index_svc
+            .get_document("face_class", &class_id.to_string())
+            .await
+            .map_err(|e| Status::internal(format!("读取分类文档失败: {}", e)))?
+            .ok_or_else(|| Status::not_found(format!("人脸分类不存在: {}", class_id)))?;
+
+        let name = doc.get("name").cloned().unwrap_or_default();
+        let keys: Vec<String> = doc
+            .get("keys")
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default();
+
+        // 3. 拉取 face 索引全部向量，按分类 keys 取向量
+        use laoflchdb_embedding_service::proto::embedding_index_service_server::EmbeddingIndexService;
+        use laoflchdb_embedding_service::proto::{
+            DeleteEmbeddingRequest, InsertEmbeddingRequest, ListEmbeddingsRequest,
+        };
+        let emb_resp = emb_svc
+            .list_embeddings(Request::new(ListEmbeddingsRequest {
+                index_name: "face".to_string(),
+                limit: 0,
+                offset: 0,
+            }))
+            .await
+            .map_err(|e| Status::internal(format!("读取人脸向量失败: {}", e)))?;
+        let emb = emb_resp.into_inner();
+        if !emb.success {
+            return Ok(TonicResponse::new(RecomputeFaceClassMedoidResponse {
+                success: false,
+                message: emb.message,
+                class_id,
+                medoid_key: String::new(),
+            }));
+        }
+        let mut vec_map: HashMap<String, Vec<f32>> = HashMap::new();
+        for entry in &emb.entries {
+            if !entry.embedding.is_empty() {
+                vec_map.insert(entry.id.to_string(), entry.embedding.clone());
+            }
+        }
+        let mut vectors: Vec<(String, Vec<f32>)> = Vec::new();
+        for k in &keys {
+            if let Some(v) = vec_map.get(k) {
+                vectors.push((k.clone(), v.clone()));
+            }
+        }
+        if vectors.is_empty() {
+            return Ok(TonicResponse::new(RecomputeFaceClassMedoidResponse {
+                success: false,
+                message: format!("分类 '{}' 内可用向量不足（{} 个），无法重算 Medoid", name, vectors.len()),
+                class_id,
+                medoid_key: String::new(),
+            }));
+        }
+
+        // 4. 重算 Medoid（与 create_face_class 相同算法：到其余向量平均余弦距离最小者；
+        //    仅 1 张向量时自身即 Medoid）
+        let n = vectors.len();
+        let mut best_idx = 0usize;
+        let mut best_avg = f32::MAX;
+        if n > 1 {
+            for i in 0..n {
+                let mut sum = 0f32;
+                for j in 0..n {
+                    if i == j {
+                        continue;
+                    }
+                    let dot: f32 = vectors[i]
+                        .1
+                        .iter()
+                        .zip(vectors[j].1.iter())
+                        .map(|(a, b)| a * b)
+                        .sum();
+                    sum += 1.0 - dot;
+                }
+                let avg = sum / (n - 1) as f32;
+                if avg < best_avg {
+                    best_avg = avg;
+                    best_idx = i;
+                }
+            }
+        }
+        let medoid = vectors[best_idx].1.clone();
+        let medoid_key = vectors[best_idx].0.clone();
+
+        // 5. 更新 face_class 向量索引：删旧 Medoid → 写新 Medoid
+        let del_resp = emb_svc
+            .delete_embedding(Request::new(DeleteEmbeddingRequest {
+                id: class_id as u64,
+                index_name: "face_class".to_string(),
+            }))
+            .await
+            .map_err(|e| Status::internal(format!("删除旧 Medoid 失败: {}", e)))?;
+        let del = del_resp.into_inner();
+        if !del.success {
+            return Ok(TonicResponse::new(RecomputeFaceClassMedoidResponse {
+                success: false,
+                message: format!("删除旧 Medoid 失败: {}", del.message),
+                class_id,
+                medoid_key: String::new(),
+            }));
+        }
+        let ins_resp = emb_svc
+            .insert_embedding(Request::new(InsertEmbeddingRequest {
+                id: class_id as u64,
+                index_name: "face_class".to_string(),
+                embedding: medoid.clone(),
+                fields: Default::default(),
+            }))
+            .await
+            .map_err(|e| Status::internal(format!("写入新 Medoid 失败: {}", e)))?;
+        let ins = ins_resp.into_inner();
+        if !ins.success {
+            return Ok(TonicResponse::new(RecomputeFaceClassMedoidResponse {
+                success: false,
+                message: format!("写入新 Medoid 失败: {}", ins.message),
+                class_id,
+                medoid_key: String::new(),
+            }));
+        }
+
+        // 6. 更新全文索引分类文档（doc_id = class_id 唯一，先删后写）
+        let _ = index_svc
+            .delete_document("face_class", &class_id.to_string())
+            .await;
+        let medoid_json = serde_json::to_string(&medoid).unwrap_or_default();
+        let mut class_fields: HashMap<String, String> = HashMap::new();
+        class_fields.insert("doc_type".to_string(), "class".to_string());
+        class_fields.insert("class_id".to_string(), class_id.to_string());
+        class_fields.insert("name".to_string(), name.clone());
+        class_fields.insert(
+            "keys".to_string(),
+            serde_json::to_string(&keys).unwrap_or_default(),
+        );
+        class_fields.insert("face_count".to_string(), keys.len().to_string());
+        class_fields.insert(
+            "created_at".to_string(),
+            doc.get("created_at").cloned().unwrap_or_default(),
+        );
+        class_fields.insert("medoid".to_string(), medoid_json);
+        class_fields.insert("medoid_key".to_string(), medoid_key.clone());
+        index_svc
+            .add_document("face_class", &class_id.to_string(), class_fields)
+            .await
+            .map_err(|e| Status::internal(format!("更新分类文档失败: {}", e)))?;
+
+        Ok(TonicResponse::new(RecomputeFaceClassMedoidResponse {
+            success: true,
+            message: format!("分类 '{}' 的 Medoid 已重新计算并保存", name),
             class_id,
             medoid_key,
         }))

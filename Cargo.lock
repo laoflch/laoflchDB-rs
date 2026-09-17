@@ -2389,6 +2389,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "exiftool-rs"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ad72a9621937e39b56b90fe6c65d363c75304efd15ed92903d781891eeff437"
+dependencies = [
+ "brotli",
+ "byteorder",
+ "encoding_rs",
+ "filetime",
+ "flate2",
+ "memmap2",
+ "regex-lite",
+ "thiserror 2.0.18",
+ "unicode-width 0.2.2",
+ "xml",
+]
+
+[[package]]
 name = "exr"
 version = "1.74.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3825,6 +3843,7 @@ dependencies = [
  "async-trait",
  "axum 0.7.9",
  "bytes",
+ "exiftool-rs",
  "futures",
  "hdbscan-rs",
  "image",
@@ -5589,6 +5608,12 @@ dependencies = [
  "memchr",
  "regex-syntax",
 ]
+
+[[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
 
 [[package]]
 name = "regex-syntax"
@@ -7943,6 +7968,12 @@ dependencies = [
  "libc",
  "rustix 1.1.4",
 ]
+
+[[package]]
+name = "xml"
+version = "1.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f45bb2c13fec6a6cb4c0f76a7e94839e110a14ec803ec2940777a94c347bc52"
 
 [[package]]
 name = "yoke"

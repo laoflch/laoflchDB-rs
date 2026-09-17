@@ -336,6 +336,8 @@ impl ImageServiceImpl {
             name: meta.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
             is_indexed: meta.get("is_indexed").and_then(|v| v.as_bool()).unwrap_or(false),
             index_model: meta.get("index_model").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            // EXIF 不持久化，仅在 GetImageMetadata 响应时实时填充
+            exif: HashMap::new(),
         }
     }
 
@@ -371,6 +373,43 @@ impl ImageServiceImpl {
         });
         self.object_store.put_object(put_req).await?;
         Ok(())
+    }
+
+    /// 使用 exiftool-rs（纯 Rust 实现）从图片二进制数据中提取尽可能多的 EXIF 元数据
+    ///
+    /// 不持久化到对象存储，仅在 GetImageMetadata 响应时实时填充。
+    async fn extract_exif_metadata(
+        &self,
+        bucket: &str,
+        image_key: &str,
+    ) -> Option<HashMap<String, String>> {
+        let get_req = Request::new(GetObjectRequest {
+            bucket: bucket.to_string(),
+            key: image_key.to_string(),
+        });
+        let resp = self.object_store.get_object(get_req).await.ok()?.into_inner();
+        if !resp.success || resp.data.is_empty() {
+            return None;
+        }
+        // 根据 content_type 提供合理的文件扩展名，便于 exiftool 识别图片格式
+        let ext = match resp.content_type.as_str() {
+            "image/png" => "png",
+            "image/gif" => "gif",
+            "image/webp" => "webp",
+            "image/tiff" => "tiff",
+            "image/bmp" => "bmp",
+            "image/heic" | "image/heif" => "heic",
+            _ => "jpg",
+        };
+        let tags = exiftool_rs::ExifTool::new()
+            .extract_info_from_bytes(&resp.data, std::path::Path::new(&format!("image.{}", ext)))
+            .ok()?;
+        let mut map = HashMap::new();
+        for tag in tags {
+            map.entry(tag.name.clone())
+                .or_insert_with(|| tag.print_value.to_string());
+        }
+        Some(map)
     }
 }
 
@@ -1217,6 +1256,7 @@ impl ImageService for ImageServiceImpl {
             name: req.name.clone(),
             is_indexed: false,
             index_model: String::new(),
+            exif: HashMap::new(),
         };
 
         self.save_metadata_to_store(&bucket, &image_key, &metadata).await?;
@@ -1379,10 +1419,15 @@ impl ImageService for ImageServiceImpl {
         let req = request.into_inner();
         let bucket = self.resolve_bucket(&req.bucket);
 
-        let metadata = self
+        let mut metadata = self
             .get_metadata_from_store(&bucket, &req.key)
             .await?
             .ok_or_else(|| Status::not_found(format!("Image '{}' not found", req.key)))?;
+
+        // 实时提取 EXIF 元数据（尽力而为：提取失败不影响元数据返回）
+        if let Some(exif) = self.extract_exif_metadata(&bucket, &req.key).await {
+            metadata.exif = exif;
+        }
 
         Ok(Response::new(GetImageMetadataResponse {
             success: true,

@@ -40,6 +40,9 @@ service FaceService {
   // 从指定人脸分类中移除人脸：把人脸 key 从分类中移除，重算 medoid 并更新索引
   rpc RemoveFaceFromClass(RemoveFaceFromClassRequest) returns (RemoveFaceFromClassResponse);
 
+  // 重新计算人脸分类的 Medoid：基于分类内当前全部人脸向量重算并保存更新
+  rpc RecomputeFaceClassMedoid(RecomputeFaceClassMedoidRequest) returns (RecomputeFaceClassMedoidResponse);
+
   // 列出全部存储桶（内部通过 storage_service 获取）
   rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse);
 }
@@ -305,6 +308,24 @@ message RemoveFaceFromClassRequest {
 }
 
 message RemoveFaceFromClassResponse {
+  bool success = 1;
+  string message = 2;
+  // 更新后的分类 ID
+  int64 class_id = 3;
+  // 更新后 Medoid 对应的人脸图片 key
+  string medoid_key = 4;
+}
+
+// ── RecomputeFaceClassMedoid ────────────────────────────
+
+message RecomputeFaceClassMedoidRequest {
+  // 目标分类 ID（Snowflake）
+  int64 class_id = 1;
+  // 人脸图片所在 bucket（默认 faces，兼容保留）
+  string bucket = 2;
+}
+
+message RecomputeFaceClassMedoidResponse {
   bool success = 1;
   string message = 2;
   // 更新后的分类 ID

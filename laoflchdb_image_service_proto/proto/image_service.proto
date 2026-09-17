@@ -114,6 +114,8 @@ message ImageMetadata {
   bool is_indexed = 12;
   // 向量化模型名称
   string index_model = 13;
+  // EXIF 元数据（GetImageMetadata 时实时从图片提取，不持久化）
+  map<string, string> exif = 14;
 }
 
 message UploadImageResponse {
