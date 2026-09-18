@@ -34,6 +34,9 @@ service FaceService {
   // 列出已保存的人脸分类：从全文索引 face_class 读取分类列表
   rpc ListFaceClasses(ListFaceClassesRequest) returns (ListFaceClassesResponse);
 
+  // 全文检索人脸分类（名称包含匹配，供选择分类时使用）
+  rpc SearchFaceClasses(SearchFaceClassesRequest) returns (SearchFaceClassesResponse);
+
   // 将当前人脸保存到指定人脸分类：把人脸 key 加入分类，重算 medoid 并更新索引
   rpc SaveFaceToClass(SaveFaceToClassRequest) returns (SaveFaceToClassResponse);
 
@@ -225,6 +228,8 @@ message CreateFaceClassRequest {
   repeated string keys = 2;
   // 人脸图片所在 bucket（默认 faces）
   string bucket = 3;
+  // 分类描述（可空，参与全文检索）
+  string description = 4;
 }
 
 message CreateFaceClassResponse {
@@ -271,6 +276,8 @@ message FaceClassItem {
   int64 created_at = 4;
   // Medoid 对应的人脸图片 key（作为分类的展示图片）
   string medoid_key = 5;
+  // 分类描述（可空，参与全文检索）
+  string description = 6;
 }
 
 message ListFaceClassesResponse {
@@ -278,6 +285,23 @@ message ListFaceClassesResponse {
   string message = 2;
   // 分类列表（按分类 ID 降序）
   repeated FaceClassItem classes = 3;
+}
+
+// ── SearchFaceClasses ────────────────────────────
+
+message SearchFaceClassesRequest {
+  // 分类名称关键字（空则返回全部）
+  string prefix = 1;
+  // 返回条数上限（0 表示默认 20）
+  uint32 limit = 2;
+}
+
+message SearchFaceClassesResponse {
+  bool success = 1;
+  string message = 2;
+  // 分类列表（按分类 ID 降序）
+  repeated FaceClassItem classes = 3;
+  uint32 total = 4;
 }
 
 // ── SaveFaceToClass ────────────────────────────

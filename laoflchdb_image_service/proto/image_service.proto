@@ -31,6 +31,12 @@ service ImageService {
   rpc ClassifyFaces(ClassifyImagesRequest) returns (ClassifyImagesResponse);
   // 列出全部图片标签（分页）
   rpc ListImageTags(ListImageTagsRequest) returns (ListImageTagsResponse);
+  // 前缀全文检索图片标签（名称前缀匹配，供选择标签时使用）
+  rpc SearchImageTags(SearchImageTagsRequest) returns (SearchImageTagsResponse);
+  // 索引图片元数据（基本信息 + EXIF）到 image_meta 全文索引
+  rpc IndexImageMetadata(IndexImageMetadataRequest) returns (IndexImageMetadataResponse);
+  // 查询图片元数据是否已索引到 image_meta 全文索引
+  rpc IsImageMetadataIndexed(IsImageMetadataIndexedRequest) returns (IsImageMetadataIndexedResponse);
   // 新增图片标签（服务端生成 Snowflake 标签 ID）
   rpc CreateImageTag(CreateImageTagRequest) returns (CreateImageTagResponse);
   // 修改图片标签（名称/描述）
@@ -373,6 +379,47 @@ message ListImageTagsResponse {
   // 总标签数
   uint32 total = 4;
   bool has_next_page = 5;
+}
+
+message SearchImageTagsRequest {
+  // 标签名称关键字（空则返回全部前 limit 条）
+  string prefix = 1;
+  // 返回条数上限（0 表示默认 20）
+  uint32 limit = 2;
+}
+
+message SearchImageTagsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated ImageTagInfo tags = 3;
+  uint32 total = 4;
+}
+
+// 索引图片元数据（基本信息 + EXIF）到 image_meta 全文索引
+message IndexImageMetadataRequest {
+  // 图片所在 bucket（空则默认 images）
+  string bucket = 1;
+  // 图片 key
+  string key = 2;
+}
+
+message IndexImageMetadataResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message IsImageMetadataIndexedRequest {
+  // 图片所在 bucket（空则默认 images）
+  string bucket = 1;
+  // 图片 key
+  string key = 2;
+}
+
+message IsImageMetadataIndexedResponse {
+  bool success = 1;
+  string message = 2;
+  // 是否已写入 image_meta 索引
+  bool indexed = 3;
 }
 
 message CreateImageTagRequest {

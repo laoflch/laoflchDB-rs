@@ -75,6 +75,8 @@ impl Default for ImageServiceConfig {
 pub trait ImageTagIndexStore: Send + Sync + 'static {
     /// 确保 `image_tag`（标签实体）与 `image_tag_map`（图片→标签映射）索引存在
     async fn ensure_image_tag_indexes(&self) -> Result<(), String>;
+    /// 确保 `image_meta`（图片元数据：基本信息 + EXIF）索引存在
+    async fn ensure_image_meta_index(&self) -> Result<(), String>;
     /// 向指定索引添加文档（doc_id 作为主键，重复添加返回错误）
     async fn add_document(
         &self,
@@ -512,6 +514,27 @@ impl proto::image_service_server::ImageService for std::sync::Arc<ImageServiceIm
         request: tonic::Request<ListImageTagsRequest>,
     ) -> std::result::Result<tonic::Response<ListImageTagsResponse>, tonic::Status> {
         self.as_ref().list_image_tags(request).await
+    }
+
+    async fn search_image_tags(
+        &self,
+        request: tonic::Request<SearchImageTagsRequest>,
+    ) -> std::result::Result<tonic::Response<SearchImageTagsResponse>, tonic::Status> {
+        self.as_ref().search_image_tags(request).await
+    }
+
+    async fn index_image_metadata(
+        &self,
+        request: tonic::Request<IndexImageMetadataRequest>,
+    ) -> std::result::Result<tonic::Response<IndexImageMetadataResponse>, tonic::Status> {
+        self.as_ref().index_image_metadata(request).await
+    }
+
+    async fn is_image_metadata_indexed(
+        &self,
+        request: tonic::Request<IsImageMetadataIndexedRequest>,
+    ) -> std::result::Result<tonic::Response<IsImageMetadataIndexedResponse>, tonic::Status> {
+        self.as_ref().is_image_metadata_indexed(request).await
     }
 
     async fn create_image_tag(
@@ -2073,6 +2096,178 @@ impl ImageService for ImageServiceImpl {
             tags,
             total: total as u32,
             has_next_page,
+        }))
+    }
+
+    // 前缀全文检索图片标签：按名称前缀匹配（空前缀返回全部前 limit 条）
+    async fn search_image_tags(
+        &self,
+        request: Request<SearchImageTagsRequest>,
+    ) -> Result<Response<SearchImageTagsResponse>, Status> {
+        let req = request.into_inner();
+        let prefix = req.prefix.trim().to_string();
+        let limit = if req.limit == 0 { 20 } else { req.limit as usize };
+        self.ensure_tag_indexes().await?;
+        let svc = self.require_index_service()?;
+        let docs = if prefix.is_empty() {
+            let (docs, _total, _has_next) = svc
+                .scan_documents("image_tag", 0, limit)
+                .await
+                .map_err(|e| Status::internal(format!("扫描标签失败: {}", e)))?;
+            docs
+        } else {
+            // 标签数量级小，分页扫描全量后按名称前缀过滤
+            // （不依赖 tantivy 通配符查询，避免分词对前缀匹配的影响，保证真前缀语义）
+            let mut matched = Vec::new();
+            let mut offset = 0usize;
+            let page_size = 100usize;
+            loop {
+                let (page_docs, _total, has_next) = svc
+                    .scan_documents("image_tag", offset, page_size)
+                    .await
+                    .map_err(|e| Status::internal(format!("扫描标签失败: {}", e)))?;
+                if page_docs.is_empty() {
+                    break;
+                }
+                for (doc_id, fields) in page_docs {
+                    let name = fields.get("name").cloned().unwrap_or_default();
+                    if name.contains(&prefix) {
+                        matched.push((doc_id, fields));
+                        if matched.len() >= limit {
+                            break;
+                        }
+                    }
+                }
+                offset += page_size;
+                if !has_next || matched.len() >= limit {
+                    break;
+                }
+            }
+            matched
+        };
+        let tags: Vec<ImageTagInfo> = docs
+            .into_iter()
+            .map(|(doc_id, fields)| Self::build_tag_info(&doc_id, &fields))
+            .collect();
+        let total = tags.len() as u32;
+        Ok(Response::new(SearchImageTagsResponse {
+            success: true,
+            message: format!("找到 {} 个标签", tags.len()),
+            tags,
+            total,
+        }))
+    }
+
+    // 索引图片元数据（基本信息 + EXIF）到 image_meta 全文索引（doc_id = 图片 key，重复索引覆盖更新）
+    async fn index_image_metadata(
+        &self,
+        request: tonic::Request<IndexImageMetadataRequest>,
+    ) -> Result<Response<IndexImageMetadataResponse>, Status> {
+        let req = request.into_inner();
+        let bucket = self.resolve_bucket(&req.bucket);
+
+        let mut metadata = self
+            .get_metadata_from_store(&bucket, &req.key)
+            .await?
+            .ok_or_else(|| Status::not_found(format!("Image '{}' not found", req.key)))?;
+
+        // 实时提取 EXIF 元数据（尽力而为：提取失败不影响索引）
+        if let Some(exif) = self.extract_exif_metadata(&bucket, &req.key).await {
+            metadata.exif = exif;
+        }
+
+        let svc = self.require_index_service()?;
+        svc.ensure_image_meta_index()
+            .await
+            .map_err(|e| Status::internal(format!("初始化 image_meta 索引失败: {}", e)))?;
+
+        let mut fields = HashMap::new();
+        fields.insert("key".to_string(), metadata.key.clone());
+        fields.insert("name".to_string(), metadata.name.clone());
+        fields.insert("format".to_string(), metadata.format.clone());
+        fields.insert("content_type".to_string(), metadata.content_type.clone());
+        fields.insert("content_length".to_string(), metadata.content_length.to_string());
+        fields.insert("width".to_string(), metadata.width.to_string());
+        fields.insert("height".to_string(), metadata.height.to_string());
+        fields.insert("etag".to_string(), metadata.etag.clone());
+        fields.insert("last_modified".to_string(), metadata.last_modified.clone());
+        fields.insert(
+            "user_metadata".to_string(),
+            serde_json::to_string(&metadata.user_metadata).unwrap_or_default(),
+        );
+        fields.insert(
+            "exif".to_string(),
+            serde_json::to_string(&metadata.exif).unwrap_or_default(),
+        );
+        fields.insert(
+            "indexed_at".to_string(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis().to_string())
+                .unwrap_or_default(),
+        );
+
+        // 已存在则先删后建（覆盖更新）
+        if let Ok(Some(_)) = svc.get_document("image_meta", &req.key).await {
+            svc.delete_document("image_meta", &req.key)
+                .await
+                .map_err(|e| Status::internal(format!("删除旧元数据索引失败: {}", e)))?;
+        }
+        svc.add_document("image_meta", &req.key, fields)
+            .await
+            .map_err(|e| Status::internal(format!("保存元数据索引失败: {}", e)))?;
+
+        Ok(Response::new(IndexImageMetadataResponse {
+            success: true,
+            message: format!("已索引图片 {} 的元数据（{} 项 EXIF）", req.key, metadata.exif.len()),
+        }))
+    }
+
+    // 查询图片元数据是否已写入 image_meta 索引
+    async fn is_image_metadata_indexed(
+        &self,
+        request: tonic::Request<IsImageMetadataIndexedRequest>,
+    ) -> Result<Response<IsImageMetadataIndexedResponse>, Status> {
+        let req = request.into_inner();
+        let bucket = self.resolve_bucket(&req.bucket);
+
+        // 图片不存在视为未索引
+        let img_exists = self
+            .get_metadata_from_store(&bucket, &req.key)
+            .await
+            .ok()
+            .flatten()
+            .is_some();
+        if !img_exists {
+            return Ok(Response::new(IsImageMetadataIndexedResponse {
+                success: true,
+                message: "图片不存在".to_string(),
+                indexed: false,
+            }));
+        }
+
+        let svc = match self.require_index_service() {
+            Ok(s) => s.clone(),
+            Err(_) => {
+                return Ok(Response::new(IsImageMetadataIndexedResponse {
+                    success: true,
+                    message: "全文索引服务未启用".to_string(),
+                    indexed: false,
+                }))
+            }
+        };
+        if let Err(e) = svc.ensure_image_meta_index().await {
+            return Ok(Response::new(IsImageMetadataIndexedResponse {
+                success: true,
+                message: format!("初始化索引失败: {}", e),
+                indexed: false,
+            }));
+        }
+        let indexed = matches!(svc.get_document("image_meta", &req.key).await, Ok(Some(_)));
+        Ok(Response::new(IsImageMetadataIndexedResponse {
+            success: true,
+            message: "OK".to_string(),
+            indexed,
         }))
     }
 

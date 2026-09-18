@@ -127,6 +127,13 @@ pub trait FaceClassIndexStore: Send + Sync + 'static {
         &self,
         index_name: &str,
     ) -> Result<Vec<(String, HashMap<String, String>)>, String>;
+    /// 全文搜索（query 形如 `field:value`，用于按名称前缀检索分类）
+    async fn search(
+        &self,
+        index_name: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, HashMap<String, String>)>, String>;
 }
 
 /// 人脸服务实现
@@ -1428,6 +1435,7 @@ impl FaceService for FaceServiceImpl {
     ) -> Result<TonicResponse<CreateFaceClassResponse>, Status> {
         let req = request.into_inner();
         let name = req.name.trim().to_string();
+        let description = req.description.trim().to_string();
         if name.is_empty() {
             return Ok(TonicResponse::new(CreateFaceClassResponse {
                 success: false,
@@ -1457,6 +1465,7 @@ impl FaceService for FaceServiceImpl {
             class_fields.insert("doc_type".to_string(), "class".to_string());
             class_fields.insert("class_id".to_string(), class_id.to_string());
             class_fields.insert("name".to_string(), name.clone());
+            class_fields.insert("description".to_string(), description.clone());
             class_fields.insert(
                 "keys".to_string(),
                 serde_json::to_string(&Vec::<String>::new()).unwrap_or_default(),
@@ -1605,6 +1614,7 @@ impl FaceService for FaceServiceImpl {
                 class_fields.insert("doc_type".to_string(), "class".to_string());
                 class_fields.insert("class_id".to_string(), class_id.to_string());
                 class_fields.insert("name".to_string(), name.clone());
+                class_fields.insert("description".to_string(), description.clone());
                 class_fields.insert("keys".to_string(), serde_json::to_string(&keys_list).unwrap_or_default());
                 class_fields.insert("face_count".to_string(), vectors.len().to_string());
                 class_fields.insert("created_at".to_string(), created_at.to_string());
@@ -1726,6 +1736,7 @@ impl FaceService for FaceServiceImpl {
                 .and_then(|s| s.parse::<i64>().ok())
                 .unwrap_or_else(|| doc_id.parse::<i64>().unwrap_or(0));
             let name = fields.get("name").cloned().unwrap_or_default();
+            let description = fields.get("description").cloned().unwrap_or_default();
             let keys = fields
                 .get("keys")
                 .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
@@ -1741,6 +1752,7 @@ impl FaceService for FaceServiceImpl {
                 keys,
                 created_at,
                 medoid_key,
+                description,
             });
         }
         // 按分类 ID 降序排列（新分类在前）
@@ -1750,6 +1762,80 @@ impl FaceService for FaceServiceImpl {
             success: true,
             message: format!("共 {} 个人脸分类", classes.len()),
             classes,
+        }))
+    }
+
+    // 前缀全文检索人脸分类：按名称前缀匹配（空前缀返回全部）
+    async fn search_face_classes(
+        &self,
+        request: Request<SearchFaceClassesRequest>,
+    ) -> Result<TonicResponse<SearchFaceClassesResponse>, Status> {
+        let req = request.into_inner();
+        let prefix = req.prefix.trim().to_string();
+        let limit = if req.limit == 0 { 20 } else { req.limit as usize };
+
+        let index_svc = self.index_service.as_ref().ok_or_else(|| {
+            Status::failed_precondition("全文索引服务未启用")
+        })?;
+        index_svc
+            .ensure_face_class_index()
+            .await
+            .map_err(|e| Status::internal(format!("确保 face_class 索引失败: {}", e)))?;
+
+        // 分类数量级小，直接读取全量后按名称前缀过滤
+        // （不依赖 tantivy 通配符查询，避免分词对前缀匹配的影响，保证真前缀语义）
+        let docs = index_svc
+            .list_documents("face_class")
+            .await
+            .map_err(|e| Status::internal(format!("读取人脸分类列表失败: {}", e)))?;
+
+        let mut classes = Vec::new();
+        for (doc_id, fields) in docs {
+            if fields.get("doc_type").map(|s| s.as_str()) != Some("class") {
+                continue;
+            }
+            let class_id = fields
+                .get("class_id")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or_else(|| doc_id.parse::<i64>().unwrap_or(0));
+            let name = fields.get("name").cloned().unwrap_or_default();
+            let description = fields.get("description").cloned().unwrap_or_default();
+            // 关键字匹配：分类名称或描述包含关键字即命中（支持全文检索）
+            if !prefix.is_empty()
+                && !name.contains(&prefix)
+                && !description.contains(&prefix)
+            {
+                continue;
+            }
+            let keys = fields
+                .get("keys")
+                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                .unwrap_or_default();
+            let created_at = fields
+                .get("created_at")
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+            let medoid_key = fields.get("medoid_key").cloned().unwrap_or_default();
+            classes.push(FaceClassItem {
+                class_id,
+                name,
+                keys,
+                created_at,
+                medoid_key,
+                description,
+            });
+        }
+        // 按分类 ID 降序排列（新分类在前）
+        classes.sort_by(|a, b| b.class_id.cmp(&a.class_id));
+        // 取前 limit 条
+        classes.truncate(limit);
+
+        let total = classes.len() as u32;
+        Ok(TonicResponse::new(SearchFaceClassesResponse {
+            success: true,
+            message: format!("找到 {} 个人脸分类", classes.len()),
+            classes,
+            total,
         }))
     }
 
@@ -1925,6 +2011,10 @@ impl FaceService for FaceServiceImpl {
         class_fields.insert(
             "created_at".to_string(),
             doc.get("created_at").cloned().unwrap_or_default(),
+        );
+        class_fields.insert(
+            "description".to_string(),
+            doc.get("description").cloned().unwrap_or_default(),
         );
         class_fields.insert("medoid".to_string(), medoid_json);
         class_fields.insert("medoid_key".to_string(), medoid_key.clone());
@@ -2128,6 +2218,10 @@ impl FaceService for FaceServiceImpl {
             "created_at".to_string(),
             doc.get("created_at").cloned().unwrap_or_default(),
         );
+        class_fields.insert(
+            "description".to_string(),
+            doc.get("description").cloned().unwrap_or_default(),
+        );
         class_fields.insert("medoid".to_string(), medoid_json);
         class_fields.insert("medoid_key".to_string(), medoid_key.clone());
         index_svc
@@ -2306,6 +2400,10 @@ impl FaceService for FaceServiceImpl {
         class_fields.insert(
             "created_at".to_string(),
             doc.get("created_at").cloned().unwrap_or_default(),
+        );
+        class_fields.insert(
+            "description".to_string(),
+            doc.get("description").cloned().unwrap_or_default(),
         );
         class_fields.insert("medoid".to_string(), medoid_json);
         class_fields.insert("medoid_key".to_string(), medoid_key.clone());

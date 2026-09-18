@@ -515,33 +515,35 @@ impl laoflchdb_face_service::FaceClassIndexStore for FaceClassIndexStoreAdapter 
             .await
             .map_err(|e| format!("列出全文索引失败: {}", e))?;
         if indices.contains(&"face_class".to_string()) {
-            // 校验是否已含 medoid_key 列；旧索引缺列时需重建（tantivy schema 固定，无法加列）
+            // 校验是否已含最新列；旧索引缺列时需重建（tantivy schema 固定，无法加列）
             let fields = self
                 .0
                 .get_index_fields("face_class")
                 .await
                 .map_err(|e| format!("读取 face_class 索引字段失败: {}", e))?;
             let has_medoid_key = fields.iter().any(|c| c.column_name == "medoid_key");
-            if has_medoid_key {
+            let has_description = fields.iter().any(|c| c.column_name == "description");
+            if has_medoid_key && has_description {
                 return Ok(());
             }
-            log::info!("face_class 索引缺少 medoid_key 列，重建索引（分类元数据文档将重新创建）");
+            log::info!("face_class 索引缺列（medoid_key/description），重建索引（分类元数据文档将重新创建）");
             self.0
                 .drop_index("face_class")
                 .await
                 .map_err(|e| format!("重建 face_class 索引前删除旧索引失败: {}", e))?;
         }
-        // 索引字段：doc_type(1)/class_id(2)/name(3)/keys(4)/face_count(5)/created_at(6)/medoid(7)/class_name(8)/medoid_key(9)
+        // 索引字段：doc_type(1)/class_id(2)/name(3)/keys(4)/face_count(5)/created_at(6)/medoid(7)/class_name(8)/medoid_key(9)/description(10)
         let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
             (1, "doc_type", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("文档类型: class=分类")),
             (2, "class_id", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("分类 ID")),
-            (3, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("分类名称")),
+            (3, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("分类名称(全文索引)")),
             (4, "keys", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("分类包含的人脸 key 列表(JSON)")),
             (5, "face_count", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("人脸数量")),
             (6, "created_at", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("创建时间戳")),
             (7, "medoid", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("Medoid 向量(JSON)")),
             (8, "class_name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("人脸归属文档中的分类名称")),
             (9, "medoid_key", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("Medoid 对应的人脸图片 key（分类展示图片）")),
+            (10, "description", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("分类描述(全文索引)")),
         ];
         self.0
             .create_index("face_class", &fields)
@@ -608,6 +610,21 @@ impl laoflchdb_face_service::FaceClassIndexStore for FaceClassIndexStoreAdapter 
         }
         Ok(all)
     }
+
+    async fn search(
+        &self,
+        index_name: &str,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, HashMap<String, String>)>, String> {
+        let results = IndexService::search(&*self.0, index_name, query, Some(limit))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(results
+            .into_iter()
+            .map(|r| (r.doc_id, r.fields))
+            .collect())
+    }
 }
 
 // 让 server 持有的 `Arc<dyn IndexService>` 满足 image_service 的 ImageTagIndexStore trait，
@@ -659,6 +676,40 @@ impl laoflchdb_image_service::ImageTagIndexStore for ImageTagIndexStoreAdapter {
                 .map(|_| ())
                 .map_err(|e| format!("创建 image_tag_map 索引失败: {}", e))?;
             log::info!("已创建 image_tag_map 全文索引（图片→标签映射）");
+        }
+        Ok(())
+    }
+
+    /// 确保 `image_meta`（图片元数据：基本信息 + EXIF）索引存在
+    async fn ensure_image_meta_index(&self) -> Result<(), String> {
+        let indices = self
+            .0
+            .list_indices()
+            .await
+            .map_err(|e| format!("列出全文索引失败: {}", e))?;
+        if !indices.contains(&"image_meta".to_string()) {
+            // 字段：key(1)/name(2)/format(3)/content_type(4)/content_length(5)/width(6)/height(7)
+            //       etag(8)/last_modified(9)/user_metadata(10,JSON)/exif(11,JSON)/indexed_at(12)
+            let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
+                (1, "key", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("图片 key")),
+                (2, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("图片名称(全文索引)")),
+                (3, "format", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("图片格式")),
+                (4, "content_type", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("Content-Type")),
+                (5, "content_length", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("文件大小(字节)")),
+                (6, "width", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("宽度")),
+                (7, "height", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("高度")),
+                (8, "etag", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("ETag")),
+                (9, "last_modified", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("修改时间")),
+                (10, "user_metadata", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("用户元数据(JSON)")),
+                (11, "exif", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("EXIF 元数据(JSON)")),
+                (12, "indexed_at", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("索引时间戳(毫秒)")),
+            ];
+            self.0
+                .create_index("image_meta", &fields)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("创建 image_meta 索引失败: {}", e))?;
+            log::info!("已创建 image_meta 全文索引（图片元数据）");
         }
         Ok(())
     }
