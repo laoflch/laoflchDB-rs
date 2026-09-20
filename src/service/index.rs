@@ -552,6 +552,46 @@ impl laoflchdb_face_service::FaceClassIndexStore for FaceClassIndexStoreAdapter 
             .map_err(|e| format!("创建 face_class 索引失败: {}", e))
     }
 
+    /// 确保 `face_class_tag`（标签实体）与 `face_class_tag_map`（分类→标签映射）索引存在
+    async fn ensure_face_class_tag_indexes(&self) -> Result<(), String> {
+        let indices = self
+            .0
+            .list_indices()
+            .await
+            .map_err(|e| format!("列出全文索引失败: {}", e))?;
+        // 1. 标签实体索引：doc_id = 标签 id（Snowflake）
+        if !indices.contains(&"face_class_tag".to_string()) {
+            // 字段：tag_id(1)/name(2)/description(3)/class_count(4)/created_at(5)
+            let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
+                (1, "tag_id", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签 ID")),
+                (2, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签名称(全文索引)")),
+                (3, "description", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签描述(全文索引)")),
+                (4, "class_count", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("使用该标签的分类数量")),
+                (5, "created_at", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("创建时间戳")),
+            ];
+            self.0
+                .create_index("face_class_tag", &fields)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("创建 face_class_tag 索引失败: {}", e))?;
+            log::info!("已创建 face_class_tag 全文索引（人脸分类标签实体）");
+        }
+        // 2. 分类→标签映射索引：doc_id = 分类 ID，tag_ids 列支持按标签 id 检索
+        if !indices.contains(&"face_class_tag_map".to_string()) {
+            let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
+                (1, "class_id", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("人脸分类 ID")),
+                (2, "tag_ids", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("分类拥有的标签 id 列表(JSON数组，支持按标签 id 检索)")),
+            ];
+            self.0
+                .create_index("face_class_tag_map", &fields)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("创建 face_class_tag_map 索引失败: {}", e))?;
+            log::info!("已创建 face_class_tag_map 全文索引（分类→标签映射）");
+        }
+        Ok(())
+    }
+
     async fn add_document(
         &self,
         index_name: &str,

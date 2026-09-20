@@ -28,6 +28,7 @@ service FaceService {
 
   // 新增人脸分类：将指定人脸组的向量计算 medoid 并保存（供后续归属分类召回）
   rpc CreateFaceClass(CreateFaceClassRequest) returns (CreateFaceClassResponse);
+
   // 删除人脸分类：删除全文索引中的分类文档、人脸归属文档及 face_class 索引中的 medoid 向量
   rpc DeleteFaceClass(DeleteFaceClassRequest) returns (DeleteFaceClassResponse);
 
@@ -45,6 +46,30 @@ service FaceService {
 
   // 重新计算人脸分类的 Medoid：基于分类内当前全部人脸向量重算并保存更新
   rpc RecomputeFaceClassMedoid(RecomputeFaceClassMedoidRequest) returns (RecomputeFaceClassMedoidResponse);
+
+  // 创建人脸分类标签（服务端生成 Snowflake 标签 ID）
+  rpc CreateFaceClassTag(CreateFaceClassTagRequest) returns (CreateFaceClassTagResponse);
+
+  // 修改人脸分类标签（名称/描述）
+  rpc UpdateFaceClassTag(UpdateFaceClassTagRequest) returns (UpdateFaceClassTagResponse);
+
+  // 删除人脸分类标签（同时从所有分类中移除）
+  rpc DeleteFaceClassTag(DeleteFaceClassTagRequest) returns (DeleteFaceClassTagResponse);
+
+  // 列出全部人脸分类标签（分页）
+  rpc ListFaceClassTags(ListFaceClassTagsRequest) returns (ListFaceClassTagsResponse);
+
+  // 关键字全文检索人脸分类标签（名称/描述包含匹配，供选择标签时使用）
+  rpc SearchFaceClassTags(SearchFaceClassTagsRequest) returns (SearchFaceClassTagsResponse);
+
+  // 获取人脸分类已打的标签列表
+  rpc GetFaceClassTags(GetFaceClassTagsRequest) returns (GetFaceClassTagsResponse);
+
+  // 给指定人脸分类打标签（一个分类可打多个标签）
+  rpc AddFaceClassTag(AddFaceClassTagRequest) returns (AddFaceClassTagResponse);
+
+  // 从指定人脸分类移除标签
+  rpc RemoveFaceClassTag(RemoveFaceClassTagRequest) returns (RemoveFaceClassTagResponse);
 
   // 列出全部存储桶（内部通过 storage_service 获取）
   rpc ListBuckets(ListBucketsRequest) returns (ListBucketsResponse);
@@ -356,6 +381,120 @@ message RecomputeFaceClassMedoidResponse {
   int64 class_id = 3;
   // 更新后 Medoid 对应的人脸图片 key
   string medoid_key = 4;
+}
+
+// ── 人脸分类标签（face_class_tag 标签实体 + face_class_tag_map 分类→标签映射） ────────────────────────────
+
+// 人脸分类标签实体
+message FaceClassTagInfo {
+  // 标签 ID（Snowflake）
+  string tag_id = 1;
+  // 标签名称
+  string name = 2;
+  // 标签描述
+  string description = 3;
+  // 使用该标签的分类数量
+  int64 class_count = 4;
+  // 创建时间戳（秒）
+  int64 created_at = 5;
+}
+
+message CreateFaceClassTagRequest {
+  string name = 1;
+  string description = 2;
+}
+
+message CreateFaceClassTagResponse {
+  bool success = 1;
+  string message = 2;
+  string tag_id = 3;
+  string created_at = 4;
+}
+
+message UpdateFaceClassTagRequest {
+  string tag_id = 1;
+  string name = 2;
+  string description = 3;
+}
+
+message UpdateFaceClassTagResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message DeleteFaceClassTagRequest {
+  string tag_id = 1;
+}
+
+message DeleteFaceClassTagResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListFaceClassTagsRequest {
+  int32 offset = 1;
+  int32 limit = 2;
+}
+
+message ListFaceClassTagsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated FaceClassTagInfo tags = 3;
+  int32 total = 4;
+  bool has_next_page = 5;
+}
+
+message SearchFaceClassTagsRequest {
+  // 名称/描述关键字（空则返回全部前 limit 条）
+  string prefix = 1;
+  // 返回条数上限（0 表示默认 20）
+  int32 limit = 2;
+}
+
+message SearchFaceClassTagsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated FaceClassTagInfo tags = 3;
+  int32 total = 4;
+}
+
+message GetFaceClassTagsRequest {
+  // 人脸分类 ID（Snowflake）
+  int64 class_id = 1;
+}
+
+message GetFaceClassTagsResponse {
+  bool success = 1;
+  string message = 2;
+  repeated FaceClassTagInfo tags = 3;
+}
+
+message AddFaceClassTagRequest {
+  // 人脸分类 ID（Snowflake）
+  int64 class_id = 1;
+  // 标签 ID
+  string tag_id = 2;
+}
+
+message AddFaceClassTagResponse {
+  bool success = 1;
+  string message = 2;
+  // 更新后该标签的分类数量
+  int64 class_count = 3;
+}
+
+message RemoveFaceClassTagRequest {
+  // 人脸分类 ID（Snowflake）
+  int64 class_id = 1;
+  // 标签 ID
+  string tag_id = 2;
+}
+
+message RemoveFaceClassTagResponse {
+  bool success = 1;
+  string message = 2;
+  // 更新后该标签的分类数量
+  int64 class_count = 3;
 }
 
 // ── ListBuckets 存储桶列表 ────────────────────────────

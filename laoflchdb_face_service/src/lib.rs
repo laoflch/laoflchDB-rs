@@ -107,6 +107,8 @@ impl Default for FaceServiceConfig {
 pub trait FaceClassIndexStore: Send + Sync + 'static {
     /// 确保 `face_class` 索引存在（不存在则创建）
     async fn ensure_face_class_index(&self) -> Result<(), String>;
+    /// 确保 `face_class_tag`（标签实体）与 `face_class_tag_map`（分类→标签映射）索引存在
+    async fn ensure_face_class_tag_indexes(&self) -> Result<(), String>;
     /// 向指定索引添加文档（doc_id 作为主键，重复添加返回错误）
     async fn add_document(
         &self,
@@ -999,6 +1001,144 @@ fn crop_face_centered(
 
 
 
+// ── 人脸分类标签内部辅助方法（通过全文索引存储实现） ──
+
+impl FaceServiceImpl {
+    /// 获取全文索引服务引用（分类标签功能需要）
+    fn require_class_tag_index_service(&self) -> Result<&Arc<dyn FaceClassIndexStore>, Status> {
+        self.index_service.as_ref().ok_or_else(|| {
+            Status::failed_precondition("全文索引服务未启用，无法使用人脸分类标签功能")
+        })
+    }
+
+    /// 确保人脸分类标签相关索引存在
+    async fn ensure_class_tag_indexes(&self) -> Result<(), Status> {
+        self.require_class_tag_index_service()?
+            .ensure_face_class_tag_indexes()
+            .await
+            .map_err(|e| Status::internal(format!("初始化人脸分类标签索引失败: {}", e)))
+    }
+
+    /// 读取人脸分类的标签 id 列表（解析 face_class_tag_map 文档的 tag_ids JSON 字段）
+    async fn read_class_tag_ids(&self, class_id: &str) -> Result<Vec<String>, Status> {
+        let svc = self.require_class_tag_index_service()?;
+        match svc.get_document("face_class_tag_map", class_id).await {
+            Ok(Some(fields)) => {
+                let raw = fields
+                    .get("tag_ids")
+                    .cloned()
+                    .unwrap_or_else(|| "[]".to_string());
+                match serde_json::from_str::<Vec<String>>(&raw) {
+                    Ok(ids) => Ok(ids),
+                    Err(_) => Ok(raw
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect()),
+                }
+            }
+            Ok(None) => Ok(Vec::new()),
+            Err(e) => Err(Status::internal(format!("读取分类标签失败: {}", e))),
+        }
+    }
+
+    /// 保存人脸分类的标签 id 列表（读取→删除→重建）
+    async fn write_class_tag_ids(
+        &self,
+        class_id: &str,
+        tag_ids: &[String],
+    ) -> Result<(), Status> {
+        let svc = self.require_class_tag_index_service()?;
+        if let Ok(Some(_)) = svc.get_document("face_class_tag_map", class_id).await {
+            svc.delete_document("face_class_tag_map", class_id)
+                .await
+                .map_err(|e| Status::internal(format!("删除分类标签映射失败: {}", e)))?;
+        }
+        if tag_ids.is_empty() {
+            return Ok(());
+        }
+        let mut fields = HashMap::new();
+        fields.insert("class_id".to_string(), class_id.to_string());
+        fields.insert(
+            "tag_ids".to_string(),
+            serde_json::to_string(tag_ids).unwrap_or_default(),
+        );
+        svc.add_document("face_class_tag_map", class_id, fields)
+            .await
+            .map_err(|e| Status::internal(format!("保存分类标签映射失败: {}", e)))
+    }
+
+    /// 读取标签实体文档，返回字段映射
+    async fn read_class_tag_document(
+        &self,
+        tag_id: &str,
+    ) -> Result<Option<HashMap<String, String>>, Status> {
+        let svc = self.require_class_tag_index_service()?;
+        svc.get_document("face_class_tag", tag_id)
+            .await
+            .map_err(|e| Status::internal(format!("读取标签失败: {}", e)))
+    }
+
+    /// 保存标签实体文档（读取→删除→重建）
+    async fn write_class_tag_document(
+        &self,
+        tag_id: &str,
+        fields: HashMap<String, String>,
+    ) -> Result<(), Status> {
+        let svc = self.require_class_tag_index_service()?;
+        if let Ok(Some(_)) = svc.get_document("face_class_tag", tag_id).await {
+            svc.delete_document("face_class_tag", tag_id)
+                .await
+                .map_err(|e| Status::internal(format!("删除标签失败: {}", e)))?;
+        }
+        svc.add_document("face_class_tag", tag_id, fields)
+            .await
+            .map_err(|e| Status::internal(format!("保存标签失败: {}", e)))
+    }
+
+    /// 调整标签的使用分类数量（delta 可为正负），返回最新数量
+    async fn adjust_class_tag_class_count(&self, tag_id: &str, delta: i64) -> Result<i64, Status> {
+        let fields = self
+            .read_class_tag_document(tag_id)
+            .await?
+            .ok_or_else(|| Status::not_found(format!("标签不存在: {}", tag_id)))?;
+        let current: i64 = fields
+            .get("class_count")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let new_count = (current + delta).max(0);
+        let mut new_fields = fields.clone();
+        new_fields.insert("class_count".to_string(), new_count.to_string());
+        self.write_class_tag_document(tag_id, new_fields).await?;
+        Ok(new_count)
+    }
+
+    /// 构造 FaceClassTagInfo（供 gRPC 返回）
+    fn build_class_tag_info(tag_id: &str, fields: &HashMap<String, String>) -> FaceClassTagInfo {
+        FaceClassTagInfo {
+            tag_id: tag_id.to_string(),
+            name: fields.get("name").cloned().unwrap_or_default(),
+            description: fields.get("description").cloned().unwrap_or_default(),
+            class_count: fields
+                .get("class_count")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+            created_at: fields
+                .get("created_at")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0),
+        }
+    }
+
+    /// 生成当前毫秒时间戳字符串
+    fn now_string() -> String {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis().to_string())
+            .unwrap_or_default()
+    }
+}
+
 // ── gRPC 服务实现 ────────────────────────────────────────────────
 
 #[tonic::async_trait]
@@ -1651,7 +1791,7 @@ impl FaceService for FaceServiceImpl {
                 message: "无效的分类 ID".to_string(),
             }));
         }
-        let bucket = if req.bucket.is_empty() {
+        let _bucket = if req.bucket.is_empty() {
             "faces".to_string()
         } else {
             req.bucket.clone()
@@ -1683,6 +1823,35 @@ impl FaceService for FaceServiceImpl {
         if let Some(index_svc) = self.index_service.as_ref() {
             if let Err(e) = index_svc.delete_document("face_class", &class_id.to_string()).await {
                 errors.push(format!("删除分类文档失败: {}", e));
+            }
+            // 2.1 同步清理分类标签：删除 face_class_tag_map 映射，并减少各标签的 class_count
+            let class_id_str = class_id.to_string();
+            match index_svc.get_document("face_class_tag_map", &class_id_str).await {
+                Ok(Some(fields)) => {
+                    let raw = fields
+                        .get("tag_ids")
+                        .cloned()
+                        .unwrap_or_else(|| "[]".to_string());
+                    let tag_ids: Vec<String> =
+                        serde_json::from_str(&raw).unwrap_or_default();
+                    if let Err(e) = index_svc
+                        .delete_document("face_class_tag_map", &class_id_str)
+                        .await
+                    {
+                        errors.push(format!("删除分类标签映射失败: {}", e));
+                    } else {
+                        for tag_id in tag_ids {
+                            if let Err(e) = self
+                                .adjust_class_tag_class_count(&tag_id, -1)
+                                .await
+                            {
+                                errors.push(format!("调整标签数量失败: {}", e));
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => errors.push(format!("读取分类标签映射失败: {}", e)),
             }
         }
 
@@ -2417,6 +2586,290 @@ impl FaceService for FaceServiceImpl {
             message: format!("分类 '{}' 的 Medoid 已重新计算并保存", name),
             class_id,
             medoid_key,
+        }))
+    }
+
+    // ── 人脸分类标签 ────────────────────────────────────────────
+
+    /// 创建人脸分类标签（标签 id 使用 Snowflake ID）
+    async fn create_face_class_tag(
+        &self,
+        request: Request<CreateFaceClassTagRequest>,
+    ) -> Result<TonicResponse<CreateFaceClassTagResponse>, Status> {
+        let req = request.into_inner();
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Ok(TonicResponse::new(CreateFaceClassTagResponse {
+                success: false,
+                message: "标签名称不能为空".to_string(),
+                tag_id: String::new(),
+                created_at: String::new(),
+            }));
+        }
+        self.ensure_class_tag_indexes().await?;
+        let tag_id = self.generate_face_key().to_string();
+        let mut fields = HashMap::new();
+        fields.insert("tag_id".to_string(), tag_id.clone());
+        fields.insert("name".to_string(), name);
+        fields.insert("description".to_string(), req.description);
+        fields.insert("class_count".to_string(), "0".to_string());
+        fields.insert("created_at".to_string(), Self::now_string());
+        self.write_class_tag_document(&tag_id, fields).await?;
+        Ok(TonicResponse::new(CreateFaceClassTagResponse {
+            success: true,
+            message: "OK".to_string(),
+            tag_id,
+            created_at: Self::now_string(),
+        }))
+    }
+
+    /// 修改人脸分类标签（名称/描述）
+    async fn update_face_class_tag(
+        &self,
+        request: Request<UpdateFaceClassTagRequest>,
+    ) -> Result<TonicResponse<UpdateFaceClassTagResponse>, Status> {
+        let req = request.into_inner();
+        let name = req.name.trim().to_string();
+        if name.is_empty() {
+            return Ok(TonicResponse::new(UpdateFaceClassTagResponse {
+                success: false,
+                message: "标签名称不能为空".to_string(),
+            }));
+        }
+        self.ensure_class_tag_indexes().await?;
+        let fields = self
+            .read_class_tag_document(&req.tag_id)
+            .await?
+            .ok_or_else(|| Status::not_found(format!("标签不存在: {}", req.tag_id)))?;
+        let mut new_fields = fields.clone();
+        new_fields.insert("name".to_string(), name);
+        new_fields.insert("description".to_string(), req.description);
+        self.write_class_tag_document(&req.tag_id, new_fields).await?;
+        Ok(TonicResponse::new(UpdateFaceClassTagResponse {
+            success: true,
+            message: "OK".to_string(),
+        }))
+    }
+
+    /// 删除人脸分类标签（同时从所有分类中移除）
+    async fn delete_face_class_tag(
+        &self,
+        request: Request<DeleteFaceClassTagRequest>,
+    ) -> Result<TonicResponse<DeleteFaceClassTagResponse>, Status> {
+        let req = request.into_inner();
+        self.ensure_class_tag_indexes().await?;
+        let svc = self.require_class_tag_index_service()?;
+        // 1. 删除标签实体
+        if let Ok(Some(_)) = svc.get_document("face_class_tag", &req.tag_id).await {
+            svc.delete_document("face_class_tag", &req.tag_id)
+                .await
+                .map_err(|e| Status::internal(format!("删除标签失败: {}", e)))?;
+        }
+        // 2. 从所有分类中移除该标签（全量扫描映射文档）
+        let docs = svc
+            .list_documents("face_class_tag_map")
+            .await
+            .map_err(|e| Status::internal(format!("扫描分类标签映射失败: {}", e)))?;
+        for (class_id, fields) in docs {
+            let raw = fields
+                .get("tag_ids")
+                .cloned()
+                .unwrap_or_else(|| "[]".to_string());
+            let ids: Vec<String> = serde_json::from_str(&raw).unwrap_or_default();
+            let original_len = ids.len();
+            let remaining: Vec<String> = ids
+                .into_iter()
+                .filter(|id| id != &req.tag_id)
+                .collect();
+            if remaining.len() != original_len {
+                self.write_class_tag_ids(&class_id, &remaining).await?;
+            }
+        }
+        Ok(TonicResponse::new(DeleteFaceClassTagResponse {
+            success: true,
+            message: "OK".to_string(),
+        }))
+    }
+
+    /// 列出全部人脸分类标签（分页扫描）
+    async fn list_face_class_tags(
+        &self,
+        request: Request<ListFaceClassTagsRequest>,
+    ) -> Result<TonicResponse<ListFaceClassTagsResponse>, Status> {
+        let req = request.into_inner();
+        self.ensure_class_tag_indexes().await?;
+        let svc = self.require_class_tag_index_service()?;
+        let offset = req.offset as usize;
+        let limit = if req.limit == 0 { 50 } else { req.limit as usize };
+        let docs = svc
+            .list_documents("face_class_tag")
+            .await
+            .map_err(|e| Status::internal(format!("列出标签失败: {}", e)))?;
+        let total = docs.len() as i32;
+        let page_docs: Vec<_> = docs
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .collect();
+        let tags: Vec<FaceClassTagInfo> = page_docs
+            .into_iter()
+            .map(|(doc_id, fields)| Self::build_class_tag_info(&doc_id, &fields))
+            .collect();
+        Ok(TonicResponse::new(ListFaceClassTagsResponse {
+            success: true,
+            message: "OK".to_string(),
+            tags,
+            total,
+            has_next_page: offset + limit < total as usize,
+        }))
+    }
+
+    /// 关键字全文检索人脸分类标签（名称/描述包含匹配；空关键字返回全部前 limit 条）
+    async fn search_face_class_tags(
+        &self,
+        request: Request<SearchFaceClassTagsRequest>,
+    ) -> Result<TonicResponse<SearchFaceClassTagsResponse>, Status> {
+        let req = request.into_inner();
+        let prefix = req.prefix.trim().to_string();
+        let limit = if req.limit == 0 { 20 } else { req.limit as usize };
+        self.ensure_class_tag_indexes().await?;
+        let svc = self.require_class_tag_index_service()?;
+        // 标签数量级小，直接读取全量后按名称/描述包含过滤（保证真包含语义）
+        let docs = svc
+            .list_documents("face_class_tag")
+            .await
+            .map_err(|e| Status::internal(format!("读取标签列表失败: {}", e)))?;
+        let mut tags = Vec::new();
+        for (doc_id, fields) in docs {
+            let name = fields.get("name").cloned().unwrap_or_default();
+            let description = fields.get("description").cloned().unwrap_or_default();
+            if !prefix.is_empty()
+                && !name.contains(&prefix)
+                && !description.contains(&prefix)
+            {
+                continue;
+            }
+            tags.push(Self::build_class_tag_info(&doc_id, &fields));
+            if tags.len() >= limit {
+                break;
+            }
+        }
+        let total = tags.len() as i32;
+        Ok(TonicResponse::new(SearchFaceClassTagsResponse {
+            success: true,
+            message: format!("找到 {} 个标签", total),
+            tags,
+            total,
+        }))
+    }
+
+    /// 获取人脸分类已打的标签列表
+    async fn get_face_class_tags(
+        &self,
+        request: Request<GetFaceClassTagsRequest>,
+    ) -> Result<TonicResponse<GetFaceClassTagsResponse>, Status> {
+        let req = request.into_inner();
+        if req.class_id <= 0 {
+            return Ok(TonicResponse::new(GetFaceClassTagsResponse {
+                success: false,
+                message: "无效的分类 ID".to_string(),
+                tags: Vec::new(),
+            }));
+        }
+        self.ensure_class_tag_indexes().await?;
+        let tag_ids = self
+            .read_class_tag_ids(&req.class_id.to_string())
+            .await?;
+        let mut tags = Vec::new();
+        for tag_id in &tag_ids {
+            if let Some(fields) = self.read_class_tag_document(tag_id).await? {
+                tags.push(Self::build_class_tag_info(tag_id, &fields));
+            }
+        }
+        Ok(TonicResponse::new(GetFaceClassTagsResponse {
+            success: true,
+            message: "OK".to_string(),
+            tags,
+        }))
+    }
+
+    /// 给指定人脸分类打标签（一个分类可打多个标签）
+    async fn add_face_class_tag(
+        &self,
+        request: Request<AddFaceClassTagRequest>,
+    ) -> Result<TonicResponse<AddFaceClassTagResponse>, Status> {
+        let req = request.into_inner();
+        if req.class_id <= 0 {
+            return Ok(TonicResponse::new(AddFaceClassTagResponse {
+                success: false,
+                message: "无效的分类 ID".to_string(),
+                class_count: 0,
+            }));
+        }
+        self.ensure_class_tag_indexes().await?;
+        // 校验标签存在
+        if self.read_class_tag_document(&req.tag_id).await?.is_none() {
+            return Ok(TonicResponse::new(AddFaceClassTagResponse {
+                success: false,
+                message: format!("标签不存在: {}", req.tag_id),
+                class_count: 0,
+            }));
+        }
+        let class_id = req.class_id.to_string();
+        let mut tag_ids = self.read_class_tag_ids(&class_id).await?;
+        if tag_ids.contains(&req.tag_id) {
+            // 已打标，直接返回当前数量
+            let count = self
+                .read_class_tag_document(&req.tag_id)
+                .await?
+                .and_then(|f| f.get("class_count").and_then(|v| v.parse().ok()))
+                .unwrap_or(0);
+            return Ok(TonicResponse::new(AddFaceClassTagResponse {
+                success: true,
+                message: "已打标".to_string(),
+                class_count: count,
+            }));
+        }
+        tag_ids.push(req.tag_id.clone());
+        self.write_class_tag_ids(&class_id, &tag_ids).await?;
+        let class_count = self.adjust_class_tag_class_count(&req.tag_id, 1).await?;
+        Ok(TonicResponse::new(AddFaceClassTagResponse {
+            success: true,
+            message: "OK".to_string(),
+            class_count,
+        }))
+    }
+
+    /// 从指定人脸分类移除标签
+    async fn remove_face_class_tag(
+        &self,
+        request: Request<RemoveFaceClassTagRequest>,
+    ) -> Result<TonicResponse<RemoveFaceClassTagResponse>, Status> {
+        let req = request.into_inner();
+        if req.class_id <= 0 {
+            return Ok(TonicResponse::new(RemoveFaceClassTagResponse {
+                success: false,
+                message: "无效的分类 ID".to_string(),
+                class_count: 0,
+            }));
+        }
+        self.ensure_class_tag_indexes().await?;
+        let class_id = req.class_id.to_string();
+        let mut tag_ids = self.read_class_tag_ids(&class_id).await?;
+        if !tag_ids.contains(&req.tag_id) {
+            return Ok(TonicResponse::new(RemoveFaceClassTagResponse {
+                success: true,
+                message: "未打标".to_string(),
+                class_count: 0,
+            }));
+        }
+        tag_ids.retain(|id| id != &req.tag_id);
+        self.write_class_tag_ids(&class_id, &tag_ids).await?;
+        let class_count = self.adjust_class_tag_class_count(&req.tag_id, -1).await?;
+        Ok(TonicResponse::new(RemoveFaceClassTagResponse {
+            success: true,
+            message: "OK".to_string(),
+            class_count,
         }))
     }
 
