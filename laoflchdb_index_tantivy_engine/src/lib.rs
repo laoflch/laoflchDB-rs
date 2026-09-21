@@ -500,7 +500,20 @@ impl StorageEngine for TantivyStorageEngine {
                 if let Some(data) = row.data.get(idx) {
                     if let Some(field) = table_index.field_map.get(&col.column_name) {
                         let value_str = String::from_utf8_lossy(data);
-                        doc_builder.add_text(*field, value_str.to_string());
+                        // 按列类型写入：INT64/FLOAT 写数值字段，其余写文本字段
+                        match col.column_type.enum_value() {
+                            Ok(ColumnType::COLUMN_TYPE_INT64) => {
+                                let v = value_str.trim().parse::<i64>().unwrap_or(0);
+                                doc_builder.add_i64(*field, v);
+                            }
+                            Ok(ColumnType::COLUMN_TYPE_FLOAT) => {
+                                let v = value_str.trim().parse::<f64>().unwrap_or(0.0);
+                                doc_builder.add_f64(*field, v);
+                            }
+                            _ => {
+                                doc_builder.add_text(*field, value_str.to_string());
+                            }
+                        }
                     }
                 }
             }

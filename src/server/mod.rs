@@ -220,8 +220,14 @@ impl LaoflchDBServer {
                     img_config,
                     Some(vector_service.clone()),
                     embedding_service.clone(),
-                    image_index_svc,
+                    image_index_svc.clone(),
                 );
+                // 启动时初始化图片标签索引并执行旧结构迁移（避免懒迁移导致首屏显示旧字段）
+                if let Some(ref adapter) = image_index_svc {
+                    if let Err(e) = adapter.ensure_image_tag_indexes().await {
+                        log::warn!("初始化图片标签索引失败: {}", e);
+                    }
+                }
                 info!("图片服务已启动");
                 Some(Arc::new(img_svc))
             }
@@ -286,8 +292,14 @@ impl LaoflchDBServer {
                     face_config,
                     Some(img_svc.clone()),
                     embedding_service.clone(),
-                    face_index_svc,
+                    face_index_svc.clone(),
                 );
+                // 启动时初始化人脸分类标签索引并执行旧结构迁移（避免懒迁移导致首屏显示旧字段）
+                if let Some(ref adapter) = face_index_svc {
+                    if let Err(e) = adapter.ensure_face_class_tag_indexes().await {
+                        log::warn!("初始化人脸分类标签索引失败: {}", e);
+                    }
+                }
                 info!("人脸服务已启动");
                 Some(Arc::new(face_svc))
             }

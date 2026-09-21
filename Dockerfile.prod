@@ -14,7 +14,8 @@ RUN mkdir -p /app/data && \
     mkdir -p /app/model && \
     mkdir -p /app/laoflch_hnsw_data && \
     mkdir -p /app/laoflch_hnsw_snapshots && \
-    mkdir -p /app/laoflch_db_oss
+    mkdir -p /app/laoflch_db_oss && \
+    mkdir -p /app/laoflch_db_index
 
 # Set working directory
 WORKDIR /app

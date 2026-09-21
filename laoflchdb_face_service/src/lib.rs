@@ -1068,61 +1068,85 @@ impl FaceServiceImpl {
             .map_err(|e| Status::internal(format!("保存分类标签映射失败: {}", e)))
     }
 
-    /// 读取标签实体文档，返回字段映射
+    /// 读取标签实体文档（共享 tags 索引，包含 name/description/created_at）
     async fn read_class_tag_document(
         &self,
         tag_id: &str,
     ) -> Result<Option<HashMap<String, String>>, Status> {
         let svc = self.require_class_tag_index_service()?;
-        svc.get_document("face_class_tag", tag_id)
+        svc.get_document("tags", tag_id)
             .await
             .map_err(|e| Status::internal(format!("读取标签失败: {}", e)))
     }
 
-    /// 保存标签实体文档（读取→删除→重建）
+    /// 保存标签实体文档（共享 tags 索引，读取→删除→重建）
     async fn write_class_tag_document(
         &self,
         tag_id: &str,
         fields: HashMap<String, String>,
     ) -> Result<(), Status> {
         let svc = self.require_class_tag_index_service()?;
-        if let Ok(Some(_)) = svc.get_document("face_class_tag", tag_id).await {
-            svc.delete_document("face_class_tag", tag_id)
+        if let Ok(Some(_)) = svc.get_document("tags", tag_id).await {
+            svc.delete_document("tags", tag_id)
                 .await
                 .map_err(|e| Status::internal(format!("删除标签失败: {}", e)))?;
         }
-        svc.add_document("face_class_tag", tag_id, fields)
+        svc.add_document("tags", tag_id, fields)
             .await
             .map_err(|e| Status::internal(format!("保存标签失败: {}", e)))
     }
 
+    /// 读取人脸分类侧标签计数（face_class_tag 索引，不存在视为 0）
+    async fn read_class_tag_class_count(&self, tag_id: &str) -> Result<i64, Status> {
+        let svc = self.require_class_tag_index_service()?;
+        match svc.get_document("face_class_tag", tag_id).await {
+            Ok(Some(fields)) => Ok(fields
+                .get("class_count")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0)),
+            Ok(None) => Ok(0),
+            Err(e) => Err(Status::internal(format!("读取分类计数失败: {}", e))),
+        }
+    }
+
+    /// 保存人脸分类侧标签计数（face_class_tag 索引，读取→删除→重建）
+    async fn write_class_tag_class_count(&self, tag_id: &str, count: i64) -> Result<(), Status> {
+        let svc = self.require_class_tag_index_service()?;
+        if let Ok(Some(_)) = svc.get_document("face_class_tag", tag_id).await {
+            svc.delete_document("face_class_tag", tag_id)
+                .await
+                .map_err(|e| Status::internal(format!("删除分类计数失败: {}", e)))?;
+        }
+        let mut fields = HashMap::new();
+        fields.insert("class_count".to_string(), count.to_string());
+        svc.add_document("face_class_tag", tag_id, fields)
+            .await
+            .map_err(|e| Status::internal(format!("保存分类计数失败: {}", e)))
+    }
+
     /// 调整标签的使用分类数量（delta 可为正负），返回最新数量
     async fn adjust_class_tag_class_count(&self, tag_id: &str, delta: i64) -> Result<i64, Status> {
-        let fields = self
-            .read_class_tag_document(tag_id)
-            .await?
-            .ok_or_else(|| Status::not_found(format!("标签不存在: {}", tag_id)))?;
-        let current: i64 = fields
-            .get("class_count")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+        // 标签实体必须存在于共享 tags 索引
+        if self.read_class_tag_document(tag_id).await?.is_none() {
+            return Err(Status::not_found(format!("标签不存在: {}", tag_id)));
+        }
+        let current = self.read_class_tag_class_count(tag_id).await?;
         let new_count = (current + delta).max(0);
-        let mut new_fields = fields.clone();
-        new_fields.insert("class_count".to_string(), new_count.to_string());
-        self.write_class_tag_document(tag_id, new_fields).await?;
+        self.write_class_tag_class_count(tag_id, new_count).await?;
         Ok(new_count)
     }
 
     /// 构造 FaceClassTagInfo（供 gRPC 返回）
-    fn build_class_tag_info(tag_id: &str, fields: &HashMap<String, String>) -> FaceClassTagInfo {
+    fn build_class_tag_info(
+        tag_id: &str,
+        fields: &HashMap<String, String>,
+        class_count: i64,
+    ) -> FaceClassTagInfo {
         FaceClassTagInfo {
             tag_id: tag_id.to_string(),
             name: fields.get("name").cloned().unwrap_or_default(),
             description: fields.get("description").cloned().unwrap_or_default(),
-            class_count: fields
-                .get("class_count")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(0),
+            class_count,
             created_at: fields
                 .get("created_at")
                 .and_then(|v| v.parse().ok())
@@ -2612,7 +2636,6 @@ impl FaceService for FaceServiceImpl {
         fields.insert("tag_id".to_string(), tag_id.clone());
         fields.insert("name".to_string(), name);
         fields.insert("description".to_string(), req.description);
-        fields.insert("class_count".to_string(), "0".to_string());
         fields.insert("created_at".to_string(), Self::now_string());
         self.write_class_tag_document(&tag_id, fields).await?;
         Ok(TonicResponse::new(CreateFaceClassTagResponse {
@@ -2659,13 +2682,19 @@ impl FaceService for FaceServiceImpl {
         let req = request.into_inner();
         self.ensure_class_tag_indexes().await?;
         let svc = self.require_class_tag_index_service()?;
-        // 1. 删除标签实体
-        if let Ok(Some(_)) = svc.get_document("face_class_tag", &req.tag_id).await {
-            svc.delete_document("face_class_tag", &req.tag_id)
+        // 1. 删除标签实体（共享 tags 索引）
+        if let Ok(Some(_)) = svc.get_document("tags", &req.tag_id).await {
+            svc.delete_document("tags", &req.tag_id)
                 .await
                 .map_err(|e| Status::internal(format!("删除标签失败: {}", e)))?;
         }
-        // 2. 从所有分类中移除该标签（全量扫描映射文档）
+        // 2. 删除人脸分类侧计数（face_class_tag 索引）
+        if let Ok(Some(_)) = svc.get_document("face_class_tag", &req.tag_id).await {
+            svc.delete_document("face_class_tag", &req.tag_id)
+                .await
+                .map_err(|e| Status::internal(format!("删除分类计数失败: {}", e)))?;
+        }
+        // 3. 从所有分类中移除该标签（全量扫描映射文档）
         let docs = svc
             .list_documents("face_class_tag_map")
             .await
@@ -2701,8 +2730,9 @@ impl FaceService for FaceServiceImpl {
         let svc = self.require_class_tag_index_service()?;
         let offset = req.offset as usize;
         let limit = if req.limit == 0 { 50 } else { req.limit as usize };
+        // 共享标签清单存于 tags 索引，face_class_tag 仅保存分类侧计数
         let docs = svc
-            .list_documents("face_class_tag")
+            .list_documents("tags")
             .await
             .map_err(|e| Status::internal(format!("列出标签失败: {}", e)))?;
         let total = docs.len() as i32;
@@ -2711,10 +2741,11 @@ impl FaceService for FaceServiceImpl {
             .skip(offset)
             .take(limit)
             .collect();
-        let tags: Vec<FaceClassTagInfo> = page_docs
-            .into_iter()
-            .map(|(doc_id, fields)| Self::build_class_tag_info(&doc_id, &fields))
-            .collect();
+        let mut tags: Vec<FaceClassTagInfo> = Vec::with_capacity(page_docs.len());
+        for (doc_id, fields) in page_docs {
+            let class_count = self.read_class_tag_class_count(&doc_id).await?;
+            tags.push(Self::build_class_tag_info(&doc_id, &fields, class_count));
+        }
         Ok(TonicResponse::new(ListFaceClassTagsResponse {
             success: true,
             message: "OK".to_string(),
@@ -2736,7 +2767,7 @@ impl FaceService for FaceServiceImpl {
         let svc = self.require_class_tag_index_service()?;
         // 标签数量级小，直接读取全量后按名称/描述包含过滤（保证真包含语义）
         let docs = svc
-            .list_documents("face_class_tag")
+            .list_documents("tags")
             .await
             .map_err(|e| Status::internal(format!("读取标签列表失败: {}", e)))?;
         let mut tags = Vec::new();
@@ -2749,7 +2780,8 @@ impl FaceService for FaceServiceImpl {
             {
                 continue;
             }
-            tags.push(Self::build_class_tag_info(&doc_id, &fields));
+            let class_count = self.read_class_tag_class_count(&doc_id).await?;
+            tags.push(Self::build_class_tag_info(&doc_id, &fields, class_count));
             if tags.len() >= limit {
                 break;
             }
@@ -2783,7 +2815,8 @@ impl FaceService for FaceServiceImpl {
         let mut tags = Vec::new();
         for tag_id in &tag_ids {
             if let Some(fields) = self.read_class_tag_document(tag_id).await? {
-                tags.push(Self::build_class_tag_info(tag_id, &fields));
+                let class_count = self.read_class_tag_class_count(tag_id).await?;
+                tags.push(Self::build_class_tag_info(tag_id, &fields, class_count));
             }
         }
         Ok(TonicResponse::new(GetFaceClassTagsResponse {
@@ -2819,11 +2852,7 @@ impl FaceService for FaceServiceImpl {
         let mut tag_ids = self.read_class_tag_ids(&class_id).await?;
         if tag_ids.contains(&req.tag_id) {
             // 已打标，直接返回当前数量
-            let count = self
-                .read_class_tag_document(&req.tag_id)
-                .await?
-                .and_then(|f| f.get("class_count").and_then(|v| v.parse().ok()))
-                .unwrap_or(0);
+            let count = self.read_class_tag_class_count(&req.tag_id).await?;
             return Ok(TonicResponse::new(AddFaceClassTagResponse {
                 success: true,
                 message: "已打标".to_string(),

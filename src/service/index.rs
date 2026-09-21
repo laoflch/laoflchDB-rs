@@ -552,29 +552,42 @@ impl laoflchdb_face_service::FaceClassIndexStore for FaceClassIndexStoreAdapter 
             .map_err(|e| format!("创建 face_class 索引失败: {}", e))
     }
 
-    /// 确保 `face_class_tag`（标签实体）与 `face_class_tag_map`（分类→标签映射）索引存在
+    /// 确保人脸分类标签相关索引存在：
+    /// - `tags`：共享标签实体索引（与图片共用，由 image 侧 ensure 时创建，这里保证存在）
+    /// - `face_class_tag`：人脸分类侧标签计数索引（doc_id=tag_id，仅 class_count）
+    /// - `face_class_tag_map`：分类→标签映射
     async fn ensure_face_class_tag_indexes(&self) -> Result<(), String> {
         let indices = self
             .0
             .list_indices()
             .await
             .map_err(|e| format!("列出全文索引失败: {}", e))?;
-        // 1. 标签实体索引：doc_id = 标签 id（Snowflake）
-        if !indices.contains(&"face_class_tag".to_string()) {
-            // 字段：tag_id(1)/name(2)/description(3)/class_count(4)/created_at(5)
+        // 0. 共享标签实体索引（doc_id = 标签 id，与图片标签共用同一 tag_id 空间）
+        if !indices.contains(&"tags".to_string()) {
             let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
                 (1, "tag_id", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签 ID")),
                 (2, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签名称(全文索引)")),
                 (3, "description", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签描述(全文索引)")),
-                (4, "class_count", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("使用该标签的分类数量")),
-                (5, "created_at", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("创建时间戳")),
+                (4, "created_at", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, Some("创建时间戳(毫秒)")),
+            ];
+            self.0
+                .create_index("tags", &fields)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("创建 tags 索引失败: {}", e))?;
+            log::info!("已创建 tags 全文索引（共享标签实体）");
+        }
+        // 1. 人脸分类侧标签计数索引：doc_id = 标签 id，仅保存 class_count
+        if !indices.contains(&"face_class_tag".to_string()) {
+            let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
+                (1, "class_count", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, Some("使用该标签的分类数量")),
             ];
             self.0
                 .create_index("face_class_tag", &fields)
                 .await
                 .map(|_| ())
                 .map_err(|e| format!("创建 face_class_tag 索引失败: {}", e))?;
-            log::info!("已创建 face_class_tag 全文索引（人脸分类标签实体）");
+            log::info!("已创建 face_class_tag 全文索引（人脸分类侧标签计数）");
         }
         // 2. 分类→标签映射索引：doc_id = 分类 ID，tag_ids 列支持按标签 id 检索
         if !indices.contains(&"face_class_tag_map".to_string()) {
@@ -680,31 +693,46 @@ impl ImageTagIndexStoreAdapter {
 
 #[async_trait::async_trait]
 impl laoflchdb_image_service::ImageTagIndexStore for ImageTagIndexStoreAdapter {
-    /// 确保 `image_tag`（标签实体）与 `image_tag_map`（图片→标签映射）索引存在
+    /// 确保标签相关索引存在：
+    /// - `tags`：共享标签实体索引（tag_id/name/description/created_at），图片与人脸分类共用
+    /// - `image_tag`：图片侧标签计数索引（doc_id=tag_id，仅 image_count）
+    /// - `image_tag_map`：图片→标签映射
     async fn ensure_image_tag_indexes(&self) -> Result<(), String> {
         let indices = self
             .0
             .list_indices()
             .await
             .map_err(|e| format!("列出全文索引失败: {}", e))?;
-        // 1. 标签实体索引：doc_id = 标签 id（Snowflake）
-        if !indices.contains(&"image_tag".to_string()) {
-            // 字段：tag_id(1)/name(2)/description(3)/image_count(4)/created_at(5)
+
+        // 1. 共享标签实体索引：doc_id = 标签 id（Snowflake），图片与人脸分类共用
+        if !indices.contains(&"tags".to_string()) {
             let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
                 (1, "tag_id", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签 ID")),
                 (2, "name", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签名称(全文索引)")),
                 (3, "description", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("标签描述(全文索引)")),
-                (4, "image_count", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("包含图片数量")),
-                (5, "created_at", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("创建时间戳")),
+                (4, "created_at", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, Some("创建时间戳(毫秒)")),
+            ];
+            self.0
+                .create_index("tags", &fields)
+                .await
+                .map(|_| ())
+                .map_err(|e| format!("创建 tags 索引失败: {}", e))?;
+            log::info!("已创建 tags 全文索引（共享标签实体）");
+        }
+
+        // 2. 图片侧标签计数索引：doc_id = 标签 id，仅保存 image_count
+        if !indices.contains(&"image_tag".to_string()) {
+            let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
+                (1, "image_count", laoflchdb_engines::ColumnType::COLUMN_TYPE_INT64, Some("使用该标签的图片数量")),
             ];
             self.0
                 .create_index("image_tag", &fields)
                 .await
                 .map(|_| ())
                 .map_err(|e| format!("创建 image_tag 索引失败: {}", e))?;
-            log::info!("已创建 image_tag 全文索引（标签实体）");
+            log::info!("已创建 image_tag 全文索引（图片侧标签计数）");
         }
-        // 2. 图片→标签映射索引：doc_id = 图片 id，tag_ids 列支持按标签 id 检索
+        // 3. 图片→标签映射索引：doc_id = 图片 id，tag_ids 列支持按标签 id 检索
         if !indices.contains(&"image_tag_map".to_string()) {
             let fields: Vec<(u32, &str, laoflchdb_engines::ColumnType, Option<&str>)> = vec![
                 (1, "image_id", laoflchdb_engines::ColumnType::COLUMN_TYPE_STRING, Some("图片 ID")),
