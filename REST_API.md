@@ -808,6 +808,191 @@ curl -X DELETE http://localhost:8080/api/v1/object-store/my-bucket \
 
 **说明**: 删除图片时级联删除原图、所有缩略图和元数据（共 5 个对象）。删除不存在的图片是幂等操作。
 
+#### 12.7 SearchImagesByText - 文搜图
+
+**端点**: `POST /api/v1/images/search/text`
+
+**请求体 (JSON)**:
+```json
+{
+  "text": "一只可爱的猫",
+  "top_k": 5,
+  "bucket": "images",
+  "model_name": "jina-clip-v2",
+  "index_name": "image"
+}
+```
+
+**请求字段**:
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| text | string | 是 | 查询文本（中文/英文均可） |
+| top_k | int32 | 是 | 返回最相似的 top-K 张图片 |
+| bucket | string | 否 | Bucket 名称（默认 "images"） |
+| model_name | string | 否 | 向量化模型（默认 "jina-clip-v2"） |
+| index_name | string | 否 | 向量索引名称（默认 "image"） |
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "results": [
+    {
+      "score": 0.9234,
+      "metadata": {
+        "key": "cat1.jpg",
+        "width": 800,
+        "height": 600,
+        "is_indexed": true,
+        "index_model": "jina-clip-v2"
+      }
+    }
+  ]
+}
+```
+
+**说明**: 文搜图通过文本编码器（jina-clip-v2 文本塔）将文本生成 embedding，再在图片向量索引中做最近邻搜索。需确保 `text_encoder_enabled: true`。
+
+#### 12.8 SearchImagesByImage - 图搜图
+
+**端点**: `POST /api/v1/images/search/image`
+
+**请求体**: 原始图片二进制数据
+
+**查询参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| top_k | int32 | 是 | 返回最相似的 top-K 张图片 |
+| bucket | string | 否 | Bucket 名称（默认 "images"） |
+| model_name | string | 否 | 向量化模型（默认 "jina-clip-v2"） |
+| index_name | string | 否 | 向量索引名称（默认 "image"） |
+
+**请求头**:
+- `Content-Type`: 图片的 MIME 类型（如 `image/jpeg`）
+
+**响应**: 与文搜图相同的结果结构。
+
+#### 12.9 UpdateImageMetadata - 修改图片元数据
+
+**端点**: `PUT /api/v1/images/{key}/meta`
+
+**请求体 (JSON)**:
+```json
+{
+  "name": "新的文件名.png",
+  "user_metadata": {
+    "tag": "important",
+    "author": "tester"
+  },
+  "delete_keys": ["old_tag"]
+}
+```
+
+**请求字段**:
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | 否 | 更新图片名称 |
+| user_metadata | map<string, string> | 否 | 增/改用户自定义 metadata |
+| delete_keys | list<string> | 否 | 需要删除的 user_metadata key 列表 |
+
+**响应**: 返回修改后的完整 `ImageMetadata` JSON。
+
+#### 12.10 IndexImage - 独立向量索引
+
+**端点**: `POST /api/v1/images/{key}/index`
+
+**查询参数**:
+
+| 参数 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| key | string | 路径参数 | 图片 key |
+| bucket | string | 否 | Bucket 名称（默认 "images"） |
+| model_name | string | 否 | 向量化模型（默认 "jina-clip-v2"） |
+| index_name | string | 否 | 向量索引名称（默认 "image"） |
+
+**响应示例**:
+```json
+{
+  "success": true,
+  "embedding_id": "12345",
+  "embedding_dim": 768,
+  "metadata": {
+    "key": "photo.jpg",
+    "is_indexed": true,
+    "index_model": "jina-clip-v2",
+    ...
+  }
+}
+```
+
+**说明**: 对已保存的图片独立建立向量索引。索引成功后自动更新元数据 `is_indexed=true`。可用于上传时未开启 `auto_index` 的场景。
+
+#### 12.11 图片标签接口
+
+图片标签服务为图片资源提供标签管理能力。
+
+**标签 CRUD**:
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/api/v1/images/tags` | 列出全部标签（分页） |
+| POST | `/api/v1/images/tags` | 创建标签 |
+| PUT | `/api/v1/images/tags/{tag_id}` | 更新标签 |
+| DELETE | `/api/v1/images/tags/{tag_id}` | 删除标签 |
+| GET | `/api/v1/images/tags/search` | 按名称前缀检索标签 |
+
+**图片关联**:
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/api/v1/images/{key}/tags` | 获取图片的标签列表 |
+| POST | `/api/v1/images/{key}/tags/{tag_id}` | 给图片添加标签 |
+| DELETE | `/api/v1/images/{key}/tags/{tag_id}` | 从图片移除标签 |
+
+**标签检索**:
+
+| 方法 | 端点 | 说明 |
+|------|------|------|
+| GET | `/api/v1/images/search?tag_id={tag_id}` | 按标签 ID 搜索图片 |
+
+**请求示例**:
+
+```json
+// POST /api/v1/images/tags - 创建标签
+{
+  "name": "风景",
+  "description": "风景类图片"
+}
+
+// PUT /api/v1/images/tags/{tag_id} - 更新标签
+{
+  "name": "风景照",
+  "description": "更新后的描述"
+}
+```
+
+**响应示例**:
+```json
+// GET /api/v1/images/tags
+{
+  "success": true,
+  "tags": [
+    {
+      "tag_id": "1234567890",
+      "name": "风景",
+      "description": "风景类图片",
+      "image_count": 42,
+      "created_at": 1700000000000
+    }
+  ],
+  "total": 1,
+  "has_next_page": false
+}
+```
+
 #### 图片服务 cURL 示例
 
 ```bash
@@ -851,6 +1036,50 @@ curl "http://localhost:8080/api/v1/images?bucket=my-images&prefix=album/&max_key
 
 # 9. 删除图片（级联删除原图+缩略图+元数据）
 curl -X DELETE "http://localhost:8080/api/v1/images/photo.jpg?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>"
+
+# 10. 文搜图
+curl -X POST "http://localhost:8080/api/v1/images/search/text" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_token>" \
+  -d '{"text": "一只猫", "top_k": 3}'
+
+# 11. 图搜图
+curl -X POST "http://localhost:8080/api/v1/images/search/image?top_k=3" \
+  -H "Content-Type: image/jpeg" \
+  -H "Authorization: Bearer <your_token>" \
+  --data-binary @/path/to/query.jpg
+
+# 12. 修改图片元数据
+curl -X PUT "http://localhost:8080/api/v1/images/photo.jpg/meta" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_token>" \
+  -d '{"name": "新名称.jpg", "user_metadata": {"tag": "favorite"}}'
+
+# 13. 独立索引图片（先索引成功再更新 is_indexed 标志）
+curl -X POST "http://localhost:8080/api/v1/images/photo.jpg/index?bucket=my-images" \
+  -H "Authorization: Bearer <your_token>"
+
+# 14. 列出所有标签
+curl "http://localhost:8080/api/v1/images/tags?offset=0&limit=50" \
+  -H "Authorization: Bearer <your_token>"
+
+# 15. 创建标签
+curl -X POST "http://localhost:8080/api/v1/images/tags" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your_token>" \
+  -d '{"name": "风景", "description": "风景类图片"}'
+
+# 16. 给图片添加标签
+curl -X POST "http://localhost:8080/api/v1/images/photo.jpg/tags/1234567890" \
+  -H "Authorization: Bearer <your_token>"
+
+# 17. 按标签搜索图片
+curl "http://localhost:8080/api/v1/images/search?tag_id=1234567890&limit=20" \
+  -H "Authorization: Bearer <your_token>"
+
+# 18. 删除标签
+curl -X DELETE "http://localhost:8080/api/v1/images/tags/1234567890" \
   -H "Authorization: Bearer <your_token>"
 ```
 

@@ -1428,6 +1428,9 @@ object_store:
 | thumbnails | map<string, string> | 缩略图 key 列表（key: thumbnail/small/medium） |
 | user_metadata | map<string, string> | 用户自定义元数据 |
 | format | string | 图片格式（如 Jpeg/Png/Gif/WebP） |
+| name | string | 图片名称（可通过 UpdateImageMetadata 修改） |
+| is_indexed | bool | 是否已完成向量索引（true 表示已建立向量索引） |
+| index_model | string | 向量化模型名称（如 "jina-clip-v2"） |
 
 #### UploadImageResponse
 
@@ -1526,6 +1529,287 @@ object_store:
 | success | bool | 操作是否成功 |
 | message | string | 提示信息 |
 | deleted_keys | repeated string | 实际删除的对象 key 列表（原图 + 缩略图 + 元数据） |
+
+#### SearchImagesByTextRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| text | string | 是 | 查询文本（中文/英文均可） |
+| top_k | int32 | 是 | 返回最相似的 top-K 张图片 |
+| bucket | string | 否 | Bucket 名称（默认 "images"） |
+| model_name | string | 否 | 向量化模型（默认 "jina-clip-v2"） |
+| index_name | string | 否 | 向量索引名称（默认 "image"） |
+
+#### ImageSearchResult
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| score | float | 相似度分数（0-1，越大越相似） |
+| metadata | ImageMetadata | 匹配图片的元数据 |
+
+#### SearchImagesByTextResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| results | repeated ImageSearchResult | 搜索结果列表 |
+
+#### SearchImagesByImageRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| image_data | bytes | 是 | 查询图片二进制数据 |
+| top_k | int32 | 是 | 返回最相似的 top-K 张图片 |
+| bucket | string | 否 | Bucket 名称（默认 "images"） |
+| model_name | string | 否 | 向量化模型（默认 "jina-clip-v2"） |
+| index_name | string | 否 | 向量索引名称（默认 "image"） |
+
+#### SearchImagesByImageResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| results | repeated ImageSearchResult | 搜索结果列表 |
+
+#### UpdateImageMetadataRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | Bucket 名称（默认 "images"） |
+| key | string | 是 | 图片 key |
+| name | string | 否 | 新图片名称 |
+| user_metadata | map<string, string> | 否 | 增/改用户自定义 metadata（与已有合并） |
+| delete_user_metadata_keys | repeated string | 否 | 需要删除的 user_metadata key 列表 |
+
+#### UpdateImageMetadataResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| metadata | ImageMetadata | 修改后的完整元数据 |
+
+#### IndexImageRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | Bucket 名称（默认 "images"） |
+| key | string | 是 | 图片 key |
+| model_name | string | 否 | 向量化模型（默认 "jina-clip-v2"） |
+| index_name | string | 否 | 向量索引名称（默认 "image"） |
+
+#### IndexImageResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| embedding_id | string | 向量 ID（即图片 key，用于索引查找） |
+| embedding_dim | int32 | 向量维度 |
+| metadata | ImageMetadata | 更新后的图片元数据（`is_indexed=true`） |
+
+---
+
+### 13. 图片标签接口 (ImageTag Service)
+
+图片标签服务为图片资源提供标签管理能力，支持标签的创建、修改、删除、图片关联以及按标签检索图片。数据持久化基于 Tantivy 全文索引。
+
+#### 数据模型
+
+| 索引名 | 文档 ID | 字段 | 用途 |
+|--------|---------|------|------|
+| `tags` | 标签 ID (Snowflake) | tag_id, name, description, created_at | 标签实体（图片与人脸分类共享） |
+| `image_tag` | 标签 ID | image_count | 图片侧标签计数 |
+| `image_tag_map` | 图片 ID | image_id, tag_ids(JSON), bucket | 图片→标签映射 |
+
+#### ImageTagInfo
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| tag_id | string | 标签 ID（Snowflake，字符串避免前端精度丢失） |
+| name | string | 标签名称 |
+| description | string | 标签描述 |
+| image_count | int64 | 包含图片数量 |
+| created_at | int64 | 创建时间戳（毫秒） |
+
+#### ListImageTagsRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| offset | uint32 | 否 | 分页偏移（默认 0） |
+| limit | uint32 | 否 | 分页大小（默认 50） |
+
+#### ListImageTagsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| tags | repeated ImageTagInfo | 标签列表 |
+| total | uint32 | 总标签数 |
+| has_next_page | bool | 是否有下一页 |
+
+#### SearchImageTagsRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| prefix | string | 否 | 标签名称关键字（空则返回前 limit 条） |
+| limit | uint32 | 否 | 返回条数上限（默认 20） |
+
+#### SearchImageTagsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| tags | repeated ImageTagInfo | 匹配标签列表 |
+| total | uint32 | 匹配总数 |
+
+#### CreateImageTagRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | 是 | 标签名称 |
+| description | string | 否 | 标签描述 |
+
+#### CreateImageTagResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| tag_id | string | 新生成的标签 ID（Snowflake） |
+| created_at | string | 创建时间 |
+
+#### UpdateImageTagRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| tag_id | string | 是 | 标签 ID |
+| name | string | 是 | 新标签名称 |
+| description | string | 否 | 新标签描述 |
+
+#### UpdateImageTagResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+
+#### DeleteImageTagRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| tag_id | string | 是 | 标签 ID（删除时会同时从所有图片中移除） |
+
+#### DeleteImageTagResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+
+#### GetImageTagsRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| image_id | string | 是 | 图片 ID（即图片 key） |
+
+#### GetImageTagsResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| tags | repeated ImageTagInfo | 该图片的标签列表 |
+
+#### AddImageTagRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| image_id | string | 是 | 图片 ID（即图片 key） |
+| tag_id | string | 是 | 标签 ID |
+| bucket | string | 否 | 图片所在 bucket（默认 "images"） |
+
+#### AddImageTagResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| image_count | int64 | 该标签最新的包含图片数量 |
+
+#### RemoveImageTagRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| image_id | string | 是 | 图片 ID（即图片 key） |
+| tag_id | string | 是 | 标签 ID |
+| bucket | string | 否 | 图片所在 bucket（默认 "images"） |
+
+#### RemoveImageTagResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| image_count | int64 | 该标签最新的包含图片数量 |
+
+#### SearchImagesByTagRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| tag_id | string | 是 | 标签 ID |
+| limit | uint32 | 否 | 返回数量上限（默认 100） |
+
+#### SearchImagesByTagResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| image_ids | repeated string | 被打上该标签的图片 ID 列表 |
+| total | uint32 | 匹配总数 |
+| buckets | repeated string | 与 image_ids 一一对应的 bucket 列表 |
+
+---
+
+### 14. 图片元数据索引接口 (ImageMetadata Index)
+
+图片元数据索引接口用于将图片的基本信息和 EXIF 数据索引到全文索引服务，提供后续的元数据搜索能力。
+
+#### IndexImageMetadataRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | 图片所在 bucket（默认 "images"） |
+| key | string | 是 | 图片 key |
+
+#### IndexImageMetadataResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+
+#### IsImageMetadataIndexedRequest
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| bucket | string | 否 | 图片所在 bucket（默认 "images"） |
+| key | string | 是 | 图片 key |
+
+#### IsImageMetadataIndexedResponse
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| success | bool | 操作是否成功 |
+| message | string | 提示信息 |
+| indexed | bool | 是否已写入 image_meta 索引 |
+
+---
 
 #### 图片服务配置
 

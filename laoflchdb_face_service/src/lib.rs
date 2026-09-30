@@ -1317,16 +1317,17 @@ impl FaceService for FaceServiceImpl {
         }
         // 锁已释放，可以安全 await
 
-        // ── 保存原图（如果请求了 save_original_image）──
-        // 原图保存在 images bucket，不经过 face_ 前缀
-        // 如果已有 image_key，说明客户端已上传原图，直接复用 key
+        // ── 原图 key ──
+        // 只要客户端通过 image_key 拉取原图，原图 key 就是 image_key，直接记录；
+        // 否则在 save_original_image=true 时上传原图并生成新 key
         let mut original_image_key = String::new();
-        if req.save_original_image {
-            if !req.image_key.is_empty() {
-                // 客户端已上传原图到 image_service，直接复用 key
-                original_image_key = req.image_key.clone();
-                info!("原图已由客户端上传，直接复用 key={}", original_image_key);
-            } else if let Some(ref img_svc) = self.image_service {
+        if !req.image_key.is_empty() {
+            // 客户端已上传原图到 image_service，直接复用 key
+            original_image_key = req.image_key.clone();
+            info!("原图已由客户端上传，直接复用 key={}", original_image_key);
+        }
+        if req.save_original_image && original_image_key.is_empty() {
+            if let Some(ref img_svc) = self.image_service {
                 let (orig_key, _orig_id) = self.make_face_image_key();
                 let orig_bucket = "images".to_string();
                 // 编码原图为 JPEG 并上传
@@ -1363,8 +1364,10 @@ impl FaceService for FaceServiceImpl {
             } else if req.save_aligned_images {
                 if let Some(ref img_svc) = self.image_service {
                     let (key, id) = self.make_face_image_key();
+                    // 对齐人脸图默认统一保存到 faces bucket（未指定 image_bucket 时），
+                    // 避免落到 image_service 默认 bucket（images）
                     let bucket = if req.image_bucket.is_empty() {
-                        img_svc.default_bucket()
+                        "faces".to_string()
                     } else {
                         req.image_bucket.clone()
                     };
