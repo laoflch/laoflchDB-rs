@@ -1,0 +1,46 @@
+# 由 deploy_raft_cluster.sh 生成的 Raft 节点配置（node-2）
+db_path: /app/data
+index_path: /app/indexes
+model_path: /app/model
+
+vector_service:
+  enabled: false
+  auto_load: false
+
+raft_service:
+  enabled: true
+  node_id: 2
+  address: "0.0.0.0:29999"
+  data_path: /app/laoflch_raft_data
+  peers: []
+  bootstrap: false
+  election_timeout: 1000
+  heartbeat_interval: 100
+
+embedding_index:
+  enabled: false
+
+object_store:
+  enabled: false
+
+image_service:
+  enabled: false
+
+face_service:
+  enabled: false
+
+text_summarize:
+  enabled: false
+
+reranker:
+  enabled: false
+
+log_level: info
+default_policy: allow
+runtime_mode: multi_thread
+
+access_protocols:
+  - protocol: grpc
+    enabled: false
+    addr: 0.0.0.0:19777
+    service_id: grpc_admin

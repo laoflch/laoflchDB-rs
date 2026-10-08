@@ -323,6 +323,8 @@ pub struct DatabaseConfig {
     pub text_summarize: Option<TextSummarizeServiceConfig>,
     #[serde(default)]
     pub reranker: Option<RerankerServiceConfig>,
+    #[serde(default)]
+    pub raft_service: Option<laoflchdb_raft_service::RaftServiceConfig>,
 }
 
 /// 对象存储服务配置（S3 兼容）
@@ -570,6 +572,7 @@ impl DatabaseConfig {
             face_service: None,
             text_summarize: None,
             reranker: None,
+            raft_service: None,
         }
     }
 

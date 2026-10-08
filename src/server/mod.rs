@@ -372,7 +372,45 @@ impl LaoflchDBServer {
             }
         };
 
-            let object_store_service = object_store_service.clone();
+        // 创建 Raft 分布式 KV 存储服务（如果配置启用）
+        let _raft_service_handles = match &config.raft_service {
+            Some(raft_cfg) if raft_cfg.enabled => {
+                let raft_cfg_clone = raft_cfg.clone();
+                let addr = raft_cfg.address.clone();
+                let group_count = raft_cfg.groups.len();
+
+                // 创建独立的 Raft 服务实例
+                match laoflchdb_raft_service::RaftKvServiceImpl::new(&raft_cfg_clone).await {
+                    Ok(mut svc) => {
+                        // 在后台任务中初始化 Raft 并启动 gRPC 服务器
+                        tokio::spawn(async move {
+                            if let Err(e) = svc.start().await {
+                                log::error!("Raft 服务初始化失败: {}", e);
+                                return;
+                            }
+                            log::info!("Raft 服务初始化成功 ({} 个组)", group_count);
+
+                            // 启动 gRPC 服务器（复用已初始化的服务实例）
+                            if let Err(e) = laoflchdb_raft_service::start_raft_service(svc).await {
+                                log::error!("Raft gRPC 服务错误: {}", e);
+                            }
+                        });
+                        info!("Raft 分布式 KV 服务已启动: addr={}, groups={}", addr, group_count);
+                        Some((group_count, addr))
+                    }
+                    Err(e) => {
+                        log::error!("Raft 服务初始化失败: {}", e);
+                        None
+                    }
+                }
+            }
+            _ => {
+                info!("Raft 服务未启用");
+                None
+            }
+        };
+
+        let object_store_service = object_store_service.clone();
 
         if config.access_protocols.is_empty() {
             let addr = config.addr.clone();

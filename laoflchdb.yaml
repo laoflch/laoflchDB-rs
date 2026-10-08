@@ -22,6 +22,21 @@ vector_service:
   # 例如视觉塔跑 GPU、文本塔跑 CPU 时设: text_encoder_device: cpu
   text_encoder_device: cpu
 
+# Raft 分布式 KV 存储服务配置
+raft_service:
+  enabled: false          # 启用 Raft 服务
+  node_id: 1              # 节点 ID（集群中唯一）
+  address: "127.0.0.1:29999"  # gRPC 监听地址（Raft 节点间通信端口）
+  data_path: ./laoflch_raft_data  # Raft 数据存储路径（日志、元数据）
+  # 初始集群成员（可在运行时通过 AddPeer 动态添加）
+  peers:
+    # - id: 2
+    #   addr: "127.0.0.1:30000"
+    # - id: 3
+    #   addr: "127.0.0.1:30001"
+  election_timeout: 1000  # 选举超时（毫秒）
+  heartbeat_interval: 100 # 心跳间隔（毫秒）
+
 # 嵌入向量索引服务配置
 embedding_index:
   enabled: true

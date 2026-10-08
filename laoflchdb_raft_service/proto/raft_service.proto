@@ -1,0 +1,165 @@
+syntax = "proto3";
+package laoflchdb.raft;
+
+// ─────────────────────────────────────────────
+// Raft 分布式 KV 存储服务
+// ─────────────────────────────────────────────
+
+service RaftKvService {
+  // ── KV 操作（客户端接口）──
+  rpc Put(PutRequest) returns (PutResponse);
+  rpc Get(GetRequest) returns (GetResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+  rpc Scan(ScanRequest) returns (ScanResponse);
+
+  // ── 集群管理 ──
+  rpc AddPeer(AddPeerRequest) returns (AddPeerResponse);
+  rpc RemovePeer(RemovePeerRequest) returns (RemovePeerResponse);
+  rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  // ── Raft 内部通信（节点间）──
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+  rpc RequestVote(RequestVoteRequest) returns (RequestVoteResponse);
+  rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
+}
+
+// ── KV 操作消息 ──
+
+message PutRequest {
+  string table = 1;
+  bytes key = 2;
+  bytes value = 3;
+  uint32 group_id = 4;  // 目标 Raft 组 ID
+}
+
+message PutResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetRequest {
+  string table = 1;
+  bytes key = 2;
+  uint32 group_id = 3;  // 目标 Raft 组 ID
+}
+
+message GetResponse {
+  bool found = 1;
+  bytes value = 2;
+}
+
+message DeleteRequest {
+  string table = 1;
+  bytes key = 2;
+  uint32 group_id = 3;  // 目标 Raft 组 ID
+}
+
+message DeleteResponse {
+  bool success = 1;
+}
+
+message ScanRequest {
+  string table = 1;
+  uint32 group_id = 2;  // 目标 Raft 组 ID
+}
+
+message ScanResponse {
+  repeated KvEntry entries = 1;
+}
+
+message KvEntry {
+  bytes key = 1;
+  bytes value = 2;
+}
+
+// ── 集群管理消息 ──
+
+message AddPeerRequest {
+  uint64 id = 1;
+  string addr = 2;
+  uint32 group_id = 3;  // 目标 Raft 组 ID
+}
+
+message AddPeerResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message RemovePeerRequest {
+  uint64 id = 1;
+  uint32 group_id = 2;  // 目标 Raft 组 ID
+}
+
+message RemovePeerResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message ListPeersRequest {
+  uint32 group_id = 1;  // 目标 Raft 组 ID
+}
+
+message ListPeersResponse {
+  repeated PeerInfo peers = 1;
+}
+
+message PeerInfo {
+  uint64 id = 1;
+  string addr = 2;
+}
+
+message GetStatusRequest {
+  uint32 group_id = 1;  // 目标 Raft 组 ID
+}
+
+message GetStatusResponse {
+  string status = 1;
+}
+
+// ── Raft 内部通信消息（节点间）──
+// 说明：openraft 的消息类型（VoteRequest / VoteResponse / AppendEntriesRequest /
+// AppendEntriesResponse / Vote / SnapshotMeta 等）均实现了 serde，这里通过
+// bincode 序列化为 bytes 在节点间传输，避免在 proto 中重复定义大量字段。
+// 每个消息携带 group_id，使节点上多个 Raft 组共用一个 gRPC 端口时能正确路由。
+
+message RequestVoteRequest {
+  uint32 group_id = 2;  // 所属 Raft 组 ID
+  // bincode 序列化后的 openraft::raft::VoteRequest<NodeId>
+  bytes payload = 1;
+}
+
+message RequestVoteResponse {
+  // bincode 序列化后的 openraft::raft::VoteResponse<NodeId>
+  bytes payload = 1;
+}
+
+message AppendEntriesRequest {
+  uint32 group_id = 2;  // 所属 Raft 组 ID
+  // bincode 序列化后的 openraft::raft::AppendEntriesRequest<TypeConfig>
+  bytes payload = 1;
+}
+
+message AppendEntriesResponse {
+  // bincode 序列化后的 openraft::raft::AppendEntriesResponse<NodeId>
+  bytes payload = 1;
+}
+
+message InstallSnapshotRequest {
+  uint32 group_id = 6;  // 所属 Raft 组 ID
+  // bincode 序列化后的 openraft::Vote<NodeId>（领导者的投票）
+  bytes vote = 1;
+  // bincode 序列化后的 openraft::SnapshotMeta<NodeId, BasicNode>
+  bytes meta = 2;
+  // 数据偏移（当前实现一次传输全部数据，offset 恒为 0）
+  uint64 offset = 3;
+  // 快照数据（SnapshotData = Vec<u8>）
+  bytes data = 4;
+  // 是否最后一帧（当前实现一次传输，done 恒为 true）
+  bool done = 5;
+}
+
+message InstallSnapshotResponse {
+  // bincode 序列化后的 openraft::Vote<NodeId>
+  bytes vote = 1;
+}

@@ -1,0 +1,49 @@
+# laoflchDB Raft 分布式 KV 存储节点镜像
+# 构建命令示例：
+#   docker build -t laoflchdb-raft:$(grep '^version = ' Cargo.toml | sed 's/version = "\([^+"]*\).*/\1/') -f Dockerfile_raft.prod .
+#
+# 单节点启动示例：
+#   docker run -d --name raft-node-1 -p 29999:29999 \
+#     -v raft_data_1:/app/laoflch_raft_data \
+#     laoflchdb-raft:0.1.13
+#
+# 多节点启动示例（同一 Docker 网络 raft-net）：
+#   docker network create raft-net
+#   docker run -d --network raft-net --name raft-node-1 -v raft_data_1:/app/laoflch_raft_data laoflchdb-raft:0.1.13
+#   docker run -d --network raft-net --name raft-node-2 \
+#     -v /path/to/node2_raft.yaml:/app/config/prod_raft.yaml \
+#     -v raft_data_2:/app/laoflch_raft_data laoflchdb-raft:0.1.13
+
+FROM ubuntu:24.04
+
+# 版本号参数（从 Cargo.toml 获取前半段，如 0.1.13+xxx 取 0.1.13）
+ARG VERSION=0.1.13
+LABEL version="${VERSION}"
+
+# Create app directories（Raft 数据目录建议用卷挂载持久化）
+RUN mkdir -p /app/config && \
+    mkdir -p /app/data && \
+    mkdir -p /app/laoflch_raft_data
+
+# Set working directory
+WORKDIR /app
+
+# Copy binary
+COPY target/release/laoflchdb /app/laoflchdb
+
+# Copy raft-only production configuration
+COPY config/prod_raft.yaml /app/config/prod_raft.yaml
+
+# Copy CUDA runtime libs（二进制链接了 CUDA 库，即使 raft-only 节点也需要这些文件才能启动；
+# 由 deploy_raft_cluster.sh 在构建前准备到 deploy_raft/.cuda_libs）
+COPY deploy_raft/.cuda_libs/ /usr/local/cuda/lib64/
+
+# Expose raft gRPC port
+EXPOSE 29999
+
+# Environment variables
+ENV RUST_LOG=info
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
+
+# Start command with raft-only config
+CMD ["/app/laoflchdb", "-c", "/app/config/prod_raft.yaml", "start"]
