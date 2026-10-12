@@ -173,7 +173,7 @@ impl RaftLogStorage<TypeConfig> for RaftLogStore {
 
         match value {
             Some(blob) => {
-                let vote = bincode::deserialize(&blob)
+                let vote: Vote<NodeId> = bincode::deserialize(&blob)
                     .map_err(|e| StorageError::IO { source: StorageIOError::read_vote(AnyError::error(format!("Serialization error: {}", e))) })?;
                 Ok(Some(vote))
             }

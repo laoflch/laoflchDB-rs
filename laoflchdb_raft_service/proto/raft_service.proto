@@ -27,10 +27,10 @@ service RaftKvService {
 // ── KV 操作消息 ──
 
 message PutRequest {
-  string table = 1;
-  bytes key = 2;
-  bytes value = 3;
-  uint32 group_id = 4;  // 目标 Raft 组 ID
+  // key 为客户端编码后的最终落盘键（data_key 的设计与生成由客户端完成，如 table+0x00+key）
+  bytes key = 1;
+  bytes value = 2;
+  uint32 group_id = 3;  // 目标 Raft 组 ID
 }
 
 message PutResponse {
@@ -39,9 +39,8 @@ message PutResponse {
 }
 
 message GetRequest {
-  string table = 1;
-  bytes key = 2;
-  uint32 group_id = 3;  // 目标 Raft 组 ID
+  bytes key = 1;  // 客户端编码后的最终落盘键
+  uint32 group_id = 2;  // 目标 Raft 组 ID
 }
 
 message GetResponse {
@@ -50,9 +49,8 @@ message GetResponse {
 }
 
 message DeleteRequest {
-  string table = 1;
-  bytes key = 2;
-  uint32 group_id = 3;  // 目标 Raft 组 ID
+  bytes key = 1;  // 客户端编码后的最终落盘键
+  uint32 group_id = 2;  // 目标 Raft 组 ID
 }
 
 message DeleteResponse {
@@ -60,8 +58,7 @@ message DeleteResponse {
 }
 
 message ScanRequest {
-  string table = 1;
-  uint32 group_id = 2;  // 目标 Raft 组 ID
+  uint32 group_id = 1;  // 目标 Raft 组 ID
 }
 
 message ScanResponse {

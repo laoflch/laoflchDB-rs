@@ -1,0 +1,123 @@
+# laoflchDB Raft 节点生产配置（仅启动 Raft 分布式 KV 存储服务，其它服务均不启动）
+#
+# 多 Raft 组（multi-raft-group）示例：一个节点同时运行多个独立的 Raft 组，
+# 所有组共用同一个 gRPC 端口（address）。每个组有独立的日志、状态机与选举，
+# 每组在"对应节点"上 bootstrap，使初始 leader 分布在不同节点：
+#   组 1 在 node-1 自举 -> 初始 leader 大概率在 node-1
+#   组 2 在 node-2 自举 -> 初始 leader 大概率在 node-2
+#   组 3 在 node-3 自举 -> 初始 leader 大概率在 node-3
+# 节点故障后，leader 会按 Raft 选举规则漂移到其它存活节点（正常行为）。
+#
+# 多节点部署时，每个节点需要各自的 node_id / peers / bootstrap：
+#   docker run -d -p 29999:29999 \
+#     -v /path/to/node2_raft.yaml:/app/config/prod_raft.yaml \
+#     -v raft_data_node2:/app/laoflch_raft_data \
+#     laoflchdb-raft:0.1.13
+# 同一 Docker 网络中可直接用容器名作为 peer 地址，如 "raft-node-2:29999"。
+# 以下示例为 node-1 的配置（部署脚本 deploy_raft_cluster.sh 会自动生成各节点配置）。
+
+# Database configuration（仅用于初始化主数据库，Raft 服务不使用）
+db_path: /app/data
+index_path: /app/indexes
+model_path: /app/model
+
+# 向量服务（不启动。auto_load 必须为 false，避免尝试加载任何模型）
+vector_service:
+  enabled: false
+  auto_load: false
+
+# Raft 分布式 KV 存储服务（唯一启用的服务，所有组共用一个端口）
+raft_service:
+  enabled: true
+  address: "0.0.0.0:29999"        # gRPC 监听地址（所有 Raft 组共用）
+  data_path: /app/laoflch_raft_data
+  election_timeout: 1000          # 选举超时（毫秒）
+  heartbeat_interval: 100         # 心跳间隔（毫秒）
+  # 业务数据落库引擎（状态机真身，固定通过 KvStorage 接口；缺省为 rocksdb，路径 data_path/business.db）。
+  # table 概念对应 Raft 组：每组数据存放于 table = "group_{group_id}"。
+  # storage_type 可选 "rocksdb"（KVRocksDBEngine 落盘持久化）或 "memory"（纯内存，重启后由 Raft 日志重放）。
+  storage:
+    storage_type: rocksdb
+    # db_path: /app/laoflch_raft_data/business.db   # 可选，缺省为 data_path/business.db
+    schema_name: raft
+  # 双写副本（可选）：开启后把业务数据同步写入另一个 KvStorage 引擎，作为业务数据副本。
+  # 副本存储引擎类型可独立配置（rocksdb / memory），缺省与主引擎同类型、路径 data_path/business_backup.db。
+  dual_write:
+    enabled: true            # 开关
+    storage:                 # 副本存储引擎配置（同 RaftStorageConfig 字段）
+      storage_type: rocksdb  # 引擎类型：rocksdb / memory
+      db_path: /app/laoflch_raft_data/business_backup.db
+      schema_name: raft_backup
+  # 多 Raft 组配置。每个组：独立选举、独立日志（data_path/group-{id}）、独立 KV 状态机。
+  # peers 需列出该组全部节点的地址（含自身）；bootstrap 仅在该组对应的节点上为 true。
+  groups:
+    - group_id: 2
+      name: "group-2"
+      node_id: 4
+      self_addr: "raft-node-4:29999"
+      bootstrap: false
+      peers:
+        - { id: 2, addr: "raft-node-2:29999" }
+        - { id: 3, addr: "raft-node-3:29999" }
+        - { id: 4, addr: "raft-node-4:29999" }
+    - group_id: 3
+      name: "group-3"
+      node_id: 4
+      self_addr: "raft-node-4:29999"
+      bootstrap: false
+      peers:
+        - { id: 3, addr: "raft-node-3:29999" }
+        - { id: 4, addr: "raft-node-4:29999" }
+        - { id: 5, addr: "raft-node-5:29999" }
+    - group_id: 4
+      name: "group-4"
+      node_id: 4
+      self_addr: "raft-node-4:29999"
+      bootstrap: true
+      peers:
+        - { id: 4, addr: "raft-node-4:29999" }
+        - { id: 5, addr: "raft-node-5:29999" }
+        - { id: 1, addr: "raft-node-1:29999" }
+# 嵌入向量索引服务（不启动）
+embedding_index:
+  enabled: false
+
+# 对象存储服务（不启动）
+object_store:
+  enabled: false
+
+# 图片服务（不启动）
+image_service:
+  enabled: false
+
+# 人脸服务（不启动）
+face_service:
+  enabled: false
+
+# 文本摘要服务（不启动）
+text_summarize:
+  enabled: false
+
+# 精排服务（不启动）
+reranker:
+  enabled: false
+
+# Log configuration
+log_level: info
+
+# Default permission policy: allow or deny
+default_policy: allow
+
+# Runtime mode: multi_thread or single_thread
+runtime_mode: multi_thread
+
+# Access protocols（grpc 保持禁用；rest 启用：向外部提供 REST 接口，含 /api/v1/raft/*）
+access_protocols:
+  - protocol: grpc
+    enabled: false
+    addr: 0.0.0.0:19777
+    service_id: grpc_admin
+  - protocol: rest
+    enabled: true
+    addr: 0.0.0.0:18080          # REST 监听地址（挂载 /api/v1/raft 等路由）
+    service_id: rest_admin

@@ -8,15 +8,14 @@ use serde::{Deserialize, Serialize};
 pub type NodeId = u64;
 
 // ── Raft 请求（写操作）──
+// 说明：Rust 端无 table 概念，key 为客户端编码后的最终落盘键（如 table+0x00+key）
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Request {
     Put {
-        table: String,
         key: Vec<u8>,
         value: Vec<u8>,
     },
     Delete {
-        table: String,
         key: Vec<u8>,
     },
 }

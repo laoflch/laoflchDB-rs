@@ -4,7 +4,7 @@ use std::process::Command;
 use std::path::Path;
 
 const GCC13_BIN: &str = "/usr/local/gcc-13/bin";
-const ROCKSDB_REGISTRY_PATH: &str = "/home/laoflch/.cargo/registry/src/mirrors.ustc.edu.cn-38d0e5eb5da2abae/rust-librocksdb-sys-0.46.0+11.1.1/rocksdb";
+const ROCKSDB_REGISTRY_PATH: &str = "/home/laoflch/.cargo/registry/src/rsproxy.cn-e3de039b2554c837/rust-librocksdb-sys-0.46.0+11.1.1/rocksdb";
 const CONFIG_PATH_LOCAL: &str = "laoflchdb.yaml";
 const CONFIG_PATH_PROD: &str = "config/prod.yaml";
 
@@ -239,14 +239,40 @@ fn build_ldb() {
         std::process::exit(1);
     }
     
+    // 在隔离目录构建（复制源码、排除编译产物），避免与 cargo/rocksdb-sys 的
+    // librocksdb.a 产物（flags 可能不一致：-fno-rtti 等）混用导致链接失败。
+    let build_dir = Path::new("target").join("rocksdb-ldb-src");
+    if build_dir.exists() {
+        std::fs::remove_dir_all(&build_dir).expect("Failed to clean build dir");
+    }
+    std::fs::create_dir_all(&build_dir).ok();
+    
+    // tar 管道复制源码（排除 .o/.a/.so/.d/build_config.mk 等产物）
+    let tar_cmd = format!(
+        "tar --exclude='*.o' --exclude='*.a' --exclude='*.so*' --exclude='*.d' \
+         --exclude='build_config.mk' -C {src} -cf - . | tar -C {dst} -xf -",
+        src = ROCKSDB_REGISTRY_PATH,
+        dst = build_dir.display(),
+    );
+    let tar_status = Command::new("sh")
+        .args(["-c", &tar_cmd])
+        .status()
+        .expect("Failed to run tar");
+    if !tar_status.success() {
+        eprintln!("❌ 复制 RocksDB 源码失败");
+        std::process::exit(1);
+    }
+    
     let mut env = std::env::vars().collect::<Vec<_>>();
     env.push(("PATH".to_string(), format!("{}:{}", GCC13_BIN, std::env::var("PATH").unwrap_or_default())));
     env.push(("CC".to_string(), format!("{}/gcc", GCC13_BIN)));
     env.push(("CXX".to_string(), format!("{}/g++", GCC13_BIN)));
     
+    // USE_RTTI=1：与官方 release 配置一致，保证 RTTI 符号齐全（-fno-rtti 会导致
+    // typeinfo for rocksdb::Cache 等链接缺失）
     let mut cmd = Command::new("make");
-    cmd.args(&["ldb", "-j8", "DEBUG_LEVEL=0"])
-       .current_dir(ROCKSDB_REGISTRY_PATH);
+    cmd.args(&["ldb", "-j8", "DEBUG_LEVEL=0", "USE_RTTI=1"])
+       .current_dir(&build_dir);
     
     for (key, value) in env {
         cmd.env(&key, &value);
@@ -259,7 +285,7 @@ fn build_ldb() {
         std::process::exit(1);
     }
     
-    let ldb_source = Path::new(ROCKSDB_REGISTRY_PATH).join("ldb");
+    let ldb_source = build_dir.join("ldb");
     let ldb_target = Path::new("target").join("release").join("ldb");
     
     if !ldb_source.exists() {

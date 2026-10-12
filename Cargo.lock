@@ -4031,11 +4031,15 @@ dependencies = [
 name = "laoflchdb_raft_service"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "axum 0.7.9",
  "bincode",
  "bytes",
  "env_logger",
  "futures",
  "hex",
+ "laoflchdb_engines",
+ "laoflchdb_kv_rocksdb_engine",
  "log",
  "openraft",
  "prost",

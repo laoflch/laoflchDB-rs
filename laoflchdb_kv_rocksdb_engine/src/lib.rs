@@ -748,3 +748,76 @@ impl StorageEngine for KVRocksDBEngine {
         Ok(map)
     }
 }
+
+// ── KvStorage 实现（纯 KV 模式；table 对应 Raft 组，CF 直接以 table 命名）──
+
+#[async_trait::async_trait]
+impl laoflchdb_engines::KvStorage for KVRocksDBEngine {
+    fn engine_type(&self) -> &str {
+        "rocksdb"
+    }
+
+    async fn ensure_table(&self, table: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let db = self.db.read().unwrap();
+        if db.cf_handle(table).is_some() {
+            return Ok(());
+        }
+        drop(db);
+        self.db.write().unwrap().create_cf(table, &Options::default())?;
+        Ok(())
+    }
+
+    async fn put(&self, table: &str, key: &[u8], value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let db = self.db.read().unwrap();
+        let cf = db.cf_handle(table).ok_or_else(|| format!("KV table '{}' not found", table))?;
+        db.put_cf(cf, key.to_vec(), value)?;
+        Ok(())
+    }
+
+    async fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>> {
+        let db = self.db.read().unwrap();
+        let cf = db.cf_handle(table).ok_or_else(|| format!("KV table '{}' not found", table))?;
+        Ok(db.get_cf(cf, key)?)
+    }
+
+    async fn delete(&self, table: &str, key: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let db = self.db.read().unwrap();
+        let cf = db.cf_handle(table).ok_or_else(|| format!("KV table '{}' not found", table))?;
+        db.delete_cf(cf, key)?;
+        Ok(())
+    }
+
+    async fn scan(&self, table: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Box<dyn std::error::Error + Send + Sync>> {
+        let db = self.db.read().unwrap();
+        let cf = db.cf_handle(table).ok_or_else(|| format!("KV table '{}' not found", table))?;
+        let mut result = Vec::new();
+        let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (k, v) = item?;
+            result.push((k.to_vec(), v.to_vec()));
+        }
+        Ok(result)
+    }
+
+    async fn clear(&self, table: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // 先收集 key（读锁），释放后再取写锁删除，避免持读锁时升级写锁
+        let keys: Vec<Box<[u8]>> = {
+            let db = self.db.read().unwrap();
+            let cf = db.cf_handle(table).ok_or_else(|| format!("KV table '{}' not found", table))?;
+            db.iterator_cf(cf, rocksdb::IteratorMode::Start)
+                .map(|item| item.map(|(k, _)| k))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        let db = self.db.write().unwrap();
+        let cf = db.cf_handle(table).ok_or_else(|| format!("KV table '{}' not found", table))?;
+        for k in keys {
+            db.delete_cf(cf, &*k)?;
+        }
+        Ok(())
+    }
+
+    async fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.db.read().unwrap().flush()?;
+        Ok(())
+    }
+}

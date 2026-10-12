@@ -6,7 +6,7 @@
 默认访问 127.0.0.1:29999（部署脚本中 node-1 的宿主映射端口）。
 
 用法示例：
-  python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 1 get-status
+  python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 1 status
   python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 2 list-peers
   python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 2 add-peer 2 raft-node-2:29999
   python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 2 remove-peer 2
@@ -19,7 +19,10 @@
 """
 
 import os
+import re
 import sys
+import hashlib
+import subprocess
 import tempfile
 import argparse
 
@@ -218,9 +221,37 @@ def _print_status(status: str, group_id: int = 1):
 
 
 def cmd_get_status(addr, group_id):
+    import grpc
+
     pb2, svc = _stub(addr)
-    resp = svc.GetStatus(pb2.GetStatusRequest(group_id=group_id))
-    _print_status(resp.status, group_id)
+    if group_id is not None:
+        # 指定组：只查询该组
+        resp = svc.GetStatus(pb2.GetStatusRequest(group_id=group_id))
+        _print_status(resp.status, group_id)
+        return
+
+    # 未指定组：探测本节点运行的所有组（组号递增；连续 3 个组不存在即停止）
+    g = 1
+    miss = 0
+    found_any = False
+    while g <= 64:
+        try:
+            resp = svc.GetStatus(pb2.GetStatusRequest(group_id=g))
+        except grpc.RpcError as e:
+            if "不存在或未启动" in (e.details() or ""):
+                miss += 1
+                if miss >= 3:
+                    break  # 连续 3 个组不存在，视为已到最大组号
+                g += 1
+                continue
+            raise
+        miss = 0
+        found_any = True
+        print(f"----- group-{g} -----")
+        _print_status(resp.status, g)
+        g += 1
+    if not found_any:
+        print("(本节点未运行任何 Raft 组)")
 
 
 def cmd_list_peers(addr, group_id):
@@ -252,15 +283,31 @@ def cmd_remove_peer(addr, group_id, peer_id):
     print(f"remove-peer(组{group_id}) {peer_id}: {'成功' if resp.success else '失败'} {resp.message}")
 
 
+# ── data_key 编码（在客户端完成：table + 0x00 + key；Rust 端无 table 概念）──
+
+def _data_key(table, key: bytes) -> bytes:
+    """生成最终落盘键：table 字节 + NUL + key（table 为空时仅 NUL 前缀）"""
+    t = table.encode("utf-8")
+    return t + b"\x00" + key
+
+
+def _split_data_key(k: bytes):
+    """解析落盘键：返回 (table_bytes, raw_key)；无 NUL 时 table 为 None"""
+    i = k.find(b"\x00")
+    if i < 0:
+        return None, k
+    return k[:i], k[i + 1:]
+
+
 def cmd_put(addr, group_id, table, key, value):
     pb2, svc = _stub(addr)
-    resp = svc.Put(pb2.PutRequest(group_id=group_id, table=table, key=_b(key), value=_b(value)))
+    resp = svc.Put(pb2.PutRequest(group_id=group_id, key=_data_key(table, _b(key)), value=_b(value)))
     print(f"put(组{group_id}): {'成功' if resp.success else '失败'} {resp.message}")
 
 
 def cmd_get(addr, group_id, table, key):
     pb2, svc = _stub(addr)
-    resp = svc.Get(pb2.GetRequest(group_id=group_id, table=table, key=_b(key)))
+    resp = svc.Get(pb2.GetRequest(group_id=group_id, key=_data_key(table, _b(key))))
     if resp.found:
         print(resp.value.decode("utf-8", errors="replace"))
     else:
@@ -269,32 +316,178 @@ def cmd_get(addr, group_id, table, key):
 
 def cmd_delete(addr, group_id, table, key):
     pb2, svc = _stub(addr)
-    resp = svc.Delete(pb2.DeleteRequest(group_id=group_id, table=table, key=_b(key)))
+    resp = svc.Delete(pb2.DeleteRequest(group_id=group_id, key=_data_key(table, _b(key))))
     print(f"delete(组{group_id}): {'成功' if resp.success else '失败'}")
 
 
-def cmd_scan(addr, group_id, table):
+def cmd_scan(addr, group_id, table=None):
     pb2, svc = _stub(addr)
-    resp = svc.Scan(pb2.ScanRequest(group_id=group_id, table=table))
+    resp = svc.Scan(pb2.ScanRequest(group_id=group_id))
     if not resp.entries:
-        print("(表为空)")
+        print("(无数据)")
         return
-    for e in resp.entries:
-        k = e.key.decode("utf-8", errors="replace")
+    prefix = table.encode("utf-8") + b"\x00" if table is not None else None
+    shown = 0
+    for e in sorted(resp.entries, key=lambda x: x.key):
+        if prefix is not None and not e.key.startswith(prefix):
+            continue
+        t, raw = _split_data_key(e.key)
+        t_name = t.decode("utf-8", errors="replace") if t is not None else "<无前缀>"
+        r = raw.decode("utf-8", errors="replace")
         v = e.value.decode("utf-8", errors="replace")
-        print(f"{k} = {v}")
+        print(f"[{t_name}] {r} = {v}")
+        shown += 1
+    if shown == 0:
+        print("(无匹配数据)")
+
+
+# ── 数据落盘一致性校验（调用容器内 ldb 工具对比各组各节点的业务数据 KV 库）──
+
+# 容器内业务数据库路径（与 prod_raft.yaml 的 raft_service.data_path 对应）
+BUSINESS_DB = "/app/laoflch_raft_data/business.db"
+# 双写副本业务库（与 prod_raft.yaml 的 raft_service.dual_write.storage.db_path 对应）
+BACKUP_DB = "/app/laoflch_raft_data/business_backup.db"
+
+
+def _docker_containers(prefix="raft-node"):
+    """列出当前运行的 raft 容器名"""
+    r = subprocess.run(
+        ["docker", "ps", "--filter", f"name={prefix}", "--format", "{{.Names}}"],
+        capture_output=True, text=True, timeout=30,
+    )
+    if r.returncode != 0:
+        return []
+    return [l.strip() for l in r.stdout.splitlines() if l.strip()]
+
+
+def _ldb_dump(node, group_id, db_path=BUSINESS_DB):
+    """docker exec 在节点上用 ldb 导出 group_{g} CF 的全部键值对（hex 格式）"""
+    r = subprocess.run(
+        ["docker", "exec", node, "ldb",
+         f"--db={db_path}",
+         f"--column_family=group_{group_id}",
+         "dump", "--hex"],
+        capture_output=True, text=True, timeout=120,
+    )
+    if r.returncode != 0:
+        return None  # 库/CF 不存在（未参与此组、未启用双写）或 ldb 不可用
+    # 提取 "0x<key> ==> 0x<value>" 行并排序，做归一化
+    lines = sorted(
+        l.strip() for l in r.stdout.splitlines()
+        if re.match(r"^0x[0-9a-fA-F]+ ==> 0x[0-9a-fA-F]+$", l.strip())
+    )
+    return lines
+
+
+def _digest_verdict(results):
+    """根据各节点 hash 集合返回一致性判定"""
+    digests = {d for _, d in results.values()}
+    if len(digests) == 1:
+        return "一致 OK"
+    if len(results) == 1:
+        return "仅 1 个节点，无法对比"
+    return "不一致（可能复制尚未完成或配置异常）"
+
+
+def cmd_check_data(group_id, node_count=None):
+    nodes = sorted(_docker_containers())
+    if not nodes:
+        print("错误：未检测到运行中的 raft-node 容器，请先部署集群（./deploy_raft_cluster.sh up）")
+        return
+    if node_count is None:
+        node_count = len(nodes)
+
+    groups = [group_id] if group_id is not None else list(range(1, node_count + 1))
+    print("=" * 44)
+    print("  业务数据落盘一致性校验（主库 business.db + backup 副本）")
+    print("=" * 44)
+    for g in groups:
+        print(f"----- group-{g} -----")
+        main_results = {}
+        backup_results = {}
+        for i in range(1, node_count + 1):
+            node = f"raft-node-{i}"
+            if node not in nodes:
+                print(f"  {node}: (容器未运行，跳过)")
+                continue
+            lines = _ldb_dump(node, g, BUSINESS_DB)
+            if lines is None:
+                print(f"  {node}: (不参与此组或业务库无该 CF)")
+                continue
+            digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
+            main_results[node] = (len(lines), digest)
+            blines = _ldb_dump(node, g, BACKUP_DB)
+            if blines is None:
+                print(f"  {node}: (未启用双写或 backup 库无该 CF)")
+            else:
+                bdigest = hashlib.sha256("\n".join(blines).encode()).hexdigest()
+                backup_results[node] = (len(blines), bdigest)
+        if not main_results:
+            print("  (无节点参与此组)")
+            continue
+        print("  主库 (business.db):")
+        for node, (cnt, d) in sorted(main_results.items()):
+            print(f"    {node}: 条目数 {cnt}  hash {d[:16]}")
+        print(f"    结果: {_digest_verdict(main_results)}")
+        if backup_results:
+            print("  backup 库 (business_backup.db):")
+            for node, (cnt, d) in sorted(backup_results.items()):
+                print(f"    {node}: 条目数 {cnt}  hash {d[:16]}")
+            print(f"    结果: {_digest_verdict(backup_results)}")
+            # 主库 vs backup：逐节点比对（双写副本应与主库一致）
+            cross = [n for n in main_results
+                     if n in backup_results and main_results[n][1] != backup_results[n][1]]
+            print("    主库 vs backup: " + ("一致 OK" if not cross else f"不一致节点 {cross}"))
+        else:
+            print("  backup 库 (business_backup.db): (无节点启用双写，跳过对比)")
+    print("=" * 44)
+
+
+def _container_host_port(node):
+    """通过 docker port 查询容器 29999/tcp 的宿主端口（如 raft-node-1 -> 29999）"""
+    r = subprocess.run(
+        ["docker", "port", node, "29999/tcp"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    # 输出形如 "0.0.0.0:29999"
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if ":" in line:
+            return line.rsplit(":", 1)[-1]
+    return None
+
+
+def cmd_status_all():
+    """不带 --addr 时：遍历所有 raft-node 容器，逐个显示其上所有组的状态"""
+    nodes = sorted(_docker_containers())
+    if not nodes:
+        print("未检测到运行中的 raft-node 容器，请先部署集群（./deploy_raft_cluster.sh up）")
+        return
+    for node in nodes:
+        port = _container_host_port(node)
+        if port is None:
+            print(f"===== {node}: 无法获取宿主端口，跳过 =====")
+            continue
+        print(f"########## {node} (127.0.0.1:{port}) ##########")
+        cmd_get_status(f"127.0.0.1:{port}", None)
+        print()
 
 
 def main():
     parser = argparse.ArgumentParser(description="laoflchdb Raft 集群管理客户端")
-    parser.add_argument("--addr", default="127.0.0.1:29999",
-                        help="Raft 节点宿主地址（默认 127.0.0.1:29999）")
-    parser.add_argument("--group", type=int, default=1,
-                        help="目标 Raft 组 ID（默认 1）")
+    parser.add_argument("--addr", default=None,
+                        help="Raft 节点宿主地址，如 127.0.0.1:29999（status 不指定时遍历显示所有节点；其余命令默认 127.0.0.1:29999）")
+    parser.add_argument("--group", type=int, default=None,
+                        help="目标 Raft 组 ID（不指定时 status 显示本节点所有组的状态，其余命令默认组 1）")
+    parser.add_argument("--nodes", type=int, default=None,
+                        help="集群节点数（check-data 用，默认自动检测 raft-node 容器数）")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("get-status", help="查看节点 Raft 状态")
+    sub.add_parser("status", help="查看节点 Raft 状态")
     sub.add_parser("list-peers", help="查看集群成员")
+    sub.add_parser("check-data", help="校验各组各节点业务数据落盘是否一致（主库 business.db + backup 副本，调用容器内 ldb）")
     p = sub.add_parser("add-peer", help="向集群添加成员")
     p.add_argument("id", type=int)
     p.add_argument("peer_addr", help="节点地址，如 raft-node-2:29999")
@@ -310,28 +503,34 @@ def main():
     p = sub.add_parser("delete", help="删除 KV")
     p.add_argument("table")
     p.add_argument("key")
-    p = sub.add_parser("scan", help="扫描表")
-    p.add_argument("table")
+    p = sub.add_parser("scan", help="扫描 KV（可 --table 过滤显示；落盘键由客户端编码）")
+    p.add_argument("--table", default=None, help="按 table 过滤显示（可选）")
 
     args = parser.parse_args()
     cmd = args.command
-    g = args.group
-    if cmd == "get-status":
-        cmd_get_status(args.addr, g)
+    g = args.group  # None 时：status 探测所有组，其余命令默认组 1
+    addr = args.addr if args.addr is not None else "127.0.0.1:29999"
+    if cmd in ("status", "get-status"):  # get-status 为兼容旧用法
+        if args.addr is None:
+            cmd_status_all()
+        else:
+            cmd_get_status(args.addr, g)
+    elif cmd == "check-data":
+        cmd_check_data(g, args.nodes)
     elif cmd == "list-peers":
-        cmd_list_peers(args.addr, g)
+        cmd_list_peers(addr, g if g is not None else 1)
     elif cmd == "add-peer":
-        cmd_add_peer(args.addr, g, args.id, args.peer_addr)
+        cmd_add_peer(addr, g if g is not None else 1, args.id, args.peer_addr)
     elif cmd == "remove-peer":
-        cmd_remove_peer(args.addr, g, args.id)
+        cmd_remove_peer(addr, g if g is not None else 1, args.id)
     elif cmd == "put":
-        cmd_put(args.addr, g, args.table, args.key, args.value)
+        cmd_put(addr, g if g is not None else 1, args.table, args.key, args.value)
     elif cmd == "get":
-        cmd_get(args.addr, g, args.table, args.key)
+        cmd_get(addr, g if g is not None else 1, args.table, args.key)
     elif cmd == "delete":
-        cmd_delete(args.addr, g, args.table, args.key)
+        cmd_delete(addr, g if g is not None else 1, args.table, args.key)
     elif cmd == "scan":
-        cmd_scan(args.addr, g, args.table)
+        cmd_scan(addr, g if g is not None else 1, args.table)
     else:
         parser.print_help()
 

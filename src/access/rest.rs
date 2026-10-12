@@ -28,6 +28,7 @@ pub struct RestService {
     image_router: Option<axum::Router>,
     face_router: Option<axum::Router>,
     reranker_router: Option<axum::Router>,
+    raft_router: Option<axum::Router>,
 }
 
 impl RestService {
@@ -42,6 +43,7 @@ impl RestService {
             image_router: None,
             face_router: None,
             reranker_router: None,
+            raft_router: None,
         }
     }
 
@@ -56,6 +58,7 @@ impl RestService {
             image_router: None,
             face_router: None,
             reranker_router: None,
+            raft_router: None,
         }
     }
 
@@ -70,6 +73,7 @@ impl RestService {
             image_router: None,
             face_router: None,
             reranker_router: None,
+            raft_router: None,
         }
     }
 
@@ -100,6 +104,12 @@ impl RestService {
     /// 设置精排服务 REST Router
     pub fn with_reranker_router(mut self, router: axum::Router) -> Self {
         self.reranker_router = Some(router);
+        self
+    }
+
+    /// 设置 Raft 分布式 KV 服务 REST Router
+    pub fn with_raft_router(mut self, router: axum::Router) -> Self {
+        self.raft_router = Some(router);
         self
     }
 
@@ -179,6 +189,11 @@ impl RestService {
         // 如果设置了精排服务，添加 OpenAI 兼容精排路由（/v1/rerank）
         if let Some(ref reranker_router) = self.reranker_router {
             main_router = main_router.nest("/v1", reranker_router.clone());
+        }
+
+        // 如果设置了 Raft 服务，添加 Raft KV 路由
+        if let Some(ref raft_router) = self.raft_router {
+            main_router = main_router.nest("/api/v1/raft", raft_router.clone());
         }
 
         main_router

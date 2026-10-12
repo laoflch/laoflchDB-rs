@@ -89,4 +89,38 @@ pub trait SQLEngine: Send + Sync + 'static {
     async fn refresh_tables(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
 }
 
+/// 面向 KV 的存储引擎接口（Raft 业务数据落库抽象）。
+///
+/// table 概念对应 Raft 服务的 group：每个 Raft 组的数据存放在
+/// table = "group_{group_id}" 下。实现者内部自行保证线程安全，
+/// 所有方法均为 &self（内部使用锁）。
+#[async_trait::async_trait]
+pub trait KvStorage: Send + Sync + 'static {
+    /// 引擎类型名（如 "rocksdb"、"memory"）
+    fn engine_type(&self) -> &str;
+
+    /// 确保表存在（不存在则创建；重复调用幂等）
+    async fn ensure_table(&self, table: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    /// 写入键值对
+    async fn put(&self, table: &str, key: &[u8], value: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    /// 读取键值
+    async fn get(&self, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// 删除键
+    async fn delete(&self, table: &str, key: &[u8]) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    /// 全量扫描表内所有键值对
+    async fn scan(&self, table: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, Box<dyn std::error::Error + Send + Sync>>;
+
+    /// 清空表内全部数据
+    async fn clear(&self, table: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    /// 将数据刷新到持久介质（内存引擎可空实现）
+    async fn flush(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+}
+
 

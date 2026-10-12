@@ -127,8 +127,10 @@ impl RaftNetwork<TypeConfig> for GrpcNetworkClient {
             .map_err(|e| network_error(format!("RequestVote RPC failed: {}", e)))?;
 
         let inner = resp.into_inner();
-        bincode::deserialize(&inner.payload)
-            .map_err(|e| network_error(format!("Failed to deserialize VoteResponse: {}", e)))?
+        // 显式类型标注（与 append_entries 同理）：bincode 尾表达式泛型推断异常
+        let resp_de: openraft::raft::VoteResponse<NodeId> = bincode::deserialize(&inner.payload)
+            .map_err(|e| network_error(format!("Failed to deserialize VoteResponse: {}", e)))?;
+        Ok(resp_de)
     }
 
     async fn append_entries(
@@ -145,9 +147,15 @@ impl RaftNetwork<TypeConfig> for GrpcNetworkClient {
         let payload = bincode::serialize(&rpc)
             .map_err(|e| network_error(format!("Failed to serialize AppendEntriesRequest: {}", e)))?;
 
+        // 取证日志：打印 leader 实际发送的 prev_log_id / entries 范围 / leader_commit
         log::info!(
-            "[raft-net] append_entries -> {} req_payload_len={}",
+            "[raft-net] append_entries -> {} prev={:?} entries={} first={:?} last={:?} commit={:?} req_payload_len={}",
             self.node_addr,
+            rpc.prev_log_id,
+            rpc.entries.len(),
+            rpc.entries.first().map(|e| e.log_id.index),
+            rpc.entries.last().map(|e| e.log_id.index),
+            rpc.leader_commit,
             payload.len()
         );
         let request = tonic::Request::new(proto::AppendEntriesRequest {

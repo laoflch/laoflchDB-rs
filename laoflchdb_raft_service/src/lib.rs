@@ -6,11 +6,15 @@ pub mod raft_types;
 pub mod state_machine;
 pub mod log_store;
 pub mod network;
+pub mod rest;
+pub mod storage;
 
 use crate::raft_types::{NodeId, Raft};
 use crate::log_store::RaftLogStore;
 use crate::network::{GrpcClientPool, GrpcNetworkFactory};
 use crate::state_machine::RaftKvStateMachine;
+use crate::storage::{business_table_name, RaftStorageConfig};
+use laoflchdb_engines::KvStorage;
 use openraft::Config;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -36,9 +40,28 @@ pub struct RaftServiceConfig {
     /// Raft 心跳间隔（毫秒）
     #[serde(default = "default_heartbeat_interval")]
     pub heartbeat_interval: u64,
+    /// 业务数据落库引擎配置（状态机真身，缺省 rocksdb，路径 data_path/business.db）。
+    /// 组级 storage 配置可覆盖服务级。
+    #[serde(default)]
+    pub storage: Option<RaftStorageConfig>,
+    /// 双写副本配置（可选）：开启后把业务数据同步写入另一个 KvStorage 引擎，
+    /// 作为业务数据副本（与 Raft 复制解耦，供业务侧独立读取）。
+    #[serde(default)]
+    pub dual_write: Option<DualWriteConfig>,
     /// 多 Raft 组配置（每个组独立选举、独立日志与状态机，共用同一 gRPC 端口）
     #[serde(default)]
     pub groups: Vec<RaftGroupConfig>,
+}
+
+/// 双写副本配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DualWriteConfig {
+    /// 是否启用双写
+    #[serde(default)]
+    pub enabled: bool,
+    /// 副本存储引擎配置（缺省：与主引擎同类型，路径 data_path/business_backup.db）
+    #[serde(default)]
+    pub storage: Option<RaftStorageConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,12 +70,20 @@ pub struct RaftGroupConfig {
     pub group_id: u32,
     /// 本节点在该组中的节点 ID（组内唯一）
     pub node_id: u64,
+    /// 本节点在该组中的对外地址（如 "raft-node-1:29999"）。
+    /// 缺省时使用 raft_service.address（监听地址，通常为 0.0.0.0，不适合作为对端连接地址，
+    /// 会导致 follower 无法连接 leader）。
+    #[serde(default)]
+    pub self_addr: Option<String>,
     /// 该组全部节点的地址（含自身；bootstrap 节点初始化时写入完整成员）
     #[serde(default)]
     pub peers: Vec<PeerConfig>,
     /// 该组是否在本节点自举集群（每组应恰有一个节点为 true，其初始 leader 大概率落在该节点）
     #[serde(default)]
     pub bootstrap: bool,
+    /// 该组的存储引擎配置（可选，覆盖服务级 raft_service.storage）
+    #[serde(default)]
+    pub storage: Option<RaftStorageConfig>,
     /// 组名称（可选，用于显示）
     #[serde(default)]
     pub name: Option<String>,
@@ -112,18 +143,98 @@ impl RaftKvServiceImpl {
     }
 
     /// 初始化各组日志存储并启动 Raft 实例（含集群自举）
-    pub async fn start(&mut self) -> Result<(), String> {
+    pub async fn start(&self) -> Result<(), String> {
         if self.config.groups.is_empty() {
             return Err("raft_service.groups 未配置任何 Raft 组".to_string());
         }
-        for group_cfg in self.config.groups.clone() {
-            self.start_group(&group_cfg).await?;
+
+        let group_configs = self.config.groups.clone();
+        let business_path = PathBuf::from(&self.config.data_path).join("business.db");
+        let backup_path = PathBuf::from(&self.config.data_path).join("business_backup.db");
+        let dual_write_cfg = self.config.dual_write.clone().filter(|d| d.enabled);
+
+        // 打开存储引擎（按 引擎类型|db_path 去重，相同配置的组共享同一实例）。
+        // 主引擎：状态机真身（table 概念对应 Raft 组，每组数据存放于 table = "group_{g}"）。
+        // 副本引擎：双写时启用，作为业务数据副本。
+        let mut engines: std::collections::HashMap<String, Arc<dyn KvStorage>> =
+            std::collections::HashMap::new();
+        let mut group_engines: std::collections::HashMap<u32, Arc<dyn KvStorage>> =
+            std::collections::HashMap::new();
+        let mut group_dual: std::collections::HashMap<u32, Arc<dyn KvStorage>> =
+            std::collections::HashMap::new();
+
+        for group_cfg in &group_configs {
+            // 组级 storage 优先，否则服务级，否则默认（rocksdb）
+            let storage_cfg = group_cfg
+                .storage
+                .clone()
+                .or_else(|| self.config.storage.clone())
+                .unwrap_or_default();
+            let db_path = storage_cfg
+                .db_path
+                .clone()
+                .unwrap_or_else(|| business_path.to_string_lossy().into_owned());
+            let key = format!("{}|{}", storage_cfg.storage_type, db_path);
+            let engine = if let Some(e) = engines.get(&key) {
+                e.clone()
+            } else {
+                let engine = crate::storage::open_storage(&storage_cfg, &business_path)?;
+                engines.insert(key, engine.clone());
+                engine
+            };
+            // 确保本组的业务表存在（幂等）
+            let table = business_table_name(group_cfg.group_id);
+            engine
+                .ensure_table(&table)
+                .await
+                .map_err(|e| format!("确保业务表 {} 存在失败: {}", table, e))?;
+            group_engines.insert(group_cfg.group_id, engine);
+
+            // 双写副本引擎
+            if let Some(dual) = &dual_write_cfg {
+                let dual_cfg = dual.storage.clone().unwrap_or_else(|| RaftStorageConfig {
+                    storage_type: storage_cfg.storage_type.clone(),
+                    db_path: None,
+                    schema_name: storage_cfg.schema_name.clone(),
+                });
+                let dual_db_path = dual_cfg
+                    .db_path
+                    .clone()
+                    .unwrap_or_else(|| backup_path.to_string_lossy().into_owned());
+                let dkey = format!("{}|{}", dual_cfg.storage_type, dual_db_path);
+                let dual_engine = if let Some(e) = engines.get(&dkey) {
+                    e.clone()
+                } else {
+                    let engine = crate::storage::open_storage(&dual_cfg, &backup_path)?;
+                    engines.insert(dkey, engine.clone());
+                    engine
+                };
+                dual_engine
+                    .ensure_table(&table)
+                    .await
+                    .map_err(|e| format!("确保副本业务表 {} 存在失败: {}", table, e))?;
+                group_dual.insert(group_cfg.group_id, dual_engine);
+            }
+        }
+
+        for group_cfg in group_configs {
+            let kvdb = group_engines
+                .get(&group_cfg.group_id)
+                .cloned()
+                .expect("主存储引擎必须存在");
+            let dual_write = group_dual.get(&group_cfg.group_id).cloned();
+            self.start_group(&group_cfg, kvdb, dual_write).await?;
         }
         Ok(())
     }
 
     /// 启动单个 Raft 组
-    async fn start_group(&mut self, group_cfg: &RaftGroupConfig) -> Result<(), String> {
+    async fn start_group(
+        &self,
+        group_cfg: &RaftGroupConfig,
+        kvdb: Arc<dyn KvStorage>,
+        dual_write: Option<Arc<dyn KvStorage>>,
+    ) -> Result<(), String> {
         let group_id = group_cfg.group_id;
         if self.groups.read().unwrap().contains_key(&group_id) {
             return Err(format!("group_id {} 重复配置", group_id));
@@ -147,7 +258,7 @@ impl RaftKvServiceImpl {
 
         // 每个组使用独立的网络工厂（携带 group_id，内部 RPC 按组路由）
         let network_factory = GrpcNetworkFactory::new(self.grpc_pool.clone(), group_id);
-        let state_machine = RaftKvStateMachine::new();
+        let state_machine = RaftKvStateMachine::new(group_id, kvdb, dual_write);
 
         // 创建 Raft 实例
         let raft = Raft::new(
@@ -160,7 +271,8 @@ impl RaftKvServiceImpl {
         .await
         .map_err(|e| format!("Failed to create Raft instance for group {}: {}", group_id, e))?;
 
-        // 仅该组的 bootstrap 节点自举集群（自身 + 配置中的全部 peers）；
+        // 仅该组的 bootstrap 节点自举集群（只初始化自身为唯一投票者，立即当选 leader）；
+        // 其余 peers 由后台任务 auto_join_peers 通过 add_learner + change_membership 加入。
         // 非 bootstrap 节点不 initialize，保持空日志状态，通过 leader 的日志复制学习成员关系。
         if group_cfg.bootstrap {
             let initialized = raft
@@ -168,19 +280,28 @@ impl RaftKvServiceImpl {
                 .await
                 .map_err(|e| format!("Failed to check initialization: {}", e))?;
             if !initialized {
+                // 自身地址优先用 self_addr（容器内可达地址），缺省回退到监听地址
+                let self_addr = group_cfg
+                    .self_addr
+                    .clone()
+                    .unwrap_or_else(|| self.config.address.clone());
                 let mut members = std::collections::BTreeMap::new();
                 members.insert(
                     group_cfg.node_id,
-                    openraft::BasicNode { addr: self.config.address.clone() },
+                    openraft::BasicNode { addr: self_addr },
                 );
-                for p in &group_cfg.peers {
-                    members.insert(p.id, openraft::BasicNode { addr: p.addr.clone() });
-                }
                 if let Err(e) = raft.initialize(members).await {
                     // NotAllowed 表示集群已初始化，可安全忽略
                     log::warn!("组 {} 初始化集群失败（可能已初始化）: {}", group_id, e);
                 }
             }
+            // 后台自动将配置中的 peers 加入集群并提升为投票成员
+            let raft_h = raft.clone();
+            let self_id = group_cfg.node_id;
+            let peers = group_cfg.peers.clone();
+            tokio::spawn(async move {
+                auto_join_peers(raft_h, self_id, peers).await;
+            });
         } else {
             log::info!("组 {} bootstrap=false，等待集群 leader 加入", group_id);
         }
@@ -209,59 +330,120 @@ impl RaftKvServiceImpl {
         self.groups.read().unwrap().keys().copied().collect()
     }
 
-    // ── KV 操作 ──
+    // ── KV 操作（gRPC 与 REST 复用）──
 
-    async fn kv_put(&self, group_id: u32, table: &str, key: Vec<u8>, value: Vec<u8>) -> Result<bool, String> {
+    pub(crate) async fn kv_put(&self, group_id: u32, key: Vec<u8>, value: Vec<u8>) -> Result<bool, String> {
         // 在锁内 clone 出 Raft 句柄，避免 std::sync::RwLockReadGuard 跨 await 持有（非 Send）
         let raft = self
             .get_raft(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
 
         let request = crate::raft_types::Request::Put {
-            table: table.to_string(),
-            key,
-            value,
+            key: key.clone(),
+            value: value.clone(),
         };
 
-        let response = raft
-            .client_write(request)
-            .await
-            .map_err(|e| format!("Failed to write: {}", e))?;
-
-        Ok(response.data.success)
+        match raft.client_write(request).await {
+            Ok(response) => Ok(response.data.success),
+            Err(e) => {
+                // 本节点不是 leader 时，openraft 会返回 ForwardToLeader（含 leader 地址）：
+                // 自动转发给 leader
+                if let Some(ftl) = e.forward_to_leader() {
+                    if let Some(leader) = &ftl.leader_node {
+                        log::info!("[group {}] 转发 put 到 leader {}", group_id, leader.addr);
+                        return self.forward_put(group_id, &leader.addr, key, value).await;
+                    }
+                }
+                Err(format!("Failed to write: {}", e))
+            }
+        }
     }
 
-    async fn kv_get(&self, group_id: u32, table: &str, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
-        // 直接从状态机读取（读操作不走 Raft 复制）
+    pub(crate) async fn kv_get(&self, group_id: u32, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+        // 直查状态机（即主存储引擎）
         let state_machine = self
             .get_state_machine(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
-        Ok(state_machine.get(table, key).await)
+        state_machine.get(key).await
     }
 
-    async fn kv_delete(&self, group_id: u32, table: &str, key: Vec<u8>) -> Result<bool, String> {
+    pub(crate) async fn kv_delete(&self, group_id: u32, key: Vec<u8>) -> Result<bool, String> {
         let raft = self
             .get_raft(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
 
         let request = crate::raft_types::Request::Delete {
-            table: table.to_string(),
-            key,
+            key: key.clone(),
         };
 
-        let response = raft
-            .client_write(request)
-            .await
-            .map_err(|e| format!("Failed to delete: {}", e))?;
-
-        Ok(response.data.success)
+        match raft.client_write(request).await {
+            Ok(response) => Ok(response.data.success),
+            Err(e) => {
+                // 本节点不是 leader 时自动转发给 leader
+                if let Some(ftl) = e.forward_to_leader() {
+                    if let Some(leader) = &ftl.leader_node {
+                        log::info!("[group {}] 转发 delete 到 leader {}", group_id, leader.addr);
+                        return self.forward_delete(group_id, &leader.addr, key).await;
+                    }
+                }
+                Err(format!("Failed to delete: {}", e))
+            }
+        }
     }
 
-    async fn kv_scan(&self, group_id: u32, table: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+    pub(crate) async fn kv_scan(&self, group_id: u32) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
         let state_machine = self
             .get_state_machine(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
-        Ok(state_machine.scan(table).await)
+        state_machine.scan().await
+    }
+
+    // ── 写请求转发（follower 收到写入时自动转发给 leader）──
+
+    async fn forward_put(
+        &self,
+        group_id: u32,
+        leader_addr: &str,
+        key: Vec<u8>,
+        value: Vec<u8>,
+    ) -> Result<bool, String> {
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://{}", leader_addr))
+            .map_err(|e| format!("leader 地址非法 {}: {}", leader_addr, e))?
+            .connect()
+            .await
+            .map_err(|e| format!("连接 leader {} 失败: {}", leader_addr, e))?;
+        let mut client = crate::proto::raft_kv_service_client::RaftKvServiceClient::new(channel);
+        let resp = client
+            .put(crate::proto::PutRequest {
+                group_id,
+                key,
+                value,
+            })
+            .await
+            .map_err(|e| format!("转发 put 到 leader {} 失败: {}", leader_addr, e))?;
+        Ok(resp.into_inner().success)
+    }
+
+    async fn forward_delete(
+        &self,
+        group_id: u32,
+        leader_addr: &str,
+        key: Vec<u8>,
+    ) -> Result<bool, String> {
+        let channel = tonic::transport::Endpoint::from_shared(format!("http://{}", leader_addr))
+            .map_err(|e| format!("leader 地址非法 {}: {}", leader_addr, e))?
+            .connect()
+            .await
+            .map_err(|e| format!("连接 leader {} 失败: {}", leader_addr, e))?;
+        let mut client = crate::proto::raft_kv_service_client::RaftKvServiceClient::new(channel);
+        let resp = client
+            .delete(crate::proto::DeleteRequest {
+                group_id,
+                key,
+            })
+            .await
+            .map_err(|e| format!("转发 delete 到 leader {} 失败: {}", leader_addr, e))?;
+        Ok(resp.into_inner().success)
     }
 
     // ── 集群管理 ──
@@ -319,13 +501,89 @@ impl RaftKvServiceImpl {
         Ok(peers)
     }
 
-    async fn node_status(&self, group_id: u32) -> Result<String, String> {
+    pub(crate) async fn node_status(&self, group_id: u32) -> Result<String, String> {
         let raft = self
             .get_raft(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
 
         let rx = raft.metrics();
         Ok(format!("{:?}", *rx.borrow()))
+    }
+}
+
+/// bootstrap 节点后台任务：当选 leader 后，将配置中的 peers 逐个加入集群并提升为投票成员。
+/// 设计说明：bootstrap 节点 initialize 时只含自身（单 voter，立即当选），
+/// 若 initialize 时把全部成员写入 voters，未初始化的 Learner 节点不参与投票，
+/// 将导致无法凑够多数票而选举失败（term 无限飙升）。
+async fn auto_join_peers(raft: Raft, self_id: NodeId, peers: Vec<PeerConfig>) {
+    const RETRY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+    let start = std::time::Instant::now();
+
+    loop {
+        if start.elapsed() > RETRY_TIMEOUT {
+            log::error!("自动加入 peers 超时（120s），请手动通过 AddPeer 加入剩余节点");
+            return;
+        }
+
+        // 等待本节点成为 leader
+        let is_leader = {
+            let rx = raft.metrics();
+            let m = rx.borrow();
+            m.state == openraft::ServerState::Leader
+        };
+        if !is_leader {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            continue;
+        }
+
+        let current_voters: std::collections::BTreeSet<u64> = {
+            let rx = raft.metrics();
+            let m = rx.borrow();
+            m.membership_config.voter_ids().collect()
+        };
+
+        // 找出尚未加入的 peers
+        let missing: Vec<PeerConfig> = peers
+            .iter()
+            .filter(|p| p.id != self_id && !current_voters.contains(&p.id))
+            .cloned()
+            .collect();
+        if missing.is_empty() {
+            log::info!("组成员已全部加入并提升为投票成员: {:?}", current_voters);
+            return;
+        }
+
+        // 逐个 add_learner（阻塞等待日志提交）；任一失败则稍后整轮重试
+        let mut all_ok = true;
+        for p in &missing {
+            if let Err(e) = raft
+                .add_learner(p.id, openraft::BasicNode { addr: p.addr.clone() }, true)
+                .await
+            {
+                log::warn!("add_learner({}, {}) 失败: {}，稍后重试", p.id, p.addr, e);
+                all_ok = false;
+                break;
+            }
+        }
+        if !all_ok {
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            continue;
+        }
+
+        // 一次性将全部成员（含新 learner）提升为投票成员
+        let mut all_voters = current_voters;
+        for p in &missing {
+            all_voters.insert(p.id);
+        }
+        match raft.change_membership(all_voters.clone(), false).await {
+            Ok(_) => {
+                log::info!("组成员已提升为投票成员: {:?}", all_voters);
+            }
+            Err(e) => {
+                log::warn!("change_membership 失败: {}，稍后重试", e);
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            }
+        }
     }
 }
 
@@ -338,7 +596,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::PutRequest>,
     ) -> Result<Response<proto::PutResponse>, Status> {
         let req = request.into_inner();
-        match self.kv_put(req.group_id, &req.table, req.key, req.value).await {
+        match self.kv_put(req.group_id, req.key, req.value).await {
             Ok(success) => Ok(Response::new(proto::PutResponse {
                 success,
                 message: "OK".to_string(),
@@ -352,7 +610,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::GetRequest>,
     ) -> Result<Response<proto::GetResponse>, Status> {
         let req = request.into_inner();
-        match self.kv_get(req.group_id, &req.table, &req.key).await {
+        match self.kv_get(req.group_id, &req.key).await {
             Ok(Some(value)) => Ok(Response::new(proto::GetResponse {
                 found: true,
                 value,
@@ -370,7 +628,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::DeleteRequest>,
     ) -> Result<Response<proto::DeleteResponse>, Status> {
         let req = request.into_inner();
-        match self.kv_delete(req.group_id, &req.table, req.key).await {
+        match self.kv_delete(req.group_id, req.key).await {
             Ok(success) => Ok(Response::new(proto::DeleteResponse { success })),
             Err(e) => Err(Status::internal(e)),
         }
@@ -381,7 +639,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::ScanRequest>,
     ) -> Result<Response<proto::ScanResponse>, Status> {
         let req = request.into_inner();
-        match self.kv_scan(req.group_id, &req.table).await {
+        match self.kv_scan(req.group_id).await {
             Ok(entries) => {
                 let kv_entries = entries
                     .into_iter()
@@ -499,6 +757,17 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
                     Status::invalid_argument(format!("Failed to deserialize AppendEntriesRequest: {}", e))
                 })?;
 
+        // 取证日志：follower 实际收到的 prev_log_id / entries 范围 / leader_commit
+        log::info!(
+            "[raft-svc] g{} append_entries prev={:?} entries={} first={:?} last={:?} commit={:?}",
+            inner.group_id,
+            rpc.prev_log_id,
+            rpc.entries.len(),
+            rpc.entries.first().map(|e| e.log_id.index),
+            rpc.entries.last().map(|e| e.log_id.index),
+            rpc.leader_commit
+        );
+
         let resp = raft
             .append_entries(rpc)
             .await
@@ -546,15 +815,13 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
 
 // ── 启动入口 ──
 
-/// 启动 gRPC 服务器。接收一个已调用 `start()` 初始化过的服务实例。
-pub async fn start_raft_service(service: RaftKvServiceImpl) -> Result<(), String> {
+/// 启动 gRPC 服务器。接收一个已调用 `start()` 初始化过的服务实例（Arc 共享，REST 接口同用）。
+pub async fn start_raft_service(service: Arc<RaftKvServiceImpl>) -> Result<(), String> {
     let addr = service
         .config
         .address
         .parse()
         .map_err(|e| format!("Invalid address: {}", e))?;
-
-    let svc = Arc::new(service);
 
     println!("🚀 Raft 分布式 KV 服务启动中: {}", addr);
     Server::builder()
@@ -562,7 +829,7 @@ pub async fn start_raft_service(service: RaftKvServiceImpl) -> Result<(), String
         // 注意：h2 的 MAX_FRAME_SIZE 上限为 (1<<24)-1 = 16777215（约 16MB），
         // 超过该值会在每次建连时 assert panic，此处取合法最大值。
         .max_frame_size((1 << 24) - 1)
-        .add_service(proto::raft_kv_service_server::RaftKvServiceServer::from_arc(svc))
+        .add_service(proto::raft_kv_service_server::RaftKvServiceServer::from_arc(service))
         .serve(addr)
         .await
         .map_err(|e| format!("gRPC server error: {}", e))?;

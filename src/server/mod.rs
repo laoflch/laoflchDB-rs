@@ -373,30 +373,33 @@ impl LaoflchDBServer {
         };
 
         // 创建 Raft 分布式 KV 存储服务（如果配置启用）
-        let _raft_service_handles = match &config.raft_service {
+        let raft_service_handle = match &config.raft_service {
             Some(raft_cfg) if raft_cfg.enabled => {
                 let raft_cfg_clone = raft_cfg.clone();
                 let addr = raft_cfg.address.clone();
                 let group_count = raft_cfg.groups.len();
 
-                // 创建独立的 Raft 服务实例
+                // 创建独立的 Raft 服务实例（Arc 共享：后台初始化 + gRPC 服务器 + REST 路由）
                 match laoflchdb_raft_service::RaftKvServiceImpl::new(&raft_cfg_clone).await {
-                    Ok(mut svc) => {
+                    Ok(svc) => {
+                        let svc = Arc::new(svc);
+                        let svc_start = svc.clone();
+                        let svc_grpc = svc.clone();
                         // 在后台任务中初始化 Raft 并启动 gRPC 服务器
                         tokio::spawn(async move {
-                            if let Err(e) = svc.start().await {
+                            if let Err(e) = svc_start.start().await {
                                 log::error!("Raft 服务初始化失败: {}", e);
                                 return;
                             }
                             log::info!("Raft 服务初始化成功 ({} 个组)", group_count);
 
                             // 启动 gRPC 服务器（复用已初始化的服务实例）
-                            if let Err(e) = laoflchdb_raft_service::start_raft_service(svc).await {
+                            if let Err(e) = laoflchdb_raft_service::start_raft_service(svc_grpc).await {
                                 log::error!("Raft gRPC 服务错误: {}", e);
                             }
                         });
                         info!("Raft 分布式 KV 服务已启动: addr={}, groups={}", addr, group_count);
-                        Some((group_count, addr))
+                        Some((svc, group_count, addr))
                     }
                     Err(e) => {
                         log::error!("Raft 服务初始化失败: {}", e);
@@ -481,6 +484,11 @@ impl LaoflchDBServer {
                         if let Some(ref rr_svc) = reranker_service {
                             let rr_router = laoflchdb_reranker_service::create_rest_router(rr_svc.clone());
                             rest_service = rest_service.with_reranker_router(rr_router);
+                        }
+                        // 如果 Raft 服务已启用，创建并挂载 Raft KV 路由（/api/v1/raft）
+                        if let Some((ref raft_svc, _, _)) = raft_service_handle {
+                            let raft_router = laoflchdb_raft_service::rest::create_rest_router(raft_svc.clone());
+                            rest_service = rest_service.with_raft_router(raft_router);
                         }
                         let addr_owned = addr.to_string();
 

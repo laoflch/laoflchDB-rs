@@ -33,12 +33,28 @@ raft_service:
   data_path: /app/laoflch_raft_data
   election_timeout: 1000          # 选举超时（毫秒）
   heartbeat_interval: 100         # 心跳间隔（毫秒）
+  # 业务数据落库引擎（状态机真身，固定通过 KvStorage 接口；缺省为 rocksdb，路径 data_path/business.db）。
+  # table 概念对应 Raft 组：每组数据存放于 table = "group_{group_id}"。
+  # storage_type 可选 "rocksdb"（KVRocksDBEngine 落盘持久化）或 "memory"（纯内存，重启后由 Raft 日志重放）。
+  storage:
+    storage_type: rocksdb
+    # db_path: /app/laoflch_raft_data/business.db   # 可选，缺省为 data_path/business.db
+    schema_name: raft
+  # 双写副本（可选）：开启后把业务数据同步写入另一个 KvStorage 引擎，作为业务数据副本。
+  # 副本存储引擎类型可独立配置（rocksdb / memory），缺省与主引擎同类型、路径 data_path/business_backup.db。
+  dual_write:
+    enabled: true            # 开关
+    storage:                 # 副本存储引擎配置（同 RaftStorageConfig 字段）
+      storage_type: rocksdb  # 引擎类型：rocksdb / memory
+      db_path: /app/laoflch_raft_data/business_backup.db
+      schema_name: raft_backup
   # 多 Raft 组配置。每个组：独立选举、独立日志（data_path/group-{id}）、独立 KV 状态机。
   # peers 需列出该组全部节点的地址（含自身）；bootstrap 仅在该组对应的节点上为 true。
   groups:
     - group_id: 1
       name: "group-1"
       node_id: 1                  # 本节点在组 1 中的节点 ID
+      self_addr: "raft-node-1:29999"  # 本节点对外地址（必须是对端可达的地址，不能是 0.0.0.0）
       bootstrap: true             # 组 1 在本节点（node-1）自举
       peers:
         - { id: 1, addr: "raft-node-1:29999" }
@@ -47,6 +63,7 @@ raft_service:
     - group_id: 2
       name: "group-2"
       node_id: 1                  # 本节点在组 2 中的节点 ID（node-1 在组 2 中 id=1）
+      self_addr: "raft-node-1:29999"
       bootstrap: false            # 组 2 在 node-2 自举
       peers:
         - { id: 1, addr: "raft-node-1:29999" }
@@ -55,6 +72,7 @@ raft_service:
     - group_id: 3
       name: "group-3"
       node_id: 1                  # 本节点在组 3 中的节点 ID（node-1 在组 3 中 id=1）
+      self_addr: "raft-node-1:29999"
       bootstrap: false            # 组 3 在 node-3 自举
       peers:
         - { id: 1, addr: "raft-node-1:29999" }
@@ -94,9 +112,13 @@ default_policy: allow
 # Runtime mode: multi_thread or single_thread
 runtime_mode: multi_thread
 
-# Access protocols（全部 disabled：避免启动主程序的 gRPC/REST/S3 服务）
+# Access protocols（grpc 保持禁用；rest 启用：向外部提供 REST 接口，含 /api/v1/raft/*）
 access_protocols:
   - protocol: grpc
     enabled: false
     addr: 0.0.0.0:19777
     service_id: grpc_admin
+  - protocol: rest
+    enabled: true
+    addr: 0.0.0.0:18080          # REST 监听地址（挂载 /api/v1/raft 等路由）
+    service_id: rest_admin
