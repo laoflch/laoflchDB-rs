@@ -36,7 +36,7 @@ BASE_PORT="${BASE_PORT:-29999}"        # node-1 宿主端口，后续节点依�
 REST_BASE_PORT="${REST_BASE_PORT:-18080}"   # node-1 REST 宿主端口，后续节点依次 +1
 CONFIG_DIR="${CONFIG_DIR:-$(pwd)/deploy_raft}"
 CONTAINER_PREFIX="raft-node"
-DATA_VOLUME_PREFIX="raft_data"
+DATA_ROOT="/workspace/raft_data"            # Raft 数据宿主目录，每节点一个子目录 raft-node-{i}
 CONTAINER_PORT=29999                   # 容器内 Raft gRPC 端口
 CONTAINER_REST_PORT=18080              # 容器内 REST 端口（与参考配置 access_protocols rest 项一致）
 ADMIN_PY="$(pwd)/scripts/raft_admin.py"
@@ -159,16 +159,13 @@ build_image() {
         echo "错误：未找到 target/release/ldb（RocksDB ldb 工具），请先执行: source local.env && cargo-xtask ldb" >&2
         exit 1
     fi
-    # 二进制链接了 CUDA 库，将宿主机 CUDA 运行库复制到构建上下文（Dockerfile COPY deploy_raft/.cuda_libs/）
-    local libs_dir="$CONFIG_DIR/.cuda_libs"
+    # 二进制链接了 CUDA 库，但 681MB 的 CUDA 运行库不拷贝进镜像（保持镜像小）：
+    # 容器启动时 bind mount 宿主 /usr/local/cuda 提供 libcublas/libcublasLt/libcurand/libcudart
+    # 驱动库 libcuda.so.1（28MB）与主镜像 laoflchdb 一致 COPY 进镜像（Dockerfile COPY deploy_raft/.libcuda_libs/）
+    local libs_dir="$CONFIG_DIR/.libcuda_libs"
     mkdir -p "$libs_dir"
     cp -L /usr/lib/x86_64-linux-gnu/libcuda.so.1 "$libs_dir/libcuda.so.1"
-    cp -L /usr/local/cuda-12.4/targets/x86_64-linux/lib/libcudart.so.12 "$libs_dir/libcudart.so.12"
-    cp -L /usr/local/cuda-12.4/targets/x86_64-linux/lib/libcublas.so.12 "$libs_dir/libcublas.so.12"
-    cp -L /usr/local/cuda-12.4/targets/x86_64-linux/lib/libcublasLt.so.12 "$libs_dir/libcublasLt.so.12"
-    cp -L /usr/local/cuda-11.8/targets/x86_64-linux/lib/libcurand.so.10 "$libs_dir/libcurand.so.10"
 
-    # ldb 工具链接的 RocksDB 运行时动态库（Dockerfile COPY deploy_raft/.runtime_libs/ 到容器系统库路径）
     local rl_dir="$CONFIG_DIR/.runtime_libs"
     mkdir -p "$rl_dir"
     cp -L /usr/lib/x86_64-linux-gnu/libsnappy.so.1 "$rl_dir/libsnappy.so.1"
@@ -226,14 +223,16 @@ start_containers() {
         name="$(node_name "$i")"
         hp="$(host_port "$i")"
         docker rm -f "$name" >/dev/null 2>&1 || true
+        mkdir -p "${DATA_ROOT}/raft-node-${i}"
         echo "  [node-$i] $name  (gRPC 宿主 $hp -> $CONTAINER_PORT, REST 宿主 $(host_rest_port "$i") -> $CONTAINER_REST_PORT)"
         docker run -d --name "$name" \
             --network "$NETWORK" \
             --security-opt seccomp=unconfined \
             -p "$hp:$CONTAINER_PORT" \
             -p "$(host_rest_port "$i"):$CONTAINER_REST_PORT" \
-            -v "${DATA_VOLUME_PREFIX}_${i}:/app/laoflch_raft_data" \
+            -v "${DATA_ROOT}/raft-node-${i}:/app/laoflch_raft_data" \
             -v "$CONFIG_DIR/$(node_name "$i")/prod_raft.yaml:/app/config/prod_raft.yaml" \
+            -v /usr/local/cuda:/usr/local/cuda:ro \
             "$IMAGE" >/dev/null
     done
 }
@@ -318,9 +317,9 @@ down() {
 
 clean() {
     down
-    echo "删除数据卷与配置目录..."
+    echo "删除数据目录与配置目录..."
     for ((i = 1; i <= NODE_COUNT; i++)); do
-        docker volume rm "${DATA_VOLUME_PREFIX}_${i}" >/dev/null 2>&1 || true
+        rm -rf "${DATA_ROOT}/raft-node-${i}"
     done
     rm -rf "$CONFIG_DIR"
     echo "完成"

@@ -53,12 +53,31 @@ pub struct RaftServiceConfig {
     pub groups: Vec<RaftGroupConfig>,
 }
 
+/// 双写副本写入模式
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DualWriteMode {
+    /// 同步写入：副本写失败会向 Raft apply 返回错误（副本与主强一致，延迟受副本影响）
+    Sync,
+    /// 异步写入：spawn 后台任务写副本，失败仅记日志、不阻塞主路径（主流程延迟最小，副本最终一致）
+    Async,
+}
+
+impl Default for DualWriteMode {
+    fn default() -> Self {
+        Self::Sync
+    }
+}
+
 /// 双写副本配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DualWriteConfig {
     /// 是否启用双写
     #[serde(default)]
     pub enabled: bool,
+    /// 副本写入模式：sync（默认）/ async
+    #[serde(default)]
+    pub mode: DualWriteMode,
     /// 副本存储引擎配置（缺省：与主引擎同类型，路径 data_path/business_backup.db）
     #[serde(default)]
     pub storage: Option<RaftStorageConfig>,
@@ -152,6 +171,11 @@ impl RaftKvServiceImpl {
         let business_path = PathBuf::from(&self.config.data_path).join("business.db");
         let backup_path = PathBuf::from(&self.config.data_path).join("business_backup.db");
         let dual_write_cfg = self.config.dual_write.clone().filter(|d| d.enabled);
+        // 副本写入模式（sync / async），缺省同步
+        let dual_mode = dual_write_cfg
+            .as_ref()
+            .map(|d| d.mode)
+            .unwrap_or(DualWriteMode::Sync);
 
         // 打开存储引擎（按 引擎类型|db_path 去重，相同配置的组共享同一实例）。
         // 主引擎：状态机真身（table 概念对应 Raft 组，每组数据存放于 table = "group_{g}"）。
@@ -223,7 +247,7 @@ impl RaftKvServiceImpl {
                 .cloned()
                 .expect("主存储引擎必须存在");
             let dual_write = group_dual.get(&group_cfg.group_id).cloned();
-            self.start_group(&group_cfg, kvdb, dual_write).await?;
+            self.start_group(&group_cfg, kvdb, dual_write, dual_mode).await?;
         }
         Ok(())
     }
@@ -234,6 +258,7 @@ impl RaftKvServiceImpl {
         group_cfg: &RaftGroupConfig,
         kvdb: Arc<dyn KvStorage>,
         dual_write: Option<Arc<dyn KvStorage>>,
+        dual_mode: DualWriteMode,
     ) -> Result<(), String> {
         let group_id = group_cfg.group_id;
         if self.groups.read().unwrap().contains_key(&group_id) {
@@ -258,7 +283,7 @@ impl RaftKvServiceImpl {
 
         // 每个组使用独立的网络工厂（携带 group_id，内部 RPC 按组路由）
         let network_factory = GrpcNetworkFactory::new(self.grpc_pool.clone(), group_id);
-        let state_machine = RaftKvStateMachine::new(group_id, kvdb, dual_write);
+        let state_machine = RaftKvStateMachine::new(group_id, kvdb, dual_write, dual_mode);
 
         // 创建 Raft 实例
         let raft = Raft::new(

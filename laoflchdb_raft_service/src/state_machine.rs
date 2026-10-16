@@ -10,6 +10,7 @@
 
 use crate::raft_types::{NodeId, Request, Response, TypeConfig};
 use crate::storage::business_table_name;
+use crate::DualWriteMode;
 use laoflchdb_engines::KvStorage;
 use openraft::storage::{RaftSnapshotBuilder, RaftStateMachine, Snapshot};
 use openraft::{
@@ -81,6 +82,8 @@ pub struct RaftKvStateMachine {
     kvdb: Arc<dyn KvStorage>,
     /// 可选业务数据副本（双写；None 表示未开启双写）
     dual_write: Option<Arc<dyn KvStorage>>,
+    /// 双写副本写入模式（同步 / 异步）
+    dual_mode: DualWriteMode,
 }
 
 impl RaftKvStateMachine {
@@ -88,6 +91,7 @@ impl RaftKvStateMachine {
         group_id: u32,
         kvdb: Arc<dyn KvStorage>,
         dual_write: Option<Arc<dyn KvStorage>>,
+        dual_mode: DualWriteMode,
     ) -> Self {
         Self {
             last_applied: Arc::new(RwLock::new(None)),
@@ -95,6 +99,7 @@ impl RaftKvStateMachine {
             group_id,
             kvdb,
             dual_write,
+            dual_mode,
         }
     }
 
@@ -103,7 +108,7 @@ impl RaftKvStateMachine {
         business_table_name(self.group_id)
     }
 
-    /// 写入主引擎；开启双写时同步写入副本
+    /// 写入主引擎；开启双写时按模式写入副本（同步阻塞主路径 / 异步后台写入）
     async fn put_kv(&self, key: &[u8], value: &[u8]) -> Result<(), StorageError<NodeId>> {
         let table = self.business_table();
         self.kvdb
@@ -111,15 +116,30 @@ impl RaftKvStateMachine {
             .await
             .map_err(|e| storage_io_err(format!("状态机 KV 写入失败: {}", e)))?;
         if let Some(dual) = &self.dual_write {
-            dual
-                .put(&table, key, value)
-                .await
-                .map_err(|e| storage_io_err(format!("双写副本 KV 写入失败: {}", e)))?;
+            match self.dual_mode {
+                DualWriteMode::Sync => {
+                    dual
+                        .put(&table, key, value)
+                        .await
+                        .map_err(|e| storage_io_err(format!("双写副本 KV 写入失败: {}", e)))?;
+                }
+                DualWriteMode::Async => {
+                    let dual = dual.clone();
+                    let table = table.clone();
+                    let key = key.to_vec();
+                    let value = value.to_vec();
+                    tokio::spawn(async move {
+                        if let Err(e) = dual.put(&table, &key, &value).await {
+                            log::error!("双写副本(异步) KV 写入失败: {}", e);
+                        }
+                    });
+                }
+            }
         }
         Ok(())
     }
 
-    /// 删除主引擎；开启双写时同步删除副本
+    /// 删除主引擎；开启双写时按模式删除副本（同步阻塞主路径 / 异步后台删除）
     async fn delete_kv(&self, key: &[u8]) -> Result<(), StorageError<NodeId>> {
         let table = self.business_table();
         self.kvdb
@@ -127,10 +147,24 @@ impl RaftKvStateMachine {
             .await
             .map_err(|e| storage_io_err(format!("状态机 KV 删除失败: {}", e)))?;
         if let Some(dual) = &self.dual_write {
-            dual
-                .delete(&table, key)
-                .await
-                .map_err(|e| storage_io_err(format!("双写副本 KV 删除失败: {}", e)))?;
+            match self.dual_mode {
+                DualWriteMode::Sync => {
+                    dual
+                        .delete(&table, key)
+                        .await
+                        .map_err(|e| storage_io_err(format!("双写副本 KV 删除失败: {}", e)))?;
+                }
+                DualWriteMode::Async => {
+                    let dual = dual.clone();
+                    let table = table.clone();
+                    let key = key.to_vec();
+                    tokio::spawn(async move {
+                        if let Err(e) = dual.delete(&table, &key).await {
+                            log::error!("双写副本(异步) KV 删除失败: {}", e);
+                        }
+                    });
+                }
+            }
         }
         Ok(())
     }

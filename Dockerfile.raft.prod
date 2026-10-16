@@ -37,13 +37,14 @@ COPY target/release/ldb /usr/local/bin/ldb
 # Copy raft-only production configuration
 COPY config/prod_raft.yaml /app/config/prod_raft.yaml
 
-# Copy CUDA runtime libs（二进制链接了 CUDA 库，即使 raft-only 节点也需要这些文件才能启动；
-# 由 deploy_raft_cluster.sh 在构建前准备到 deploy_raft/.cuda_libs）
-COPY deploy_raft/.cuda_libs/ /usr/local/cuda/lib64/
-
 # Copy RocksDB 运行时动态库（ldb 工具链接宿主机的 libsnappy/libgflags/libbz2/liblz4/libzstd/libjemalloc/libz，
 # 由 deploy_raft_cluster.sh 在构建前准备到 deploy_raft/.runtime_libs）
 COPY deploy_raft/.runtime_libs/ /usr/lib/x86_64-linux-gnu/
+
+# libcuda.so.1 驱动库（28MB，与主镜像 laoflchdb 一致 COPY 进镜像）；
+# 其余 CUDA 运行库（libcublas/libcublasLt/libcurand/libcudart ~681MB）不拷贝，
+# 容器启动时通过 bind mount 映射宿主 /usr/local/cuda，见 deploy_raft_cluster.sh
+COPY deploy_raft/.libcuda_libs/libcuda.so.1 /usr/lib/x86_64-linux-gnu/libcuda.so.1
 
 # Expose raft gRPC port
 EXPOSE 29999
