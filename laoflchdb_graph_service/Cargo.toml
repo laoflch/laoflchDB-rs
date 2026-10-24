@@ -1,0 +1,22 @@
+[package]
+name = "laoflchdb_graph_service"
+version = "0.1.0"
+edition = "2021"
+description = "laoflchdb 图服务：内置属性图 GraphQL schema，数据存储于 kv_rocksdb，支持 gRPC 与 REST 查询"
+
+[dependencies]
+laoflchdb_engines = { path = "../laoflchdb_engines" }
+laoflchdb_kv_rocksdb_engine = { path = "../laoflchdb_kv_rocksdb_engine" }
+laoflchdb_graph_service_proto = { path = "../laoflchdb_graph_service_proto" }
+async-graphql = { version = "7", default-features = false }
+async-trait = "0.1"
+axum = "0.7"
+tokio = { version = "1.0", features = ["full"] }
+tonic = "0.11"
+prost = "0.12"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }

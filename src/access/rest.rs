@@ -29,6 +29,7 @@ pub struct RestService {
     face_router: Option<axum::Router>,
     reranker_router: Option<axum::Router>,
     raft_router: Option<axum::Router>,
+    graph_router: Option<axum::Router>,
 }
 
 impl RestService {
@@ -44,6 +45,7 @@ impl RestService {
             face_router: None,
             reranker_router: None,
             raft_router: None,
+            graph_router: None,
         }
     }
 
@@ -59,6 +61,7 @@ impl RestService {
             face_router: None,
             reranker_router: None,
             raft_router: None,
+            graph_router: None,
         }
     }
 
@@ -74,6 +77,7 @@ impl RestService {
             face_router: None,
             reranker_router: None,
             raft_router: None,
+            graph_router: None,
         }
     }
 
@@ -110,6 +114,12 @@ impl RestService {
     /// 设置 Raft 分布式 KV 服务 REST Router
     pub fn with_raft_router(mut self, router: axum::Router) -> Self {
         self.raft_router = Some(router);
+        self
+    }
+
+    /// 设置图服务 REST Router（POST /graphql）
+    pub fn with_graph_router(mut self, router: axum::Router) -> Self {
+        self.graph_router = Some(router);
         self
     }
 
@@ -194,6 +204,11 @@ impl RestService {
         // 如果设置了 Raft 服务，添加 Raft KV 路由
         if let Some(ref raft_router) = self.raft_router {
             main_router = main_router.nest("/api/v1/raft", raft_router.clone());
+        }
+
+        // 如果设置了图服务，添加 GraphQL 路由（POST /graphql）
+        if let Some(ref graph_router) = self.graph_router {
+            main_router = main_router.merge(graph_router.clone());
         }
 
         main_router

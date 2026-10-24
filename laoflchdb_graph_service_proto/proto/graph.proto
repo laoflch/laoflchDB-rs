@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package laoflchdb.graph;
+
+// 图服务：通过 gRPC 执行 GraphQL 查询与变更（query / mutation）
+service GraphService {
+  // 执行 GraphQL 查询，与 REST POST /graphql 共用同一套执行逻辑
+  rpc Execute(GraphQLRequest) returns (GraphQLResponse);
+}
+
+message GraphQLRequest {
+  // GraphQL 查询文本
+  string query = 1;
+  // GraphQL 变量（JSON 对象字符串，可为空）
+  string variables_json = 2;
+  // 操作名称（查询文本含多个操作时指定，可为空）
+  string operation_name = 3;
+}
+
+message GraphQLResponse {
+  // 是否无错误
+  bool success = 1;
+  // 结果数据（JSON 字符串）
+  string data_json = 2;
+  // 错误列表（JSON 数组字符串，无错误时为 "[]"）
+  string errors_json = 3;
+}

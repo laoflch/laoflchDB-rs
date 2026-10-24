@@ -32,6 +32,8 @@ members = [
     "laoflchdb_text_summarize_service_proto",
     "laoflchdb_reranker_service",
     "laoflchdb_raft_service",
+    "laoflchdb_graph_service",
+    "laoflchdb_graph_service_proto",
 ]
 
 [dependencies]
@@ -49,6 +51,7 @@ laoflchdb_text_summarize_service = { path = "./laoflchdb_text_summarize_service"
 laoflchdb_text_summarize_service_proto = { path = "./laoflchdb_text_summarize_service_proto" }
 laoflchdb_reranker_service = { path = "./laoflchdb_reranker_service" }
 laoflchdb_raft_service = { path = "./laoflchdb_raft_service" }
+laoflchdb_graph_service = { path = "./laoflchdb_graph_service" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}
 prost = "0.12"
 protobuf = "3.7"

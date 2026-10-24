@@ -145,6 +145,16 @@ reranker:
   dtype: f32
   max_seq_len: 1024
 
+# 图服务配置（内置属性图 GraphQL schema，支持查询与增删改；数据存于 kv_rocksdb）
+# gRPC: laoflchdb.graph.GraphService/Execute
+# REST: POST /graphql
+graph_service:
+  enabled: true
+  db_path: /app/laoflch_graph_data   # kv_rocksdb 数据目录
+  schema_name: graph                 # 引擎 schema 名称
+  table_name: graph                  # 图数据所在 table（RocksDB column family）
+  max_page_size: 1000                # 单次查询最大返回条数（0=不限制）
+
 
 # Log configuration
 log_level: info

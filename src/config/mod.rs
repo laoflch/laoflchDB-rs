@@ -325,6 +325,8 @@ pub struct DatabaseConfig {
     pub reranker: Option<RerankerServiceConfig>,
     #[serde(default)]
     pub raft_service: Option<laoflchdb_raft_service::RaftServiceConfig>,
+    #[serde(default)]
+    pub graph_service: Option<GraphServiceConfig>,
 }
 
 /// 对象存储服务配置（S3 兼容）
@@ -504,6 +506,37 @@ fn default_rr_model_path() -> String {
 fn default_rr_max_seq_len() -> usize { 1024 }
 fn default_rr_top_n() -> usize { 10 }
 
+/// 图服务配置（内置属性图 GraphQL schema，支持查询与增删改，数据存于 kv_rocksdb）
+#[derive(Debug, Deserialize, Clone)]
+pub struct GraphServiceConfig {
+    /// 是否启用
+    #[serde(default)]
+    pub enabled: bool,
+    /// kv_rocksdb 数据目录
+    #[serde(default = "default_graph_db_path")]
+    pub db_path: String,
+    /// 引擎 schema 名称（仅用于引擎初始化）
+    #[serde(default = "default_graph_schema_name")]
+    pub schema_name: String,
+    /// 图数据所在 table（RocksDB column family）
+    #[serde(default = "default_graph_table_name")]
+    pub table_name: String,
+    /// 单次查询返回的最大条数（0 表示不限制）
+    #[serde(default = "default_graph_max_page_size")]
+    pub max_page_size: usize,
+}
+
+fn default_graph_db_path() -> String {
+    "./laoflch_graph_data".to_string()
+}
+fn default_graph_schema_name() -> String {
+    "graph".to_string()
+}
+fn default_graph_table_name() -> String {
+    "graph".to_string()
+}
+fn default_graph_max_page_size() -> usize { 1000 }
+
 fn default_object_store_db_path() -> String {
     "./laoflch_object_store_data".to_string()
 }
@@ -573,6 +606,7 @@ impl DatabaseConfig {
             text_summarize: None,
             reranker: None,
             raft_service: None,
+            graph_service: None,
         }
     }
 

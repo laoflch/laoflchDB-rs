@@ -372,6 +372,35 @@ impl LaoflchDBServer {
             }
         };
 
+        // 创建图服务（如果配置启用）：内置属性图 GraphQL schema，数据存于 kv_rocksdb
+        let graph_service = match &config.graph_service {
+            Some(graph_cfg) if graph_cfg.enabled => {
+                let graph_config = laoflchdb_graph_service::GraphServiceConfig {
+                    db_path: graph_cfg.db_path.clone(),
+                    schema_name: graph_cfg.schema_name.clone(),
+                    table_name: graph_cfg.table_name.clone(),
+                    max_page_size: graph_cfg.max_page_size,
+                };
+                match laoflchdb_graph_service::GraphServiceImpl::new(&graph_config).await {
+                    Ok(svc) => {
+                        info!(
+                            "图服务已启动: db_path={}, table={}",
+                            graph_cfg.db_path, graph_cfg.table_name
+                        );
+                        Some(Arc::new(svc))
+                    }
+                    Err(e) => {
+                        log::error!("图服务启动失败: {}", e);
+                        None
+                    }
+                }
+            }
+            _ => {
+                info!("图服务未启用");
+                None
+            }
+        };
+
         // 创建 Raft 分布式 KV 存储服务（如果配置启用）
         let raft_service_handle = match &config.raft_service {
             Some(raft_cfg) if raft_cfg.enabled => {
@@ -425,7 +454,7 @@ impl LaoflchDBServer {
 
             let vector_service = vector_service.clone();
             tokio::spawn(async move {
-                if let Err(e) = start_grpc_server(grpc_service, vector_service, embedding_service, object_store_service, image_service, face_service, text_summarize_service, &addr).await {
+                if let Err(e) = start_grpc_server(grpc_service, vector_service, embedding_service, object_store_service, image_service, face_service, text_summarize_service, graph_service, &addr).await {
                     log::error!("gRPC 服务错误: {}", e);
                 }
             });
@@ -454,9 +483,10 @@ impl LaoflchDBServer {
                         let image_service_clone = image_service.clone();
                         let face_service_clone = face_service.clone();
                         let text_summarize_service_clone = text_summarize_service.clone();
+                        let graph_service_clone = graph_service.clone();
 
                         tokio::spawn(async move {
-                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, embedding_service_clone, object_store_service_clone, image_service_clone, face_service_clone, text_summarize_service_clone, &addr_owned).await {
+                            if let Err(e) = start_grpc_server(grpc_service, vector_service_clone, embedding_service_clone, object_store_service_clone, image_service_clone, face_service_clone, text_summarize_service_clone, graph_service_clone, &addr_owned).await {
                                 log::error!("gRPC 服务错误: {}", e);
                             }
                         });
@@ -484,6 +514,11 @@ impl LaoflchDBServer {
                         if let Some(ref rr_svc) = reranker_service {
                             let rr_router = laoflchdb_reranker_service::create_rest_router(rr_svc.clone());
                             rest_service = rest_service.with_reranker_router(rr_router);
+                        }
+                        // 如果图服务已启用，创建并挂载 GraphQL REST 路由（POST /graphql）
+                        if let Some(ref graph_svc) = graph_service {
+                            let graph_router = laoflchdb_graph_service::create_rest_router(graph_svc.clone());
+                            rest_service = rest_service.with_graph_router(graph_router);
                         }
                         // 如果 Raft 服务已启用，创建并挂载 Raft KV 路由（/api/v1/raft）
                         if let Some((ref raft_svc, _, _)) = raft_service_handle {
@@ -578,6 +613,7 @@ async fn start_grpc_server(
     image_service: Option<std::sync::Arc<laoflchdb_image_service::ImageServiceImpl>>,
     face_service: Option<std::sync::Arc<laoflchdb_face_service::FaceServiceImpl>>,
     text_summarize_service: Option<std::sync::Arc<laoflchdb_text_summarize_service::TextSummarizeService>>,
+    graph_service: Option<std::sync::Arc<laoflchdb_graph_service::GraphServiceImpl>>,
     addr: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use tonic::transport::Server;
@@ -588,6 +624,7 @@ async fn start_grpc_server(
     use laoflchdb_image_service::proto::image_service_server::ImageServiceServer;
     use laoflchdb_face_service::proto::face_service_server::FaceServiceServer;
     use laoflchdb_text_summarize_service::SummarizeServiceServer;
+    use laoflchdb_graph_service::proto::graph_service_server::GraphServiceServer;
 
     let addr_copy = addr.to_string();
     info!("gRPC 服务监听: {}", addr_copy);
@@ -621,6 +658,11 @@ async fn start_grpc_server(
     // 如果有文本摘要服务配置，则注册
     if let Some(ts) = text_summarize_service {
         server = server.add_service(SummarizeServiceServer::new(ts));
+    }
+
+    // 如果有图服务配置，则注册（GraphQL 通过 gRPC 执行）
+    if let Some(graph) = graph_service {
+        server = server.add_service(GraphServiceServer::from_arc(graph));
     }
 
     server.serve(addr_copy.parse()?).await?;
