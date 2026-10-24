@@ -7,6 +7,7 @@
 
 用法示例：
   python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 1 status
+  python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group orders status   # group_id 支持字符串
   python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 2 list-peers
   python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 2 add-peer 2 raft-node-2:29999
   python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 2 remove-peer 2
@@ -158,7 +159,7 @@ def _fmt_vote(v: str) -> str:
     return "T{}-N{} {}".format(lid.get("term", "?"), lid.get("node_id", "?"), state)
 
 
-def _print_status(status: str, group_id: int = 1):
+def _print_status(status: str, group_id="1"):
     try:
         metrics = _parse_fields(_unwrap(status, "{"))
         node_id = metrics.get("id", "?")
@@ -230,11 +231,13 @@ def cmd_get_status(addr, group_id):
         _print_status(resp.status, group_id)
         return
 
-    # 未指定组：探测本节点运行的所有组（组号递增；连续 3 个组不存在即停止）
-    g = 1
+    # 未指定组：探测本节点运行的数字组（组号递增；连续 3 个组不存在即停止）。
+    # 注意：group_id 是字符串，这里只探测常见的数字命名组，自定义名称的组请显式 --group。
+    n = 1
     miss = 0
     found_any = False
-    while g <= 64:
+    while n <= 64:
+        g = str(n)
         try:
             resp = svc.GetStatus(pb2.GetStatusRequest(group_id=g))
         except grpc.RpcError as e:
@@ -242,14 +245,14 @@ def cmd_get_status(addr, group_id):
                 miss += 1
                 if miss >= 3:
                     break  # 连续 3 个组不存在，视为已到最大组号
-                g += 1
+                n += 1
                 continue
             raise
         miss = 0
         found_any = True
         print(f"----- group-{g} -----")
         _print_status(resp.status, g)
-        g += 1
+        n += 1
     if not found_any:
         print("(本节点未运行任何 Raft 组)")
 
@@ -397,7 +400,7 @@ def cmd_check_data(group_id, node_count=None):
     if node_count is None:
         node_count = len(nodes)
 
-    groups = [group_id] if group_id is not None else list(range(1, node_count + 1))
+    groups = [group_id] if group_id is not None else [str(i) for i in range(1, node_count + 1)]
     print("=" * 44)
     print("  业务数据落盘一致性校验（主库 business.db + backup 副本）")
     print("=" * 44)
@@ -479,8 +482,8 @@ def main():
     parser = argparse.ArgumentParser(description="laoflchdb Raft 集群管理客户端")
     parser.add_argument("--addr", default=None,
                         help="Raft 节点宿主地址，如 127.0.0.1:29999（status 不指定时遍历显示所有节点；其余命令默认 127.0.0.1:29999）")
-    parser.add_argument("--group", type=int, default=None,
-                        help="目标 Raft 组 ID（不指定时 status 显示本节点所有组的状态，其余命令默认组 1）")
+    parser.add_argument("--group", type=str, default=None,
+                        help="目标 Raft 组 ID（字符串，如 1 或 orders；不指定时 status 显示本节点所有数字组的状态，其余命令默认组 1）")
     parser.add_argument("--nodes", type=int, default=None,
                         help="集群节点数（check-data 用，默认自动检测 raft-node 容器数）")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -518,19 +521,19 @@ def main():
     elif cmd == "check-data":
         cmd_check_data(g, args.nodes)
     elif cmd == "list-peers":
-        cmd_list_peers(addr, g if g is not None else 1)
+        cmd_list_peers(addr, g if g is not None else "1")
     elif cmd == "add-peer":
-        cmd_add_peer(addr, g if g is not None else 1, args.id, args.peer_addr)
+        cmd_add_peer(addr, g if g is not None else "1", args.id, args.peer_addr)
     elif cmd == "remove-peer":
-        cmd_remove_peer(addr, g if g is not None else 1, args.id)
+        cmd_remove_peer(addr, g if g is not None else "1", args.id)
     elif cmd == "put":
-        cmd_put(addr, g if g is not None else 1, args.table, args.key, args.value)
+        cmd_put(addr, g if g is not None else "1", args.table, args.key, args.value)
     elif cmd == "get":
-        cmd_get(addr, g if g is not None else 1, args.table, args.key)
+        cmd_get(addr, g if g is not None else "1", args.table, args.key)
     elif cmd == "delete":
-        cmd_delete(addr, g if g is not None else 1, args.table, args.key)
+        cmd_delete(addr, g if g is not None else "1", args.table, args.key)
     elif cmd == "scan":
-        cmd_scan(addr, g if g is not None else 1, args.table)
+        cmd_scan(addr, g if g is not None else "1", args.table)
     else:
         parser.print_help()
 

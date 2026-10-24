@@ -85,8 +85,8 @@ pub struct DualWriteConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RaftGroupConfig {
-    /// 组 ID（同一节点上必须唯一）
-    pub group_id: u32,
+    /// 组 ID（字符串，同一节点上必须唯一；仅允许字母/数字/下划线/连字符，长度 1..=64）
+    pub group_id: String,
     /// 本节点在该组中的节点 ID（组内唯一）
     pub node_id: u64,
     /// 本节点在该组中的对外地址（如 "raft-node-1:29999"）。
@@ -144,11 +144,29 @@ pub struct GroupRuntime {
     pub state_machine: RaftKvStateMachine,
 }
 
+/// 校验 group_id：允许字母/数字/下划线/连字符，长度 1..=64。
+/// group_id 会用作存储目录名（group-{id}）与 RocksDB 表名（group_{id}），因此必须限制字符集。
+fn validate_group_id(group_id: &str) -> Result<(), String> {
+    if group_id.is_empty() || group_id.len() > 64 {
+        return Err(format!("group_id 长度必须在 1..=64: {:?}", group_id));
+    }
+    if !group_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(format!(
+            "group_id 仅允许字母/数字/下划线/连字符: {:?}",
+            group_id
+        ));
+    }
+    Ok(())
+}
+
 pub struct RaftKvServiceImpl {
     config: RaftServiceConfig,
     /// group_id -> 组运行时。Raft 是 Arc<RaftInner>，本身可 Clone；
     /// 这里用 std RwLock 提供 interior mutability，以便 gRPC service 满足 Sync。
-    groups: std::sync::RwLock<std::collections::HashMap<u32, GroupRuntime>>,
+    groups: std::sync::RwLock<std::collections::HashMap<String, GroupRuntime>>,
     grpc_pool: GrpcClientPool,
 }
 
@@ -168,6 +186,9 @@ impl RaftKvServiceImpl {
         }
 
         let group_configs = self.config.groups.clone();
+        for group_cfg in &group_configs {
+            validate_group_id(&group_cfg.group_id)?;
+        }
         let business_path = PathBuf::from(&self.config.data_path).join("business.db");
         let backup_path = PathBuf::from(&self.config.data_path).join("business_backup.db");
         let dual_write_cfg = self.config.dual_write.clone().filter(|d| d.enabled);
@@ -182,9 +203,9 @@ impl RaftKvServiceImpl {
         // 副本引擎：双写时启用，作为业务数据副本。
         let mut engines: std::collections::HashMap<String, Arc<dyn KvStorage>> =
             std::collections::HashMap::new();
-        let mut group_engines: std::collections::HashMap<u32, Arc<dyn KvStorage>> =
+        let mut group_engines: std::collections::HashMap<String, Arc<dyn KvStorage>> =
             std::collections::HashMap::new();
-        let mut group_dual: std::collections::HashMap<u32, Arc<dyn KvStorage>> =
+        let mut group_dual: std::collections::HashMap<String, Arc<dyn KvStorage>> =
             std::collections::HashMap::new();
 
         for group_cfg in &group_configs {
@@ -207,12 +228,12 @@ impl RaftKvServiceImpl {
                 engine
             };
             // 确保本组的业务表存在（幂等）
-            let table = business_table_name(group_cfg.group_id);
+            let table = business_table_name(&group_cfg.group_id);
             engine
                 .ensure_table(&table)
                 .await
                 .map_err(|e| format!("确保业务表 {} 存在失败: {}", table, e))?;
-            group_engines.insert(group_cfg.group_id, engine);
+            group_engines.insert(group_cfg.group_id.clone(), engine);
 
             // 双写副本引擎
             if let Some(dual) = &dual_write_cfg {
@@ -237,7 +258,7 @@ impl RaftKvServiceImpl {
                     .ensure_table(&table)
                     .await
                     .map_err(|e| format!("确保副本业务表 {} 存在失败: {}", table, e))?;
-                group_dual.insert(group_cfg.group_id, dual_engine);
+                group_dual.insert(group_cfg.group_id.clone(), dual_engine);
             }
         }
 
@@ -260,7 +281,7 @@ impl RaftKvServiceImpl {
         dual_write: Option<Arc<dyn KvStorage>>,
         dual_mode: DualWriteMode,
     ) -> Result<(), String> {
-        let group_id = group_cfg.group_id;
+        let group_id = group_cfg.group_id.clone();
         if self.groups.read().unwrap().contains_key(&group_id) {
             return Err(format!("group_id {} 重复配置", group_id));
         }
@@ -282,8 +303,8 @@ impl RaftKvServiceImpl {
             .map_err(|e| format!("Invalid raft config: {}", e))?;
 
         // 每个组使用独立的网络工厂（携带 group_id，内部 RPC 按组路由）
-        let network_factory = GrpcNetworkFactory::new(self.grpc_pool.clone(), group_id);
-        let state_machine = RaftKvStateMachine::new(group_id, kvdb, dual_write, dual_mode);
+        let network_factory = GrpcNetworkFactory::new(self.grpc_pool.clone(), group_id.clone());
+        let state_machine = RaftKvStateMachine::new(group_id.clone(), kvdb, dual_write, dual_mode);
 
         // 创建 Raft 实例
         let raft = Raft::new(
@@ -332,7 +353,7 @@ impl RaftKvServiceImpl {
         }
 
         self.groups.write().unwrap().insert(
-            group_id,
+            group_id.clone(),
             GroupRuntime { raft, state_machine },
         );
 
@@ -341,23 +362,23 @@ impl RaftKvServiceImpl {
     }
 
     /// 获取指定组的 Raft 引用
-    pub fn get_raft(&self, group_id: u32) -> Option<Raft> {
-        self.groups.read().unwrap().get(&group_id).map(|g| g.raft.clone())
+    pub fn get_raft(&self, group_id: &str) -> Option<Raft> {
+        self.groups.read().unwrap().get(group_id).map(|g| g.raft.clone())
     }
 
     /// 获取指定组的共享状态机
-    pub fn get_state_machine(&self, group_id: u32) -> Option<RaftKvStateMachine> {
-        self.groups.read().unwrap().get(&group_id).map(|g| g.state_machine.clone())
+    pub fn get_state_machine(&self, group_id: &str) -> Option<RaftKvStateMachine> {
+        self.groups.read().unwrap().get(group_id).map(|g| g.state_machine.clone())
     }
 
     /// 本节点参与的所有组 ID（已启动）
-    pub fn group_ids(&self) -> Vec<u32> {
-        self.groups.read().unwrap().keys().copied().collect()
+    pub fn group_ids(&self) -> Vec<String> {
+        self.groups.read().unwrap().keys().cloned().collect()
     }
 
     // ── KV 操作（gRPC 与 REST 复用）──
 
-    pub(crate) async fn kv_put(&self, group_id: u32, key: Vec<u8>, value: Vec<u8>) -> Result<bool, String> {
+    pub(crate) async fn kv_put(&self, group_id: &str, key: Vec<u8>, value: Vec<u8>) -> Result<bool, String> {
         // 在锁内 clone 出 Raft 句柄，避免 std::sync::RwLockReadGuard 跨 await 持有（非 Send）
         let raft = self
             .get_raft(group_id)
@@ -384,7 +405,7 @@ impl RaftKvServiceImpl {
         }
     }
 
-    pub(crate) async fn kv_get(&self, group_id: u32, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
+    pub(crate) async fn kv_get(&self, group_id: &str, key: &[u8]) -> Result<Option<Vec<u8>>, String> {
         // 直查状态机（即主存储引擎）
         let state_machine = self
             .get_state_machine(group_id)
@@ -392,7 +413,7 @@ impl RaftKvServiceImpl {
         state_machine.get(key).await
     }
 
-    pub(crate) async fn kv_delete(&self, group_id: u32, key: Vec<u8>) -> Result<bool, String> {
+    pub(crate) async fn kv_delete(&self, group_id: &str, key: Vec<u8>) -> Result<bool, String> {
         let raft = self
             .get_raft(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
@@ -416,7 +437,7 @@ impl RaftKvServiceImpl {
         }
     }
 
-    pub(crate) async fn kv_scan(&self, group_id: u32) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+    pub(crate) async fn kv_scan(&self, group_id: &str) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
         let state_machine = self
             .get_state_machine(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
@@ -427,7 +448,7 @@ impl RaftKvServiceImpl {
 
     async fn forward_put(
         &self,
-        group_id: u32,
+        group_id: &str,
         leader_addr: &str,
         key: Vec<u8>,
         value: Vec<u8>,
@@ -440,7 +461,7 @@ impl RaftKvServiceImpl {
         let mut client = crate::proto::raft_kv_service_client::RaftKvServiceClient::new(channel);
         let resp = client
             .put(crate::proto::PutRequest {
-                group_id,
+                group_id: group_id.to_string(),
                 key,
                 value,
             })
@@ -451,7 +472,7 @@ impl RaftKvServiceImpl {
 
     async fn forward_delete(
         &self,
-        group_id: u32,
+        group_id: &str,
         leader_addr: &str,
         key: Vec<u8>,
     ) -> Result<bool, String> {
@@ -463,7 +484,7 @@ impl RaftKvServiceImpl {
         let mut client = crate::proto::raft_kv_service_client::RaftKvServiceClient::new(channel);
         let resp = client
             .delete(crate::proto::DeleteRequest {
-                group_id,
+                group_id: group_id.to_string(),
                 key,
             })
             .await
@@ -473,7 +494,7 @@ impl RaftKvServiceImpl {
 
     // ── 集群管理 ──
 
-    async fn cluster_add_peer(&self, group_id: u32, id: u64, addr: String) -> Result<bool, String> {
+    async fn cluster_add_peer(&self, group_id: &str, id: u64, addr: String) -> Result<bool, String> {
         let raft = self
             .get_raft(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
@@ -499,7 +520,7 @@ impl RaftKvServiceImpl {
         Ok(true)
     }
 
-    async fn cluster_remove_peer(&self, group_id: u32, id: u64) -> Result<bool, String> {
+    async fn cluster_remove_peer(&self, group_id: &str, id: u64) -> Result<bool, String> {
         let raft = self
             .get_raft(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
@@ -512,7 +533,7 @@ impl RaftKvServiceImpl {
         Ok(true)
     }
 
-    async fn cluster_list_peers(&self, group_id: u32) -> Result<Vec<(u64, String)>, String> {
+    async fn cluster_list_peers(&self, group_id: &str) -> Result<Vec<(u64, String)>, String> {
         let raft = self
             .get_raft(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
@@ -526,7 +547,7 @@ impl RaftKvServiceImpl {
         Ok(peers)
     }
 
-    pub(crate) async fn node_status(&self, group_id: u32) -> Result<String, String> {
+    pub(crate) async fn node_status(&self, group_id: &str) -> Result<String, String> {
         let raft = self
             .get_raft(group_id)
             .ok_or(format!("group {} 不存在或未启动", group_id))?;
@@ -621,7 +642,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::PutRequest>,
     ) -> Result<Response<proto::PutResponse>, Status> {
         let req = request.into_inner();
-        match self.kv_put(req.group_id, req.key, req.value).await {
+        match self.kv_put(&req.group_id, req.key, req.value).await {
             Ok(success) => Ok(Response::new(proto::PutResponse {
                 success,
                 message: "OK".to_string(),
@@ -635,7 +656,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::GetRequest>,
     ) -> Result<Response<proto::GetResponse>, Status> {
         let req = request.into_inner();
-        match self.kv_get(req.group_id, &req.key).await {
+        match self.kv_get(&req.group_id, &req.key).await {
             Ok(Some(value)) => Ok(Response::new(proto::GetResponse {
                 found: true,
                 value,
@@ -653,7 +674,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::DeleteRequest>,
     ) -> Result<Response<proto::DeleteResponse>, Status> {
         let req = request.into_inner();
-        match self.kv_delete(req.group_id, req.key).await {
+        match self.kv_delete(&req.group_id, req.key).await {
             Ok(success) => Ok(Response::new(proto::DeleteResponse { success })),
             Err(e) => Err(Status::internal(e)),
         }
@@ -664,7 +685,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::ScanRequest>,
     ) -> Result<Response<proto::ScanResponse>, Status> {
         let req = request.into_inner();
-        match self.kv_scan(req.group_id).await {
+        match self.kv_scan(&req.group_id).await {
             Ok(entries) => {
                 let kv_entries = entries
                     .into_iter()
@@ -681,7 +702,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::AddPeerRequest>,
     ) -> Result<Response<proto::AddPeerResponse>, Status> {
         let req = request.into_inner();
-        match self.cluster_add_peer(req.group_id, req.id, req.addr).await {
+        match self.cluster_add_peer(&req.group_id, req.id, req.addr).await {
             Ok(success) => Ok(Response::new(proto::AddPeerResponse {
                 success,
                 message: "OK".to_string(),
@@ -695,7 +716,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::RemovePeerRequest>,
     ) -> Result<Response<proto::RemovePeerResponse>, Status> {
         let req = request.into_inner();
-        match self.cluster_remove_peer(req.group_id, req.id).await {
+        match self.cluster_remove_peer(&req.group_id, req.id).await {
             Ok(success) => Ok(Response::new(proto::RemovePeerResponse {
                 success,
                 message: "OK".to_string(),
@@ -709,7 +730,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::ListPeersRequest>,
     ) -> Result<Response<proto::ListPeersResponse>, Status> {
         let req = request.into_inner();
-        match self.cluster_list_peers(req.group_id).await {
+        match self.cluster_list_peers(&req.group_id).await {
             Ok(peers) => {
                 let peer_infos = peers
                     .into_iter()
@@ -726,7 +747,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         request: Request<proto::GetStatusRequest>,
     ) -> Result<Response<proto::GetStatusResponse>, Status> {
         let req = request.into_inner();
-        match self.node_status(req.group_id).await {
+        match self.node_status(&req.group_id).await {
             Ok(status) => Ok(Response::new(proto::GetStatusResponse { status })),
             Err(e) => Err(Status::internal(e)),
         }
@@ -740,7 +761,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
     ) -> Result<Response<proto::RequestVoteResponse>, Status> {
         let inner = request.into_inner();
         let raft = self
-            .get_raft(inner.group_id)
+            .get_raft(&inner.group_id)
             .ok_or_else(|| Status::failed_precondition(format!("group {} 不存在或未启动", inner.group_id)))?;
 
         let rpc: openraft::raft::VoteRequest<NodeId> = bincode::deserialize(&inner.payload)
@@ -762,7 +783,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
     ) -> Result<Response<proto::AppendEntriesResponse>, Status> {
         let inner = request.into_inner();
         let raft = self
-            .get_raft(inner.group_id)
+            .get_raft(&inner.group_id)
             .ok_or_else(|| Status::failed_precondition(format!("group {} 不存在或未启动", inner.group_id)))?;
 
         log::info!(
@@ -814,7 +835,7 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
     ) -> Result<Response<proto::InstallSnapshotResponse>, Status> {
         let inner = request.into_inner();
         let raft = self
-            .get_raft(inner.group_id)
+            .get_raft(&inner.group_id)
             .ok_or_else(|| Status::failed_precondition(format!("group {} 不存在或未启动", inner.group_id)))?;
 
         let vote: openraft::Vote<NodeId> = bincode::deserialize(&inner.vote)

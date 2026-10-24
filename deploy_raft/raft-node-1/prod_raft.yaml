@@ -44,7 +44,7 @@ raft_service:
   # 副本存储引擎类型可独立配置（rocksdb / memory），缺省与主引擎同类型、路径 data_path/business_backup.db。
   dual_write:
     enabled: true            # 开关
-    mode: async               # 副本写入模式：sync 同步（默认，副本写失败阻塞主流程） / async 异步（后台写入，失败仅记日志）
+    mode: sync               # 副本写入模式：sync 同步（默认，副本写失败阻塞主流程） / async 异步（后台写入，失败仅记日志）
     storage:                 # 副本存储引擎配置（同 RaftStorageConfig 字段）
       storage_type: rocksdb  # 引擎类型：rocksdb / memory
       db_path: /app/laoflch_raft_data/business_backup.db
@@ -52,7 +52,7 @@ raft_service:
   # 多 Raft 组配置。每个组：独立选举、独立日志（data_path/group-{id}）、独立 KV 状态机。
   # peers 需列出该组全部节点的地址（含自身）；bootstrap 仅在该组对应的节点上为 true。
   groups:
-    - group_id: 1
+    - group_id: "1"
       name: "group-1"
       node_id: 1
       self_addr: "raft-node-1:29999"
@@ -61,7 +61,7 @@ raft_service:
         - { id: 1, addr: "raft-node-1:29999" }
         - { id: 2, addr: "raft-node-2:29999" }
         - { id: 3, addr: "raft-node-3:29999" }
-    - group_id: 4
+    - group_id: "4"
       name: "group-4"
       node_id: 1
       self_addr: "raft-node-1:29999"
@@ -70,7 +70,7 @@ raft_service:
         - { id: 4, addr: "raft-node-4:29999" }
         - { id: 5, addr: "raft-node-5:29999" }
         - { id: 1, addr: "raft-node-1:29999" }
-    - group_id: 5
+    - group_id: "5"
       name: "group-5"
       node_id: 1
       self_addr: "raft-node-1:29999"

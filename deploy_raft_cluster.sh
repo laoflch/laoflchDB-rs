@@ -122,7 +122,7 @@ gen_config() {
         bs="false"
         [ "$g" -eq "$id" ] && bs="true"
         cat >> "$tmp" <<EOF
-    - group_id: ${g}
+    - group_id: "${g}"
       name: "group-${g}"
       node_id: ${id}
       self_addr: "$(peer_addr "$id")"

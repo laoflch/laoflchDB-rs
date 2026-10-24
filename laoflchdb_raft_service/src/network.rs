@@ -71,11 +71,11 @@ fn network_error(msg: String) -> NetworkError {
 /// Raft 网络工厂（每个 Raft 组一份，携带本组 group_id 用于内部 RPC 路由）
 pub struct GrpcNetworkFactory {
     pool: GrpcClientPool,
-    group_id: u32,
+    group_id: String,
 }
 
 impl GrpcNetworkFactory {
-    pub fn new(pool: GrpcClientPool, group_id: u32) -> Self {
+    pub fn new(pool: GrpcClientPool, group_id: String) -> Self {
         Self { pool, group_id }
     }
 }
@@ -88,7 +88,7 @@ impl RaftNetworkFactory<TypeConfig> for GrpcNetworkFactory {
             target,
             node_addr: node.addr.clone(),
             pool: self.pool.clone(),
-            group_id: self.group_id,
+            group_id: self.group_id.clone(),
         }
     }
 }
@@ -98,7 +98,7 @@ pub struct GrpcNetworkClient {
     target: NodeId,
     node_addr: String,
     pool: GrpcClientPool,
-    group_id: u32,
+    group_id: String,
 }
 
 impl RaftNetwork<TypeConfig> for GrpcNetworkClient {
@@ -117,7 +117,7 @@ impl RaftNetwork<TypeConfig> for GrpcNetworkClient {
             .map_err(|e| network_error(format!("Failed to serialize VoteRequest: {}", e)))?;
 
         let request = tonic::Request::new(proto::RequestVoteRequest {
-            group_id: self.group_id,
+            group_id: self.group_id.clone(),
             payload,
         });
         let resp = client
@@ -159,7 +159,7 @@ impl RaftNetwork<TypeConfig> for GrpcNetworkClient {
             payload.len()
         );
         let request = tonic::Request::new(proto::AppendEntriesRequest {
-            group_id: self.group_id,
+            group_id: self.group_id.clone(),
             payload,
         });
         let resp = client
@@ -211,7 +211,7 @@ impl RaftNetwork<TypeConfig> for GrpcNetworkClient {
             .map_err(|e| StreamingError::Network(network_error(format!("Failed to serialize SnapshotMeta: {}", e))))?;
 
         let request = tonic::Request::new(proto::InstallSnapshotRequest {
-            group_id: self.group_id,
+            group_id: self.group_id.clone(),
             vote: vote_bytes,
             meta: meta_bytes,
             offset: 0,

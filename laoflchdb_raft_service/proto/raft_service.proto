@@ -30,7 +30,7 @@ message PutRequest {
   // key 为客户端编码后的最终落盘键（data_key 的设计与生成由客户端完成，如 table+0x00+key）
   bytes key = 1;
   bytes value = 2;
-  uint32 group_id = 3;  // 目标 Raft 组 ID
+  string group_id = 3;  // 目标 Raft 组 ID
 }
 
 message PutResponse {
@@ -40,7 +40,7 @@ message PutResponse {
 
 message GetRequest {
   bytes key = 1;  // 客户端编码后的最终落盘键
-  uint32 group_id = 2;  // 目标 Raft 组 ID
+  string group_id = 2;  // 目标 Raft 组 ID
 }
 
 message GetResponse {
@@ -50,7 +50,7 @@ message GetResponse {
 
 message DeleteRequest {
   bytes key = 1;  // 客户端编码后的最终落盘键
-  uint32 group_id = 2;  // 目标 Raft 组 ID
+  string group_id = 2;  // 目标 Raft 组 ID
 }
 
 message DeleteResponse {
@@ -58,7 +58,7 @@ message DeleteResponse {
 }
 
 message ScanRequest {
-  uint32 group_id = 1;  // 目标 Raft 组 ID
+  string group_id = 1;  // 目标 Raft 组 ID
 }
 
 message ScanResponse {
@@ -75,7 +75,7 @@ message KvEntry {
 message AddPeerRequest {
   uint64 id = 1;
   string addr = 2;
-  uint32 group_id = 3;  // 目标 Raft 组 ID
+  string group_id = 3;  // 目标 Raft 组 ID
 }
 
 message AddPeerResponse {
@@ -85,7 +85,7 @@ message AddPeerResponse {
 
 message RemovePeerRequest {
   uint64 id = 1;
-  uint32 group_id = 2;  // 目标 Raft 组 ID
+  string group_id = 2;  // 目标 Raft 组 ID
 }
 
 message RemovePeerResponse {
@@ -94,7 +94,7 @@ message RemovePeerResponse {
 }
 
 message ListPeersRequest {
-  uint32 group_id = 1;  // 目标 Raft 组 ID
+  string group_id = 1;  // 目标 Raft 组 ID
 }
 
 message ListPeersResponse {
@@ -107,7 +107,7 @@ message PeerInfo {
 }
 
 message GetStatusRequest {
-  uint32 group_id = 1;  // 目标 Raft 组 ID
+  string group_id = 1;  // 目标 Raft 组 ID
 }
 
 message GetStatusResponse {
@@ -121,7 +121,7 @@ message GetStatusResponse {
 // 每个消息携带 group_id，使节点上多个 Raft 组共用一个 gRPC 端口时能正确路由。
 
 message RequestVoteRequest {
-  uint32 group_id = 2;  // 所属 Raft 组 ID
+  string group_id = 2;  // 所属 Raft 组 ID
   // bincode 序列化后的 openraft::raft::VoteRequest<NodeId>
   bytes payload = 1;
 }
@@ -132,7 +132,7 @@ message RequestVoteResponse {
 }
 
 message AppendEntriesRequest {
-  uint32 group_id = 2;  // 所属 Raft 组 ID
+  string group_id = 2;  // 所属 Raft 组 ID
   // bincode 序列化后的 openraft::raft::AppendEntriesRequest<TypeConfig>
   bytes payload = 1;
 }
@@ -143,7 +143,7 @@ message AppendEntriesResponse {
 }
 
 message InstallSnapshotRequest {
-  uint32 group_id = 6;  // 所属 Raft 组 ID
+  string group_id = 6;  // 所属 Raft 组 ID
   // bincode 序列化后的 openraft::Vote<NodeId>（领导者的投票）
   bytes vote = 1;
   // bincode 序列化后的 openraft::SnapshotMeta<NodeId, BasicNode>

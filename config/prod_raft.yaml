@@ -52,7 +52,7 @@ raft_service:
   # 多 Raft 组配置。每个组：独立选举、独立日志（data_path/group-{id}）、独立 KV 状态机。
   # peers 需列出该组全部节点的地址（含自身）；bootstrap 仅在该组对应的节点上为 true。
   groups:
-    - group_id: 1
+    - group_id: "1"
       name: "group-1"
       node_id: 1                  # 本节点在组 1 中的节点 ID
       self_addr: "raft-node-1:29999"  # 本节点对外地址（必须是对端可达的地址，不能是 0.0.0.0）
@@ -61,7 +61,7 @@ raft_service:
         - { id: 1, addr: "raft-node-1:29999" }
         - { id: 2, addr: "raft-node-2:29999" }
         - { id: 3, addr: "raft-node-3:29999" }
-    - group_id: 2
+    - group_id: "2"
       name: "group-2"
       node_id: 1                  # 本节点在组 2 中的节点 ID（node-1 在组 2 中 id=1）
       self_addr: "raft-node-1:29999"
@@ -70,7 +70,7 @@ raft_service:
         - { id: 1, addr: "raft-node-1:29999" }
         - { id: 2, addr: "raft-node-2:29999" }
         - { id: 3, addr: "raft-node-3:29999" }
-    - group_id: 3
+    - group_id: "3"
       name: "group-3"
       node_id: 1                  # 本节点在组 3 中的节点 ID（node-1 在组 3 中 id=1）
       self_addr: "raft-node-1:29999"

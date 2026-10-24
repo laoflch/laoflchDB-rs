@@ -77,7 +77,7 @@ pub struct RaftKvStateMachine {
     /// 当前成员配置
     membership: Arc<RwLock<StoredMembership<NodeId, BasicNode>>>,
     /// 所属 Raft 组（决定业务表名 group_{group_id}）
-    group_id: u32,
+    group_id: String,
     /// 状态机真身存储（固定通过 KvStorage，默认 KVRocksDBEngine/rocksdb）
     kvdb: Arc<dyn KvStorage>,
     /// 可选业务数据副本（双写；None 表示未开启双写）
@@ -88,7 +88,7 @@ pub struct RaftKvStateMachine {
 
 impl RaftKvStateMachine {
     pub fn new(
-        group_id: u32,
+        group_id: String,
         kvdb: Arc<dyn KvStorage>,
         dual_write: Option<Arc<dyn KvStorage>>,
         dual_mode: DualWriteMode,
@@ -105,7 +105,7 @@ impl RaftKvStateMachine {
 
     /// 当前组的业务表名
     fn business_table(&self) -> String {
-        business_table_name(self.group_id)
+        business_table_name(&self.group_id)
     }
 
     /// 写入主引擎；开启双写时按模式写入副本（同步阻塞主路径 / 异步后台写入）

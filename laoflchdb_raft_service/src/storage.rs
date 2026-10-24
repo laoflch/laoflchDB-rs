@@ -107,7 +107,7 @@ impl KvStorage for MemoryKvStorage {
 }
 
 /// 业务库表名：每个 Raft 组一个表
-pub fn business_table_name(group_id: u32) -> String {
+pub fn business_table_name(group_id: &str) -> String {
     format!("group_{}", group_id)
 }
 
