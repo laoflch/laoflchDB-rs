@@ -79,6 +79,15 @@ raft_service:
         - { id: 5, addr: "raft-node-5:29999" }
         - { id: 1, addr: "raft-node-1:29999" }
         - { id: 2, addr: "raft-node-2:29999" }
+    - group_id: "group-laoflchMD-etc"
+      name: "laoflchMD-etc"
+      node_id: 2
+      self_addr: "raft-node-2:29999"
+      bootstrap: true
+      peers:
+        - { id: 2, addr: "raft-node-2:29999" }
+        - { id: 1, addr: "raft-node-1:29999" }
+        - { id: 5, addr: "raft-node-5:29999" }
 # 嵌入向量索引服务（不启动）
 embedding_index:
   enabled: false

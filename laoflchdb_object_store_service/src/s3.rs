@@ -1223,8 +1223,8 @@ async fn s3_dispatch(
     log::debug!("GET/PUT/DELETE object: bucket={}, key={}", bucket, key);
     match method {
         Method::GET => {
-            // GetObject
-            return get_object_handler_inner(&state, &bucket, &key).await;
+            // GetObject（支持 Range）
+            return get_object_handler_inner(&state, &bucket, &key, &parts.headers).await;
         }
         Method::HEAD => {
             // HeadObject
@@ -1477,7 +1477,56 @@ async fn put_object_handler_inner(
     }
 }
 
-async fn get_object_handler_inner(state: &Arc<S3State>, bucket: &str, key: &str) -> Response {
+/// 解析 HTTP Range 头（仅支持单区间 `bytes=` 形式）。
+///
+/// 返回值：
+/// - `None`：无法解析 / 多区间 / 非 bytes 单位 —— 按 RFC 7233 忽略 Range，返回 200 全量；
+/// - `Some(Err(()))`：范围不可满足（起始越界或空对象）—— 返回 416；
+/// - `Some(Ok((start, end)))`：闭区间，返回 206。
+fn parse_range_header(value: &str, total: u64) -> Option<Result<(u64, u64), ()>> {
+    let spec = value.trim().strip_prefix("bytes=")?.trim();
+    if spec.contains(',') {
+        return None; // 多区间：不支持，回退全量 200
+    }
+    let (start_s, end_s) = spec.split_once('-')?;
+    let start_s = start_s.trim();
+    let end_s = end_s.trim();
+
+    if total == 0 {
+        return Some(Err(()));
+    }
+
+    if start_s.is_empty() {
+        // bytes=-N：末尾 N 字节
+        let n: u64 = end_s.parse().ok()?;
+        if n == 0 {
+            return Some(Err(()));
+        }
+        let len = n.min(total);
+        return Some(Ok((total - len, total - 1)));
+    }
+
+    let start: u64 = start_s.parse().ok()?;
+    if start >= total {
+        return Some(Err(())); // 起始越界
+    }
+    if end_s.is_empty() {
+        // bytes=N-：从 N 到末尾
+        return Some(Ok((start, total - 1)));
+    }
+    let end: u64 = end_s.parse().ok()?;
+    if end < start {
+        return None; // 语法不合法，忽略 Range
+    }
+    Some(Ok((start, end.min(total - 1))))
+}
+
+async fn get_object_handler_inner(
+    state: &Arc<S3State>,
+    bucket: &str,
+    key: &str,
+    req_headers: &HeaderMap,
+) -> Response {
     let req = tonic::Request::new(GetObjectRequest {
         bucket: bucket.to_string(),
         key: key.to_string(),
@@ -1486,11 +1535,45 @@ async fn get_object_handler_inner(state: &Arc<S3State>, bucket: &str, key: &str)
     match state.service.get_object(req).await {
         Ok(resp) => {
             let resp = resp.into_inner();
+            let total = resp.data.len() as u64;
             let mut headers = HeaderMap::new();
             headers.insert("Content-Type", resp.content_type.parse().unwrap_or("application/octet-stream".parse().unwrap()));
-            headers.insert("Content-Length", resp.content_length.to_string().parse().unwrap());
             headers.insert("ETag", resp.etag.parse().unwrap_or("\"\"".parse().unwrap()));
             headers.insert("Last-Modified", timestamp_to_rfc7231(&resp.last_modified).parse().unwrap());
+            headers.insert("Accept-Ranges", "bytes".parse().unwrap());
+
+            // Range 请求：命中则返回 206 分段数据
+            if let Some(range_str) = req_headers
+                .get(axum::http::header::RANGE)
+                .and_then(|v| v.to_str().ok())
+            {
+                match parse_range_header(range_str, total) {
+                    Some(Ok((start, end))) => {
+                        let body = resp.data[start as usize..=end as usize].to_vec();
+                        headers.insert(
+                            "Content-Range",
+                            format!("bytes {}-{}/{}", start, end, total).parse().unwrap(),
+                        );
+                        headers.insert("Content-Length", (end - start + 1).to_string().parse().unwrap());
+                        return (StatusCode::PARTIAL_CONTENT, headers, body).into_response();
+                    }
+                    Some(Err(())) => {
+                        headers.insert(
+                            "Content-Range",
+                            format!("bytes */{}", total).parse().unwrap(),
+                        );
+                        return (
+                            StatusCode::RANGE_NOT_SATISFIABLE,
+                            headers,
+                            Vec::<u8>::new(),
+                        )
+                            .into_response();
+                    }
+                    None => {}
+                }
+            }
+
+            headers.insert("Content-Length", total.to_string().parse().unwrap());
             (StatusCode::OK, headers, resp.data).into_response()
         }
         Err(e) => {
@@ -1522,6 +1605,7 @@ async fn head_object_handler_inner(state: &Arc<S3State>, bucket: &str, key: &str
             headers.insert("Content-Length", resp.content_length.to_string().parse().unwrap());
             headers.insert("ETag", resp.etag.parse().unwrap_or("\"\"".parse().unwrap()));
             headers.insert("Last-Modified", timestamp_to_rfc7231(&resp.last_modified).parse().unwrap());
+            headers.insert("Accept-Ranges", "bytes".parse().unwrap());
             (StatusCode::OK, headers).into_response()
         }
         Err(_) => (StatusCode::NOT_FOUND, HeaderMap::new()).into_response(),

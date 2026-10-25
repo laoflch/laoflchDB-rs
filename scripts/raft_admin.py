@@ -15,6 +15,8 @@
   python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 1 get default hello
   python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 1 delete default hello
   python3 scripts/raft_admin.py --addr 127.0.0.1:29999 --group 1 scan default
+  python3 scripts/raft_admin.py add-group orders --members 2,1,5 --name orders
+  python3 scripts/raft_admin.py remove-group orders --purge
 
 依赖：grpcio、grpcio-tools（pip install grpcio grpcio-tools）
 """
@@ -29,6 +31,29 @@ import argparse
 
 PROTO_REL = os.path.join("laoflchdb_raft_service", "proto", "raft_service.proto")
 PROTO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", PROTO_REL)
+DEPLOY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "deploy_raft")
+DEPLOY_SH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "deploy_raft_cluster.sh")
+
+
+def _config_group_ids():
+    """从部署目录的节点配置中收集组 ID（用于 status 未指定 --group 时发现自定义命名的组）"""
+    ids = []
+    if not os.path.isdir(DEPLOY_DIR):
+        return ids
+    pat = re.compile(r"^\s*-\s*group_id:\s*\"?([^\"\s]+)\"?\s*$")
+    for root, _dirs, files in os.walk(DEPLOY_DIR):
+        for fn in files:
+            if not fn.endswith((".yaml", ".yml")):
+                continue
+            try:
+                with open(os.path.join(root, fn), encoding="utf-8") as f:
+                    for line in f:
+                        m = pat.match(line)
+                        if m and m.group(1) not in ids:
+                            ids.append(m.group(1))
+            except OSError:
+                pass
+    return ids
 
 
 def _compile_proto(workdir: str) -> str:
@@ -231,8 +256,8 @@ def cmd_get_status(addr, group_id):
         _print_status(resp.status, group_id)
         return
 
-    # 未指定组：探测本节点运行的数字组（组号递增；连续 3 个组不存在即停止）。
-    # 注意：group_id 是字符串，这里只探测常见的数字命名组，自定义名称的组请显式 --group。
+    # 未指定组：先探测数字命名的组（组号递增，连续 3 个组不存在即停止），
+    # 再探测部署配置里出现的自定义命名组（如 group-laoflchMD-etc）。
     n = 1
     miss = 0
     found_any = False
@@ -253,6 +278,19 @@ def cmd_get_status(addr, group_id):
         print(f"----- group-{g} -----")
         _print_status(resp.status, g)
         n += 1
+    # 自定义命名的组：从部署配置中发现候选，逐个探测（不存在的直接跳过）
+    for gid in _config_group_ids():
+        if gid.isdigit():
+            continue
+        try:
+            resp = svc.GetStatus(pb2.GetStatusRequest(group_id=gid))
+        except grpc.RpcError as e:
+            if "不存在或未启动" in (e.details() or ""):
+                continue
+            raise
+        found_any = True
+        print(f"----- group-{gid} -----")
+        _print_status(resp.status, gid)
     if not found_any:
         print("(本节点未运行任何 Raft 组)")
 
@@ -400,7 +438,10 @@ def cmd_check_data(group_id, node_count=None):
     if node_count is None:
         node_count = len(nodes)
 
-    groups = [group_id] if group_id is not None else [str(i) for i in range(1, node_count + 1)]
+    groups = [group_id] if group_id is not None else (
+        [str(i) for i in range(1, node_count + 1)]
+        + [g for g in _config_group_ids() if not g.isdigit()]
+    )
     print("=" * 44)
     print("  业务数据落盘一致性校验（主库 business.db + backup 副本）")
     print("=" * 44)
@@ -478,12 +519,39 @@ def cmd_status_all():
         print()
 
 
+def cmd_add_group(group_id, name=None, members=None, bootstrap=None):
+    """新增组：委托 deploy_raft_cluster.sh（登记 extra_groups.conf + 重生成配置 + 重启成员容器）。
+
+    服务端组列表在启动时从配置加载，没有热加载接口，因此新增组必须重启成员容器。
+    """
+    if not os.path.isfile(DEPLOY_SH):
+        sys.exit(f"未找到部署脚本 {DEPLOY_SH}；可手动在节点配置的 raft_service.groups[] 中添加该组后重启容器")
+    cmd = ["bash", DEPLOY_SH, "add-group", group_id]
+    if name:
+        cmd += ["--name", name]
+    if members:
+        cmd += ["--members", members]
+    if bootstrap:
+        cmd += ["--bootstrap", str(bootstrap)]
+    sys.exit(subprocess.run(cmd).returncode)
+
+
+def cmd_remove_group(group_id, purge=False):
+    """删除组：委托 deploy_raft_cluster.sh（移除配置 + 重启成员容器；--purge 清理数据）"""
+    if not os.path.isfile(DEPLOY_SH):
+        sys.exit(f"未找到部署脚本 {DEPLOY_SH}；可手动从节点配置的 raft_service.groups[] 中移除该组后重启容器")
+    cmd = ["bash", DEPLOY_SH, "remove-group", group_id]
+    if purge:
+        cmd.append("--purge")
+    sys.exit(subprocess.run(cmd).returncode)
+
+
 def main():
     parser = argparse.ArgumentParser(description="laoflchdb Raft 集群管理客户端")
     parser.add_argument("--addr", default=None,
                         help="Raft 节点宿主地址，如 127.0.0.1:29999（status 不指定时遍历显示所有节点；其余命令默认 127.0.0.1:29999）")
     parser.add_argument("--group", type=str, default=None,
-                        help="目标 Raft 组 ID（字符串，如 1 或 orders；不指定时 status 显示本节点所有数字组的状态，其余命令默认组 1）")
+                        help="目标 Raft 组 ID（字符串，如 1 或 group-laoflchMD-etc；不指定时 status 显示本节点所有组的状态，其余命令默认组 1）")
     parser.add_argument("--nodes", type=int, default=None,
                         help="集群节点数（check-data 用，默认自动检测 raft-node 容器数）")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -508,6 +576,17 @@ def main():
     p.add_argument("key")
     p = sub.add_parser("scan", help="扫描 KV（可 --table 过滤显示；落盘键由客户端编码）")
     p.add_argument("--table", default=None, help="按 table 过滤显示（可选）")
+    p = sub.add_parser("add-group",
+                       help="新增 Raft 组（登记到 extra_groups.conf，重新生成成员配置并重启成员容器）")
+    p.add_argument("group_id", help="组 ID，如 orders（仅允许字母/数字/下划线/连字符）")
+    p.add_argument("--name", default=None, help="组名称（默认同组 ID）")
+    p.add_argument("--members", default=None, help="成员节点号，逗号分隔，如 2,1,5（默认随机取 GROUP_SIZE 个）")
+    p.add_argument("--bootstrap", type=int, default=None, help="自举节点号（须为成员之一，默认第一个成员）")
+    p = sub.add_parser("remove-group",
+                       help="删除 Raft 组（移除配置并重启成员容器；--purge 同时清理数据）")
+    p.add_argument("group_id", help="组 ID")
+    p.add_argument("--purge", action="store_true",
+                   help="同时删除该组的 Raft 数据目录与业务库 CF（会短暂停止成员容器）")
 
     args = parser.parse_args()
     cmd = args.command
@@ -518,6 +597,10 @@ def main():
             cmd_status_all()
         else:
             cmd_get_status(args.addr, g)
+    elif cmd == "add-group":
+        cmd_add_group(args.group_id, args.name, args.members, args.bootstrap)
+    elif cmd == "remove-group":
+        cmd_remove_group(args.group_id, args.purge)
     elif cmd == "check-data":
         cmd_check_data(g, args.nodes)
     elif cmd == "list-peers":
