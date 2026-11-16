@@ -109,6 +109,9 @@ image_service:
   default_bucket: images
    # 图片重复检测距离阈值（Cosine 距离 < 此值视为重复，默认 0.0001）
   image_duplicate_distance: 0.000002
+  # 图片上传并发上限（同时进入上传/推理流程的请求数；0 = 不限制）
+  # 超过上限时 upload_image 直接返回 resource_exhausted，避免请求堆进 runtime
+  upload_concurrency: 2
 
 # 人脸服务配置（SCRFD 检测 + ArcFace 特征提取，基于 ort (ONNX Runtime)，支持 CUDA）
 face_service:
@@ -154,6 +157,48 @@ graph_service:
   schema_name: graph                 # 引擎 schema 名称
   table_name: graph                  # 图数据所在 table（RocksDB column family）
   max_page_size: 1000                # 单次查询最大返回条数（0=不限制）
+
+# 分布式对象存储 —— raw_store 数据面节点（chunk 直写文件系统，gRPC 默认 29998）
+# raw_store:
+#   enabled: false
+#   address: 0.0.0.0:29998
+#   node_id: 1
+#   advertise_addr: raw-store-1:29998
+#   data_path: /app/laoflch_raw_store
+#   fsync: true
+#   shard_depth: 2
+#   raft_registry:
+#     endpoints:
+#       - raft-node-1:29999
+#       - raft-node-2:29999
+#       - raft-node-3:29999
+#     group_id: raw_registry
+#     register_interval_secs: 10
+
+# 分布式对象存储 —— S3 网关（每个网关节点均提供完整 S3 接入）
+# distributed_object_store:
+#   enabled: false
+#   listen_addr: 0.0.0.0:19001
+#   s3_access_key: admin
+#   s3_secret_key: laoflchdb
+#   s3_region: us-east-1
+#   chunk_size_bytes: 4194304        # 4MB 分块
+#   replication_factor: 3
+#   write_quorum: 2
+#   raw_store_seeds:
+#     - raw-store-1:29998
+#     - raw-store-2:29998
+#     - raw-store-3:29998
+#   registry_ttl_secs: 60
+#   registry_refresh_secs: 10
+#   vnodes_per_node: 128
+#   raft_meta:
+#     endpoints:
+#       - raft-node-1:29999
+#       - raft-node-2:29999
+#       - raft-node-3:29999
+#     group_id: objmeta               # 对象 / 桶元数据
+#     registry_group_id: raw_registry # raw_store 节点注册
 
 
 # Log configuration

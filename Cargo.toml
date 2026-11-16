@@ -52,6 +52,8 @@ laoflchdb_text_summarize_service_proto = { path = "./laoflchdb_text_summarize_se
 laoflchdb_reranker_service = { path = "./laoflchdb_reranker_service" }
 laoflchdb_raft_service = { path = "./laoflchdb_raft_service" }
 laoflchdb_graph_service = { path = "./laoflchdb_graph_service" }
+laoflchdb_raw_store_service = { path = "./laoflchdb_raw_store_service" }
+laoflchdb_distributed_object_store = { path = "./laoflchdb_distributed_object_store" }
 rocksdb = { version = "0.50", package = "rust-rocksdb",features=["zstd-static-linking-only"]}
 prost = "0.12"
 protobuf = "3.7"

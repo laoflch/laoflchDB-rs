@@ -1,0 +1,52 @@
+# =============================================================================
+# laoflchDB 分布式对象存储节点镜像（access / data 两种角色共用同一镜像）
+#
+# 角色由挂载的配置决定（同一份二进制）：
+#   - access 节点：config/prod_access_node{1..3}.yaml
+#       只启动 distributed_object_store（S3 协议接入，端口 19001）
+#   - data 节点：  config/prod_data_node{1..5}.yaml
+#       只启动 raw_store（chunk 数据面 gRPC，端口 29998）
+#
+# 镜像内不运行 Raft；元数据与节点注册写外部 Raft 集群：
+#   objmeta 组（对象/桶元数据）、raw_registry 组（data 节点注册表）
+#
+# 构建（需先 cargo build --release，二进制由宿主机提供，镜像内不编译）：
+#   docker build -t laoflchdb-distributed:0.1.13 -f Dockerfile.distributed.prod .
+#   或直接： ./deploy_distributed_cluster.sh build
+#
+# 前置条件：
+#   1. 外部 Raft 集群已运行，且存在 objmeta、raw_registry 两个组
+#   2. Docker 网络已创建：docker network create laoflchdb-net
+#
+# 推荐用部署脚本启动（3 个 access + 5 个 data，自动错开种子）：
+#   ./deploy_distributed_cluster.sh up
+# =============================================================================
+
+FROM ubuntu:24.04
+
+ARG VERSION=0.1.13
+LABEL version="${VERSION}"
+
+RUN mkdir -p /app/config /app/data /app/raw_store
+
+WORKDIR /app
+
+# 宿主机编译好的二进制
+COPY target/release/laoflchdb /app/laoflchdb
+
+# access 节点（3 份）与 data 节点（5 份）配置
+COPY config/prod_access_node*.yaml /app/config/
+COPY config/prod_data_node*.yaml /app/config/
+
+# CUDA 运行库不打包进镜像，由宿主机挂载（与 raft 镜像一致）：
+#   -v /usr/local/cuda:/usr/local/cuda:ro
+#   -v /usr/lib/x86_64-linux-gnu/libcuda.so.1:/usr/lib/x86_64-linux-gnu/libcuda.so.1:ro
+
+# access 节点 S3 网关 / data 节点 raw_store
+EXPOSE 19001 29998
+
+ENV RUST_LOG=info
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64
+
+# 默认以 access 节点 1 配置启动；data 节点运行时用 -c 覆盖
+CMD ["/app/laoflchdb", "-c", "/app/config/prod_access_node1.yaml", "start"]

@@ -1105,6 +1105,177 @@ fn timestamp_to_rfc7231(timestamp: &str) -> String {
     "Thu, 01 Jan 1970 00:00:00 GMT".to_string()
 }
 
+// ── 桶策略（支持匿名读）──
+
+/// 请求是否携带签名（Authorization 头或预签名 URL 的 X-Amz-Signature）
+fn has_signature(headers: &HeaderMap, uri: &Uri) -> bool {
+    headers.contains_key("authorization")
+        || uri
+            .query()
+            .map(|q| q.contains("X-Amz-Signature="))
+            .unwrap_or(false)
+}
+
+/// 查询字符串中是否存在指定参数（`?policy` / `?policy=` 均视为存在）
+fn query_has_param(query: &str, name: &str) -> bool {
+    query
+        .split('&')
+        .any(|p| p.split('=').next() == Some(name))
+}
+
+/// 简化后的策略语句（仅保留匿名读判定所需字段）
+#[derive(Debug, Default)]
+struct PolicyStatement {
+    allow: bool,
+    principal_any: bool,
+    actions: Vec<String>,
+    resources: Vec<String>,
+}
+
+/// Principal 是否对所有人开放（"*" / {"AWS": "*"} / {"AWS": ["*"]} / ["*"]）
+fn principal_is_any(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::String(s) => s == "*",
+        serde_json::Value::Array(items) => items.iter().any(principal_is_any),
+        serde_json::Value::Object(map) => map.values().any(principal_is_any),
+        _ => false,
+    }
+}
+
+/// 把 "Action"/"Resource" 字段统一为字符串数组（支持字符串与数组两种写法）
+fn value_to_strings(v: &serde_json::Value) -> Vec<String> {
+    match v {
+        serde_json::Value::String(s) => vec![s.clone()],
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(|i| i.as_str().map(|s| s.to_string()))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// 解析桶策略 JSON，提取所有语句（解析失败返回空）
+fn parse_policy_statements(policy: &str) -> Vec<PolicyStatement> {
+    let root: serde_json::Value = match serde_json::from_str(policy) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let statements = match root.get("Statement") {
+        Some(serde_json::Value::Array(items)) => items.clone(),
+        Some(obj) => vec![obj.clone()],
+        None => return Vec::new(),
+    };
+    statements
+        .iter()
+        .map(|st| PolicyStatement {
+            allow: st.get("Effect").and_then(|v| v.as_str()) == Some("Allow"),
+            principal_any: st.get("Principal").map(principal_is_any).unwrap_or(false),
+            actions: st.get("Action").map(value_to_strings).unwrap_or_default(),
+            resources: st.get("Resource").map(value_to_strings).unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// ARN 匹配：支持完全相等、`*` 以及末尾通配符（如 arn:aws:s3:::bucket/*）
+fn arn_matches(pattern: &str, resource: &str) -> bool {
+    if pattern == "*" || pattern == resource {
+        return true;
+    }
+    match pattern.strip_suffix('*') {
+        Some(prefix) => resource.starts_with(prefix),
+        None => false,
+    }
+}
+
+/// 判断策略是否允许匿名读。
+/// `bucket_level = true` 对应桶级 GET/HEAD（s3:ListBucket），否则为对象级（s3:GetObject）。
+fn policy_allows_anonymous(policy: &str, bucket: &str, bucket_level: bool) -> bool {
+    let (action, resource) = if bucket_level {
+        ("s3:listbucket", format!("arn:aws:s3:::{}", bucket))
+    } else {
+        ("s3:getobject", format!("arn:aws:s3:::{}/*", bucket))
+    };
+    parse_policy_statements(policy).iter().any(|st| {
+        st.allow
+            && st.principal_any
+            && st.actions.iter().any(|a| {
+                let a = a.to_ascii_lowercase();
+                a == "*" || a == "s3:*" || a == action
+            })
+            && st.resources.iter().any(|r| arn_matches(r, &resource))
+    })
+}
+
+/// 桶策略服务错误 → S3 错误响应
+fn bucket_policy_error(bucket: &str, e: tonic::Status) -> Response {
+    if e.code() == tonic::Code::NotFound {
+        s3_error_response(
+            "NoSuchBucket",
+            &format!("The specified bucket does not exist: {}", bucket),
+            StatusCode::NOT_FOUND,
+        )
+    } else {
+        s3_error_response("InternalError", e.message(), StatusCode::INTERNAL_SERVER_ERROR)
+    }
+}
+
+/// GetBucketPolicy
+async fn get_bucket_policy_handler_inner(state: &Arc<S3State>, bucket: &str) -> Response {
+    match state.service.get_bucket_policy(bucket).await {
+        Ok(Some(policy)) => {
+            let mut headers = HeaderMap::new();
+            headers.insert("Content-Type", "application/json".parse().unwrap());
+            (StatusCode::OK, headers, policy).into_response()
+        }
+        Ok(None) => s3_error_response(
+            "NoSuchBucketPolicy",
+            &format!("The bucket policy does not exist: {}", bucket),
+            StatusCode::NOT_FOUND,
+        ),
+        Err(e) => bucket_policy_error(bucket, e),
+    }
+}
+
+/// PutBucketPolicy（要求合法 JSON 且包含 Statement）
+async fn put_bucket_policy_handler_inner(
+    state: &Arc<S3State>,
+    bucket: &str,
+    body: &[u8],
+) -> Response {
+    let policy = match std::str::from_utf8(body) {
+        Ok(s) => s,
+        Err(_) => {
+            return s3_error_response(
+                "MalformedPolicy",
+                "策略必须是 UTF-8 编码的 JSON",
+                StatusCode::BAD_REQUEST,
+            )
+        }
+    };
+    match serde_json::from_str::<serde_json::Value>(policy) {
+        Ok(v) if v.get("Statement").is_some() => {}
+        _ => {
+            return s3_error_response(
+                "MalformedPolicy",
+                "策略 JSON 无效或缺少 Statement 字段",
+                StatusCode::BAD_REQUEST,
+            )
+        }
+    }
+    match state.service.put_bucket_policy(bucket, policy).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => bucket_policy_error(bucket, e),
+    }
+}
+
+/// DeleteBucketPolicy
+async fn delete_bucket_policy_handler_inner(state: &Arc<S3State>, bucket: &str) -> Response {
+    match state.service.delete_bucket_policy(bucket).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => bucket_policy_error(bucket, e),
+    }
+}
+
 // ── 创建 S3 Router ──
 
 /// 创建 S3 协议 Router
@@ -1143,20 +1314,6 @@ async fn s3_dispatch(
 
     log::debug!("S3 请求: method={}, uri={}", method, uri);
 
-    // 验证签名（使用原始 URI）
-    if let Err(e) = verify_aws_v4_signature(
-        &state.config,
-        &method,
-        &uri,
-        &parts.headers,
-        &body_bytes,
-    ) {
-        log::warn!("S3 签名验证失败: {}", e);
-        return s3_error_response("SignatureDoesNotMatch", &e, StatusCode::FORBIDDEN);
-    }
-
-    log::debug!("S3 签名验证通过");
-
     // 解析路径（去除尾部斜杠，但不包含根路径）
     let path = uri.path();
     let normalized_path = if path != "/" && path.ends_with('/') {
@@ -1170,6 +1327,17 @@ async fn s3_dispatch(
 
     // 分发请求
     if normalized_path == "/" || normalized_path.is_empty() {
+        // 根路径一律要求签名
+        if let Err(e) = verify_aws_v4_signature(
+            &state.config,
+            &method,
+            &uri,
+            &parts.headers,
+            &body_bytes,
+        ) {
+            log::warn!("S3 签名验证失败: {}", e);
+            return s3_error_response("SignatureDoesNotMatch", &e, StatusCode::FORBIDDEN);
+        }
         // GET / - ListBuckets
         if method == Method::GET {
             return list_buckets_handler(State(state)).await.into_response();
@@ -1191,54 +1359,95 @@ async fn s3_dispatch(
         return s3_error_response("InvalidRequest", "Bucket 名称不能为空", StatusCode::BAD_REQUEST);
     }
 
-    // /{bucket} - 没有 key
-    if path_segments.len() == 1 {
-        match method {
-            Method::GET => {
-                // ListObjects
-                return list_objects_handler_inner(&state, &bucket, query_str).await;
+    // /{bucket}/{key} 形式时先解码 key（认证阶段用于区分桶级 / 对象级策略）
+    let object_key = if path_segments.len() > 1 {
+        let decoded = urlencoding::decode_binary(path_segments[1].as_bytes());
+        Some(String::from_utf8_lossy(&decoded).to_string())
+    } else {
+        None
+    };
+
+    // 认证策略：
+    // 1) 带签名的请求严格验签；
+    // 2) 未签名的 GET/HEAD 按桶策略（BucketPolicy）放行匿名读；
+    // 3) 其余未签名请求一律拒绝。
+    if let Err(e) = verify_aws_v4_signature(
+        &state.config,
+        &method,
+        &uri,
+        &parts.headers,
+        &body_bytes,
+    ) {
+        let signed = has_signature(&parts.headers, &uri);
+        let mut allowed = false;
+        if !signed && matches!(method, Method::GET | Method::HEAD) {
+            match state.service.get_bucket_policy(&bucket).await {
+                Ok(Some(policy)) => {
+                    allowed = policy_allows_anonymous(&policy, &bucket, object_key.is_none())
+                }
+                Ok(None) => {}
+                // 匿名访问不存在的桶：按 S3 语义返回 404 NoSuchBucket
+                Err(err) if err.code() == tonic::Code::NotFound => {
+                    return s3_error_response(
+                        "NoSuchBucket",
+                        &format!("The specified bucket does not exist: {}", bucket),
+                        StatusCode::NOT_FOUND,
+                    )
+                }
+                Err(_) => {}
             }
-            Method::HEAD => {
-                // HeadBucket
-                return head_bucket_handler_inner(&state, &bucket).await;
-            }
-            Method::PUT => {
-                // CreateBucket
-                return create_bucket_handler_inner(&state, &bucket).await;
-            }
-            Method::DELETE => {
-                // DeleteBucket
-                return delete_bucket_handler_inner(&state, &bucket).await;
-            }
-            _ => return method_not_allowed(&method),
         }
+        if !allowed {
+            log::warn!("S3 签名验证失败: {}", e);
+            return if signed {
+                s3_error_response("SignatureDoesNotMatch", &e, StatusCode::FORBIDDEN)
+            } else {
+                s3_error_response(
+                    "AccessDenied",
+                    "匿名访问被拒绝：该桶未配置允许匿名读的 BucketPolicy",
+                    StatusCode::FORBIDDEN,
+                )
+            };
+        }
+        log::info!("S3 匿名读放行: bucket={}, key={:?}", bucket, object_key);
     }
 
-    // /{bucket}/{key} - 有 key
-    // URL 解码 key，在 RocksDB 中存储解码后的原始 key
-    let key = {
-        let decoded = urlencoding::decode_binary(path_segments[1].as_bytes());
-        String::from_utf8_lossy(&decoded).to_string()
-    };
-    log::debug!("GET/PUT/DELETE object: bucket={}, key={}", bucket, key);
-    match method {
-        Method::GET => {
-            // GetObject（支持 Range）
-            return get_object_handler_inner(&state, &bucket, &key, &parts.headers).await;
+    // 桶级子资源 ?policy：Get / Put / DeleteBucketPolicy
+    if object_key.is_none() && query_has_param(query_str, "policy") {
+        return match method {
+            Method::GET => get_bucket_policy_handler_inner(&state, &bucket).await,
+            Method::PUT => put_bucket_policy_handler_inner(&state, &bucket, &body_bytes).await,
+            Method::DELETE => delete_bucket_policy_handler_inner(&state, &bucket).await,
+            _ => method_not_allowed(&method),
+        };
+    }
+
+    match object_key {
+        // /{bucket}/{key} - 有 key
+        Some(key) => {
+            log::debug!("GET/PUT/DELETE object: bucket={}, key={}", bucket, key);
+            match method {
+                // GetObject（支持 Range）
+                Method::GET => {
+                    get_object_handler_inner(&state, &bucket, &key, &parts.headers).await
+                }
+                Method::HEAD => head_object_handler_inner(&state, &bucket, &key).await,
+                Method::PUT => {
+                    put_object_handler_inner(&state, &bucket, &key, &parts.headers, &body_bytes)
+                        .await
+                }
+                Method::DELETE => delete_object_handler_inner(&state, &bucket, &key).await,
+                _ => method_not_allowed(&method),
+            }
         }
-        Method::HEAD => {
-            // HeadObject
-            return head_object_handler_inner(&state, &bucket, &key).await;
-        }
-        Method::PUT => {
-            // PutObject
-            return put_object_handler_inner(&state, &bucket, &key, &parts.headers, &body_bytes).await;
-        }
-        Method::DELETE => {
-            // DeleteObject
-            return delete_object_handler_inner(&state, &bucket, &key).await;
-        }
-        _ => return method_not_allowed(&method),
+        // /{bucket} - 没有 key
+        None => match method {
+            Method::GET => list_objects_handler_inner(&state, &bucket, query_str).await,
+            Method::HEAD => head_bucket_handler_inner(&state, &bucket).await,
+            Method::PUT => create_bucket_handler_inner(&state, &bucket).await,
+            Method::DELETE => delete_bucket_handler_inner(&state, &bucket).await,
+            _ => method_not_allowed(&method),
+        },
     }
 }
 

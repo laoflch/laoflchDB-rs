@@ -327,6 +327,13 @@ pub struct DatabaseConfig {
     pub raft_service: Option<laoflchdb_raft_service::RaftServiceConfig>,
     #[serde(default)]
     pub graph_service: Option<GraphServiceConfig>,
+    /// raw_store 数据面节点配置（chunk 直写文件系统）
+    #[serde(default)]
+    pub raw_store: Option<laoflchdb_raw_store_service::RawStoreConfig>,
+    /// 分布式对象存储网关配置（自带 S3 协议层）
+    #[serde(default)]
+    pub distributed_object_store:
+        Option<laoflchdb_distributed_object_store::config::DistributedObjectStoreConfig>,
 }
 
 /// 对象存储服务配置（S3 兼容）
@@ -368,9 +375,13 @@ pub struct ImageServiceConfig {
     /// 图片重复检测距离阈值（Cosine 距离 < 此值视为重复，默认 0.0001）
     #[serde(default = "default_image_duplicate_distance")]
     pub image_duplicate_distance: f32,
+    /// 图片上传并发上限（同时进入上传/推理流程的请求数；0 = 不限制，默认 2）
+    #[serde(default = "default_image_upload_concurrency")]
+    pub upload_concurrency: usize,
 }
 
 fn default_image_duplicate_distance() -> f32 { 0.0001 }
+fn default_image_upload_concurrency() -> usize { 2 }
 fn default_face_duplicate_distance() -> f32 { 0.01 }
 fn default_same_person_threshold() -> f32 { 0.5 }
 
@@ -607,6 +618,8 @@ impl DatabaseConfig {
             reranker: None,
             raft_service: None,
             graph_service: None,
+            raw_store: None,
+            distributed_object_store: None,
         }
     }
 

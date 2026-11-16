@@ -2,33 +2,34 @@
 
 基于 Rust + RocksDB 的单机 OLTP 数据库，支持 gRPC 和 REST API 接口，命令行启动独立运行。
 
----
+***
 
 ## 编译环境要求
 
 - GCC >= 13.2.0 (rust-rocksdb 0.50 C++20 兼容)
 - Rust 1.75+
 
----
+***
 
 ## 总体架构设计
 
 laoflchDB 采用 **模块化分层架构设计**，核心实体为 `LaoflchDBServer`：
 
-| 层次模块 | 位置 | 说明 |
-|----------|------|------|
-| **Server 层** | [src/server/mod.rs](src/server/mod.rs) | LaoflchDBServer 总入口，支持多协议启动 |
-| **Access 层** | [src/access/mod.rs](src/access/mod.rs) | 接入服务层，负责协议接入和路由 |
-| **Service 层** | [src/service/mod.rs](src/service/mod.rs) | 数据库基础服务能力 + SchemaManager |
-| **SQL 引擎** | [laoflchdb_sql_df_engine/src/lib.rs](laoflchdb_sql_df_engine/src/lib.rs) | DataFusion SQL 解析和执行引擎 |
-| **DBEngine 接口** | [laoflchdb_engines/](laoflchdb_engines/) | 独立的数据库引擎接口定义 crate |
-| **RocksDB 引擎** | [multi_table_rocksdb/](multi_table_rocksdb/) | 独立的 RocksDB 引擎实现 crate |
-| CLI 命令行 | [src/cli/mod.rs](src/cli/mod.rs) | clap 命令行参数解析 |
-| 配置模块 | [src/config/](src/config/) | YAML 配置文件解析 |
-| lib.rs | [src/lib.rs](src/lib.rs) | 库导出入口 |
-| main.rs | [src/main.rs](src/main.rs) | 二进制 standalone 程序入口 |
+| 层次模块            | 位置                                                                          | 说明                          |
+| --------------- | --------------------------------------------------------------------------- | --------------------------- |
+| **Server 层**    | [src/server/mod.rs](src/server/mod.rs)                                      | LaoflchDBServer 总入口，支持多协议启动 |
+| **Access 层**    | [src/access/mod.rs](src/access/mod.rs)                                      | 接入服务层，负责协议接入和路由             |
+| **Service 层**   | [src/service/mod.rs](src/service/mod.rs)                                    | 数据库基础服务能力 + SchemaManager   |
+| **SQL 引擎**      | [laoflchdb\_sql\_df\_engine/src/lib.rs](laoflchdb_sql_df_engine/src/lib.rs) | DataFusion SQL 解析和执行引擎      |
+| **DBEngine 接口** | [laoflchdb\_engines/](laoflchdb_engines/)                                   | 独立的数据库引擎接口定义 crate          |
+| **RocksDB 引擎**  | [multi\_table\_rocksdb/](multi_table_rocksdb/)                              | 独立的 RocksDB 引擎实现 crate      |
+| CLI 命令行         | [src/cli/mod.rs](src/cli/mod.rs)                                            | clap 命令行参数解析                |
+| 配置模块            | [src/config/](src/config/)                                                  | YAML 配置文件解析                 |
+| lib.rs          | [src/lib.rs](src/lib.rs)                                                    | 库导出入口                       |
+| main.rs         | [src/main.rs](src/main.rs)                                                  | 二进制 standalone 程序入口         |
 
 **目录结构源码树：**
+
 ```
 laoflchDB-rust/
 ├── src/
@@ -140,19 +141,19 @@ laoflchDB-rust/
 └── Cargo.toml
 ```
 
----
+***
 
 ## 新增：跨 Schema JOIN 支持
 
 ### 核心特性
 
-| 特性 | 说明 |
-|------|------|
-| **跨 Schema 查询** | 支持在不同 Schema 之间执行 JOIN 操作 |
-| **多表 JOIN** | 支持三表及以上的跨 Schema JOIN |
-| **JOIN 类型** | 支持 INNER JOIN、LEFT JOIN |
-| **WHERE 条件** | 支持在跨 Schema JOIN 中使用 WHERE 过滤 |
-| **聚合函数** | 支持跨 Schema JOIN 后的聚合操作 |
+| 特性              | 说明                            |
+| --------------- | ----------------------------- |
+| **跨 Schema 查询** | 支持在不同 Schema 之间执行 JOIN 操作     |
+| **多表 JOIN**     | 支持三表及以上的跨 Schema JOIN         |
+| **JOIN 类型**     | 支持 INNER JOIN、LEFT JOIN       |
+| **WHERE 条件**    | 支持在跨 Schema JOIN 中使用 WHERE 过滤 |
+| **聚合函数**        | 支持跨 Schema JOIN 后的聚合操作        |
 
 ### 跨 Schema JOIN 示例
 
@@ -185,17 +186,17 @@ WHERE inventory.products.category = 'Electronics';
 - **默认 Schema**: `sys`（不带 Schema 前缀的表名默认使用 `sys` Schema）
 - **跨 Schema 引用**: 使用 `schema_name.table_name` 格式引用其他 Schema 的表
 
----
+***
 
 ## 新增：SQL 查询优化（Filter/Project/Limit 下推）
 
 ### 核心特性
 
-| 优化类型 | 说明 | 支持的操作符 |
-|---------|------|-------------|
-| **Filter 下推** | 将谓词过滤下推到存储层 | `=`, `!=`, `<`, `>`, `<=`, `>=`, `AND`, `OR` |
-| **Project 下推** | 只扫描需要的列 | 任意列组合 |
-| **Limit 下推** | 提前终止扫描 | `LIMIT n` |
+| 优化类型           | 说明          | 支持的操作符                                       |
+| -------------- | ----------- | -------------------------------------------- |
+| **Filter 下推**  | 将谓词过滤下推到存储层 | `=`, `!=`, `<`, `>`, `<=`, `>=`, `AND`, `OR` |
+| **Project 下推** | 只扫描需要的列     | 任意列组合                                        |
+| **Limit 下推**   | 提前终止扫描      | `LIMIT n`                                    |
 
 ### 自定义物理执行算子
 
@@ -230,31 +231,31 @@ SELECT * FROM users LIMIT 10
 SELECT * FROM users WHERE (age > 25 AND score > 90) OR name = 'Alice'
 ```
 
----
+***
 
 ## 新增：全文索引引擎 (Tantivy)
 
 ### 核心特性
 
-| 特性 | 说明 |
-|------|------|
-| **全文搜索** | 基于 Tantivy 0.26 实现全文索引 |
-| **Schema 集成** | 自动为每个表创建对应的全文索引 |
-| **多字段搜索** | 支持在多个字段上进行搜索 |
-| **Snowflake ID** | 自动生成分布式唯一 ID |
-| **并发安全** | 使用 `RwLock` 和 `Mutex` 确保线程安全 |
+| 特性               | 说明                           |
+| ---------------- | ---------------------------- |
+| **全文搜索**         | 基于 Tantivy 0.26 实现全文索引       |
+| **Schema 集成**    | 自动为每个表创建对应的全文索引              |
+| **多字段搜索**        | 支持在多个字段上进行搜索                 |
+| **Snowflake ID** | 自动生成分布式唯一 ID                 |
+| **并发安全**         | 使用 `RwLock` 和 `Mutex` 确保线程安全 |
 
 ### 全文索引 API
 
-| 操作 | gRPC | REST |
-|------|------|------|
-| 创建索引 | `CreateIndex` | `POST /api/v1/index/indices` |
-| 删除索引 | `DropIndex` | `DELETE /api/v1/index/indices/{name}` |
-| 列出索引 | `ListIndices` | `GET /api/v1/index/indices` |
-| 添加文档 | `AddDocument` | `POST /api/v1/index/indices/{name}/docs` |
-| 获取文档 | `GetDocument` | `GET /api/v1/index/indices/{name}/docs/{doc_id}` |
+| 操作   | gRPC             | REST                                                |
+| ---- | ---------------- | --------------------------------------------------- |
+| 创建索引 | `CreateIndex`    | `POST /api/v1/index/indices`                        |
+| 删除索引 | `DropIndex`      | `DELETE /api/v1/index/indices/{name}`               |
+| 列出索引 | `ListIndices`    | `GET /api/v1/index/indices`                         |
+| 添加文档 | `AddDocument`    | `POST /api/v1/index/indices/{name}/docs`            |
+| 获取文档 | `GetDocument`    | `GET /api/v1/index/indices/{name}/docs/{doc_id}`    |
 | 删除文档 | `DeleteDocument` | `DELETE /api/v1/index/indices/{name}/docs/{doc_id}` |
-| 搜索 | `SearchIndex` | `POST /api/v1/index/indices/{name}/search` |
+| 搜索   | `SearchIndex`    | `POST /api/v1/index/indices/{name}/search`          |
 
 ### 索引配置示例
 
@@ -270,28 +271,28 @@ SELECT * FROM users WHERE (age > 25 AND score > 90) OR name = 'Alice'
 }
 ```
 
----
+***
 
 ## 新增：向量化服务 (VectorService)
 
 ### 核心特性
 
-| 特性 | 说明 |
-|------|------|
-| **文本向量化** | 基于 Candle 0.10 + CUDA 实现 BERT/XLM-RoBERTa 模型推理 |
-| **图片向量化** | 支持 ViT 架构视觉模型 (Jina-CLIP-v2, SigLIP2) |
-| **模型自动加载** | 启动时通过配置自动加载指定模型 |
-| **L2 归一化** | 输出向量自动进行 L2 归一化 |
-| **gRPC API** | 提供完整的 gRPC 向量化服务接口 |
+| 特性           | 说明                                             |
+| ------------ | ---------------------------------------------- |
+| **文本向量化**    | 基于 Candle 0.10 + CUDA 实现 BERT/XLM-RoBERTa 模型推理 |
+| **图片向量化**    | 支持 ViT 架构视觉模型 (Jina-CLIP-v2, SigLIP2)          |
+| **模型自动加载**   | 启动时通过配置自动加载指定模型                                |
+| **L2 归一化**   | 输出向量自动进行 L2 归一化                                |
+| **gRPC API** | 提供完整的 gRPC 向量化服务接口                             |
 
 ### 支持的模型
 
-| 模型 | 架构 | 类型 | 维度 |
-|------|------|------|------|
-| bge-small-zh-v1.5 | BERT | 文本 | 512 |
-| bge-m3 | XLM-RoBERTa | 文本 | 1024 |
-| jina-clip-v2 | ViT-L/14 | 视觉 | 1024 |
-| siglip2 | ViT-B/16 | 视觉 | 768 |
+| 模型                | 架构          | 类型 | 维度   |
+| ----------------- | ----------- | -- | ---- |
+| bge-small-zh-v1.5 | BERT        | 文本 | 512  |
+| bge-m3            | XLM-RoBERTa | 文本 | 1024 |
+| jina-clip-v2      | ViT-L/14    | 视觉 | 1024 |
+| siglip2           | ViT-B/16    | 视觉 | 768  |
 
 ### 图片向量化流程
 
@@ -309,15 +310,15 @@ SELECT * FROM users WHERE (age > 25 AND score > 90) OR name = 'Alice'
 
 ### 向量化 API
 
-| 操作 | gRPC | 说明 |
-|------|------|------|
-| 创建向量 | `CreateEmbedding` | 文本/图片 → 向量 |
-| 计算相似度 | `ComputeSimilarity` | 向量间余弦相似度 |
-| 加载模型 | `LoadModel` | 加载指定模型 |
-| 卸载模型 | `UnloadModel` | 卸载指定模型 |
-| 列出模型 | `ListModels` | 列出已加载模型 |
+| 操作    | gRPC                 | 说明         |
+| ----- | -------------------- | ---------- |
+| 创建向量  | `CreateEmbedding`    | 文本/图片 → 向量 |
+| 计算相似度 | `ComputeSimilarity`  | 向量间余弦相似度   |
+| 加载模型  | `LoadModel`          | 加载指定模型     |
+| 卸载模型  | `UnloadModel`        | 卸载指定模型     |
+| 列出模型  | `ListModels`         | 列出已加载模型    |
 | 可加载模型 | `ListLoadableModels` | 列出可加载的模型列表 |
-| 模型信息 | `GetModelInfo` | 获取模型详细信息 |
+| 模型信息  | `GetModelInfo`       | 获取模型详细信息   |
 
 ### 配置示例
 
@@ -328,40 +329,40 @@ vector_service:
   load_models: ["bge-small-zh-v1.5", "bge-m3", "jina-clip-v2", "siglip2"]
 ```
 
----
+***
 
 ## 新增：嵌入向量索引服务 (EmbeddingIndexService)
 
 ### 核心特性
 
-| 特性 | 说明 |
-|------|------|
-| **ANN 搜索** | 基于 HNSW 算法实现近似最近邻搜索 |
-| **向量持久化** | 基于 RocksDB 的向量数据持久化存储 |
-| **快照管理** | 支持 HNSW 图拓扑快照保存和加载 |
-| **批量插入** | 支持批量向量插入 |
-| **范围搜索** | 支持范围搜索 |
+| 特性         | 说明                    |
+| ---------- | --------------------- |
+| **ANN 搜索** | 基于 HNSW 算法实现近似最近邻搜索   |
+| **向量持久化**  | 基于 RocksDB 的向量数据持久化存储 |
+| **快照管理**   | 支持 HNSW 图拓扑快照保存和加载    |
+| **批量插入**   | 支持批量向量插入              |
+| **范围搜索**   | 支持范围搜索                |
 
 ### 配置参数
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| dim | 向量维度 | 512 |
-| m | HNSW 图每个节点的最大连接数 | 32 |
-| ef_construction | 图构建时的搜索宽度 | 200 |
-| ef_search | 搜索时的搜索宽度 | 50 |
-| max_elements | 索引最大容量 | 1000000 |
+| 参数               | 说明               | 默认值     |
+| ---------------- | ---------------- | ------- |
+| dim              | 向量维度             | 512     |
+| m                | HNSW 图每个节点的最大连接数 | 32      |
+| ef\_construction | 图构建时的搜索宽度        | 200     |
+| ef\_search       | 搜索时的搜索宽度         | 50      |
+| max\_elements    | 索引最大容量           | 1000000 |
 
 ### 嵌入向量 API
 
-| 操作 | gRPC | 说明 |
-|------|------|------|
-| 插入向量 | `InsertEmbedding` | 插入向量到索引 |
+| 操作   | gRPC              | 说明           |
+| ---- | ----------------- | ------------ |
+| 插入向量 | `InsertEmbedding` | 插入向量到索引      |
 | 搜索向量 | `SearchEmbedding` | 搜索 Top-K 最近邻 |
-| 删除向量 | `DeleteEmbedding` | 从索引中删除向量 |
-| 获取信息 | `GetIndexInfo` | 获取索引统计信息 |
-| 保存快照 | `SaveSnapshot` | 保存索引快照 |
-| 加载快照 | `LoadSnapshot` | 加载索引快照 |
+| 删除向量 | `DeleteEmbedding` | 从索引中删除向量     |
+| 获取信息 | `GetIndexInfo`    | 获取索引统计信息     |
+| 保存快照 | `SaveSnapshot`    | 保存索引快照       |
+| 加载快照 | `LoadSnapshot`    | 加载索引快照       |
 
 ### 配置示例
 
@@ -377,21 +378,21 @@ embedding_index:
   snapshot_path: ./laoflch_hnsw_snapshots
 ```
 
----
+***
 
 ## 新增：对象存储服务 (ObjectStoreService) - S3 兼容
 
 ### 核心特性
 
-| 特性 | 说明 |
-|------|------|
-| **S3 兼容 API** | 提供 S3 风格的 Bucket/Object REST API 和完整 gRPC API |
-| **大对象存储** | 基于 RocksDB BlobDB 实现大对象分离存储 |
-| **元数据管理** | 自动维护 content_type、etag、last_modified、用户元数据 |
-| **目录结构模拟** | 通过 delimiter + prefix 支持 S3 风格的目录层级 |
-| **幂等操作** | Bucket 创建/删除、对象删除均为幂等操作 |
-| **跨 Bucket 复制** | 支持 CopyObject 在不同 Bucket 间复制对象 |
-| **批量删除** | 支持 DeleteObjects 批量删除多个对象 |
+| 特性              | 说明                                            |
+| --------------- | --------------------------------------------- |
+| **S3 兼容 API**   | 提供 S3 风格的 Bucket/Object REST API 和完整 gRPC API |
+| **大对象存储**       | 基于 RocksDB BlobDB 实现大对象分离存储                   |
+| **元数据管理**       | 自动维护 content\_type、etag、last\_modified、用户元数据  |
+| **目录结构模拟**      | 通过 delimiter + prefix 支持 S3 风格的目录层级           |
+| **幂等操作**        | Bucket 创建/删除、对象删除均为幂等操作                       |
+| **跨 Bucket 复制** | 支持 CopyObject 在不同 Bucket 间复制对象                |
+| **批量删除**        | 支持 DeleteObjects 批量删除多个对象                     |
 
 ### 存储模型
 
@@ -416,33 +417,33 @@ Bucket (RocksDB Table)
 
 #### gRPC API
 
-| 操作 | gRPC RPC | 说明 |
-|------|---------|------|
-| 创建 Bucket | `CreateBucket` | 创建存储桶（幂等） |
-| 删除 Bucket | `DeleteBucket` | 删除存储桶 |
-| 列出 Buckets | `ListBuckets` | 列出所有存储桶 |
-| 上传对象 | `PutObject` | 上传对象数据 |
-| 下载对象 | `GetObject` | 下载对象数据 |
-| 删除对象 | `DeleteObject` | 删除单个对象（幂等） |
-| 批量删除 | `DeleteObjects` | 批量删除多个对象 |
-| 列出对象 | `ListObjects` | 列出 Bucket 中的对象 |
-| 获取元数据 | `HeadObject` | 仅获取对象元数据 |
-| 复制对象 | `CopyObject` | 跨 Bucket 复制对象 |
+| 操作         | gRPC RPC        | 说明             |
+| ---------- | --------------- | -------------- |
+| 创建 Bucket  | `CreateBucket`  | 创建存储桶（幂等）      |
+| 删除 Bucket  | `DeleteBucket`  | 删除存储桶          |
+| 列出 Buckets | `ListBuckets`   | 列出所有存储桶        |
+| 上传对象       | `PutObject`     | 上传对象数据         |
+| 下载对象       | `GetObject`     | 下载对象数据         |
+| 删除对象       | `DeleteObject`  | 删除单个对象（幂等）     |
+| 批量删除       | `DeleteObjects` | 批量删除多个对象       |
+| 列出对象       | `ListObjects`   | 列出 Bucket 中的对象 |
+| 获取元数据      | `HeadObject`    | 仅获取对象元数据       |
+| 复制对象       | `CopyObject`    | 跨 Bucket 复制对象  |
 
 #### REST API（S3 兼容）
 
 所有 REST 端点挂载在 `/api/v1/object-store` 前缀下：
 
-| 操作 | HTTP 方法 & 路径 | 说明 |
-|------|------------------|------|
-| ListBuckets | `GET /api/v1/object-store` | 列出所有 Bucket |
-| CreateBucket | `PUT /api/v1/object-store/{bucket}` | 创建 Bucket |
-| DeleteBucket | `DELETE /api/v1/object-store/{bucket}` | 删除 Bucket |
-| ListObjects | `GET /api/v1/object-store/{bucket}` | 列出对象（支持 prefix/delimiter/max_keys/marker） |
-| PutObject | `PUT /api/v1/object-store/{bucket}/{key}` | 上传对象 |
-| GetObject | `GET /api/v1/object-store/{bucket}/{key}` | 下载对象 |
-| HeadObject | `HEAD /api/v1/object-store/{bucket}/{key}` | 获取对象元数据 |
-| DeleteObject | `DELETE /api/v1/object-store/{bucket}/{key}` | 删除对象 |
+| 操作           | HTTP 方法 & 路径                                 | 说明                                         |
+| ------------ | -------------------------------------------- | ------------------------------------------ |
+| ListBuckets  | `GET /api/v1/object-store`                   | 列出所有 Bucket                                |
+| CreateBucket | `PUT /api/v1/object-store/{bucket}`          | 创建 Bucket                                  |
+| DeleteBucket | `DELETE /api/v1/object-store/{bucket}`       | 删除 Bucket                                  |
+| ListObjects  | `GET /api/v1/object-store/{bucket}`          | 列出对象（支持 prefix/delimiter/max\_keys/marker） |
+| PutObject    | `PUT /api/v1/object-store/{bucket}/{key}`    | 上传对象                                       |
+| GetObject    | `GET /api/v1/object-store/{bucket}/{key}`    | 下载对象                                       |
+| HeadObject   | `HEAD /api/v1/object-store/{bucket}/{key}`   | 获取对象元数据                                    |
+| DeleteObject | `DELETE /api/v1/object-store/{bucket}/{key}` | 删除对象                                       |
 
 ### 配置示例
 
@@ -491,57 +492,57 @@ curl -X DELETE http://localhost:8080/api/v1/object-store/my-bucket/photos/cat.jp
   -H "Authorization: Bearer <your_token>"
 ```
 
-**位置**: [laoflchdb_object_store_service/src/lib.rs](laoflchdb_object_store_service/src/lib.rs)
+**位置**: [laoflchdb\_object\_store\_service/src/lib.rs](laoflchdb_object_store_service/src/lib.rs)
 
----
+***
 
 ## 新增：图片服务 (ImageService)
 
 ### 核心特性
 
-| 特性 | 说明 |
-|------|------|
-| **自动缩略图生成** | 上传图片时自动生成三种规格缩略图：thumbnail(128x128)、small(256x256)、medium(512x512) |
-| **基于对象存储** | 图片数据通过 ObjectStoreService 存储，复用 BlobDB 大对象存储能力 |
-| **图片元数据** | 自动提取并存储图片宽度、高度、格式、ETag、Content-Type、自定义元数据 |
-| **cover/contain 模式** | thumbnail 使用 cover 模式裁剪为正方形，small/medium 使用 contain 模式等比缩放 |
-| **JPEG 编码缩略图** | 所有缩略图统一编码为 JPEG 格式以节省空间 |
-| **幂等删除** | 删除图片时同时删除原图、所有缩略图和元数据 |
-| **gRPC 和 REST 双协议** | 同时提供 gRPC 和 REST API |
+| 特性                   | 说明                                                                 |
+| -------------------- | ------------------------------------------------------------------ |
+| **自动缩略图生成**          | 上传图片时自动生成三种规格缩略图：thumbnail(128x128)、small(256x256)、medium(512x512) |
+| **基于对象存储**           | 图片数据通过 ObjectStoreService 存储，复用 BlobDB 大对象存储能力                     |
+| **图片元数据**            | 自动提取并存储图片宽度、高度、格式、ETag、Content-Type、自定义元数据                         |
+| **cover/contain 模式** | thumbnail 使用 cover 模式裁剪为正方形，small/medium 使用 contain 模式等比缩放         |
+| **JPEG 编码缩略图**       | 所有缩略图统一编码为 JPEG 格式以节省空间                                            |
+| **幂等删除**             | 删除图片时同时删除原图、所有缩略图和元数据                                              |
+| **gRPC 和 REST 双协议**  | 同时提供 gRPC 和 REST API                                               |
 
 ### 缩略图规格
 
-| 规格 | 最大边长 | 缩放模式 | 说明 |
-|------|---------|---------|------|
-| `thumbnail` | 128 | cover（裁剪为正方形） | 适用于列表展示的小缩略图 |
-| `small` | 256 | contain（等比缩放） | 适用于卡片展示 |
-| `medium` | 512 | contain（等比缩放） | 适用于预览展示 |
+| 规格          | 最大边长 | 缩放模式          | 说明           |
+| ----------- | ---- | ------------- | ------------ |
+| `thumbnail` | 128  | cover（裁剪为正方形） | 适用于列表展示的小缩略图 |
+| `small`     | 256  | contain（等比缩放） | 适用于卡片展示      |
+| `medium`    | 512  | contain（等比缩放） | 适用于预览展示      |
 
 ### 图片服务 API
 
 #### gRPC API
 
-| 操作 | gRPC RPC | 说明 |
-|------|---------|------|
-| 上传图片 | `UploadImage` | 上传图片并自动生成缩略图和元数据 |
-| 获取原图 | `GetImage` | 下载原始图片数据 |
-| 获取缩略图 | `GetThumbnail` | 下载指定规格的缩略图 |
-| 获取元数据 | `GetImageMetadata` | 获取图片元数据（不含图片数据） |
-| 列出图片 | `ListImages` | 列出 Bucket 中的图片（支持前缀过滤） |
-| 删除图片 | `DeleteImage` | 删除原图、所有缩略图和元数据 |
+| 操作    | gRPC RPC           | 说明                     |
+| ----- | ------------------ | ---------------------- |
+| 上传图片  | `UploadImage`      | 上传图片并自动生成缩略图和元数据       |
+| 获取原图  | `GetImage`         | 下载原始图片数据               |
+| 获取缩略图 | `GetThumbnail`     | 下载指定规格的缩略图             |
+| 获取元数据 | `GetImageMetadata` | 获取图片元数据（不含图片数据）        |
+| 列出图片  | `ListImages`       | 列出 Bucket 中的图片（支持前缀过滤） |
+| 删除图片  | `DeleteImage`      | 删除原图、所有缩略图和元数据         |
 
 #### REST API
 
 所有 REST 端点挂载在 `/api/v1/images` 前缀下：
 
-| 操作 | HTTP 方法 & 路径 | 说明 |
-|------|------------------|------|
-| 上传图片 | `POST /api/v1/images?bucket=&key=` | 上传图片（body 为原始二进制数据） |
-| 列出图片 | `GET /api/v1/images?bucket=&prefix=&max_keys=` | 列出图片 |
-| 获取原图 | `GET /api/v1/images/{key}?bucket=` | 下载原图 |
-| 获取元数据 | `GET /api/v1/images/{key}/meta?bucket=` | 获取图片元数据 |
+| 操作    | HTTP 方法 & 路径                                         | 说明                                  |
+| ----- | ---------------------------------------------------- | ----------------------------------- |
+| 上传图片  | `POST /api/v1/images?bucket=&key=`                   | 上传图片（body 为原始二进制数据）                 |
+| 列出图片  | `GET /api/v1/images?bucket=&prefix=&max_keys=`       | 列出图片                                |
+| 获取原图  | `GET /api/v1/images/{key}?bucket=`                   | 下载原图                                |
+| 获取元数据 | `GET /api/v1/images/{key}/meta?bucket=`              | 获取图片元数据                             |
 | 获取缩略图 | `GET /api/v1/images/{key}/thumbnails/{size}?bucket=` | 下载缩略图（size: thumbnail/small/medium） |
-| 删除图片 | `DELETE /api/v1/images/{key}?bucket=` | 删除图片及所有缩略图 |
+| 删除图片  | `DELETE /api/v1/images/{key}?bucket=`                | 删除图片及所有缩略图                          |
 
 ### 配置示例
 
@@ -588,20 +589,20 @@ curl -X DELETE "http://localhost:8080/api/v1/images/photo.jpg?bucket=my-images" 
   -H "Authorization: Bearer <your_token>"
 ```
 
-**位置**: [laoflchdb_image_service/src/lib.rs](laoflchdb_image_service/src/lib.rs)
+**位置**: [laoflchdb\_image\_service/src/lib.rs](laoflchdb_image_service/src/lib.rs)
 
----
+***
 
 ## 新增：优雅关闭功能
 
 ### 核心特性
 
-| 特性 | 说明 |
-|------|------|
-| **信号处理** | 支持 SIGINT (Ctrl+C)、SIGTERM (kill 命令) 信号 |
-| **RocksDB 刷新** | 关闭时自动调用 `db.flush()` 确保数据持久化 |
-| **锁释放** | 正确释放 RocksDB 锁文件，避免下次启动报错 |
-| **Schema 遍历** | 遍历所有 Schema 并优雅关闭对应的引擎 |
+| 特性             | 说明                                      |
+| -------------- | --------------------------------------- |
+| **信号处理**       | 支持 SIGINT (Ctrl+C)、SIGTERM (kill 命令) 信号 |
+| **RocksDB 刷新** | 关闭时自动调用 `db.flush()` 确保数据持久化            |
+| **锁释放**        | 正确释放 RocksDB 锁文件，避免下次启动报错               |
+| **Schema 遍历**  | 遍历所有 Schema 并优雅关闭对应的引擎                  |
 
 ### 关闭流程
 
@@ -634,7 +635,7 @@ kill <pid>
 kill -TERM <pid>
 ```
 
----
+***
 
 ## 1. Schema 与 RocksDB 映射设计
 
@@ -655,36 +656,37 @@ db_path/ (根目录)
 
 ### Column Family 设计
 
-| Column Family | 用途 |
-|---------------|------|
-| `default` | 存储 db、table、col 级别的元数据 |
-| `{table_name}` | 存储对应表的数据 |
+| Column Family  | 用途                     |
+| -------------- | ---------------------- |
+| `default`      | 存储 db、table、col 级别的元数据 |
+| `{table_name}` | 存储对应表的数据               |
 
 ### 元数据 Key 格式
 
-| 类型 | Key 格式 | 示例 |
-|------|----------|------|
-| Schema 元数据 | `META-SCHEMA:{schema_name}` | `META-SCHEMA:sys` |
-| 表元数据 | `META-TABLE:{table_name}:{table_id}` | `META-TABLE:user:0` |
-| 字段元数据 | `META-COL:{table_id_fixed}:{column_name}:{column_id}:{column_type}` | `META-COL:00000000000000000000:user_id:0:COLUMN_TYPE_INT64` |
+| 类型         | Key 格式                                                              | 示例                                                          |
+| ---------- | ------------------------------------------------------------------- | ----------------------------------------------------------- |
+| Schema 元数据 | `META-SCHEMA:{schema_name}`                                         | `META-SCHEMA:sys`                                           |
+| 表元数据       | `META-TABLE:{table_name}:{table_id}`                                | `META-TABLE:user:0`                                         |
+| 字段元数据      | `META-COL:{table_id_fixed}:{column_name}:{column_id}:{column_type}` | `META-COL:00000000000000000000:user_id:0:COLUMN_TYPE_INT64` |
 
 **注意**: 其中 `{table_id_fixed}` 是固定长度 20 字符的字符串，不足时前面补0。
 
 ### 自增 ID 设计
 
-| ID 类型 | 起始值 | 存储位置 | 说明 |
-|---------|--------|----------|------|
-| `table_id` | 0 | `SchemaMeta.next_auto_inc_table_id` | Schema 内唯一，每创建表 +1 |
-| `column_id` | 0 | `TableMeta.next_auto_inc_column_id` | 表内唯一，每添加字段 +1 |
+| ID 类型       | 起始值 | 存储位置                                | 说明                 |
+| ----------- | --- | ----------------------------------- | ------------------ |
+| `table_id`  | 0   | `SchemaMeta.next_auto_inc_table_id` | Schema 内唯一，每创建表 +1 |
+| `column_id` | 0   | `TableMeta.next_auto_inc_column_id` | 表内唯一，每添加字段 +1      |
 
-### MAX_TABLE_ID_LENGTH 常量
+### MAX\_TABLE\_ID\_LENGTH 常量
 
-在 `multi_table_rocksdb` crate 中定义，用于固定长度的 table_id 字符串格式：
+在 `multi_table_rocksdb` crate 中定义，用于固定长度的 table\_id 字符串格式：
+
 ```rust
 pub const MAX_TABLE_ID_LENGTH: usize = 20;
 ```
 
----
+***
 
 ## 2. LaoflchDBServer 总入口架构
 
@@ -767,11 +769,11 @@ async fn main() {
 }
 ```
 
----
+***
 
 ## 3. SchemaManager 设计 (Service 层)
 
-`SchemaManager` 在 **Service 层** 实现，负责管理多个 Schema (RocksDB 实例)。**所有方法均为异步，使用 `tokio::sync::Mutex` 确保异步上下文中的线程安全**：
+`SchemaManager` 在 **Service 层** 实现，负责管理多个 Schema (RocksDB 实例)。**所有方法均为异步，使用** **`tokio::sync::Mutex`** **确保异步上下文中的线程安全**：
 
 ```rust
 use tokio::sync::Mutex;
@@ -803,15 +805,15 @@ impl SchemaManager {
 2. **缓存管理**：已打开的 Schema 保存在内存中，下次访问直接返回
 3. **路径映射**：`{base_path}/{schema_name}` 对应每个 Schema 的 RocksDB 目录
 
----
+***
 
 ## 4. DBEngine 接口和实现 (独立 crate)
 
-### DBEngine Trait (laoflchdb_engines crate)
+### DBEngine Trait (laoflchdb\_engines crate)
 
-**位置**: [laoflchdb_engines/src/lib.rs](laoflchdb_engines/src/lib.rs)
+**位置**: [laoflchdb\_engines/src/lib.rs](laoflchdb_engines/src/lib.rs)
 
-**所有方法均为异步，使用 `#[async_trait]` 宏实现**：
+**所有方法均为异步，使用** **`#[async_trait]`** **宏实现**：
 
 ```rust
 #[async_trait::async_trait]
@@ -833,9 +835,9 @@ pub trait DBEngine: Send + Sync + 'static {
 }
 ```
 
-### MultiTableRocksDBEngine (multi_table_rocksdb crate)
+### MultiTableRocksDBEngine (multi\_table\_rocksdb crate)
 
-**位置**: [multi_table_rocksdb/src/multi_table_rocksdb.rs](multi_table_rocksdb/src/multi_table_rocksdb.rs)
+**位置**: [multi\_table\_rocksdb/src/multi\_table\_rocksdb.rs](multi_table_rocksdb/src/multi_table_rocksdb.rs)
 
 `DBEngine` trait 的 RocksDB 实现，**一个实例对应一个 Schema 和一个 RocksDB DB 实例**：
 
@@ -879,13 +881,13 @@ impl Default for EngineOptions {
 }
 ```
 
----
+***
 
 ## 5. Service 层 (服务层)
 
 ### DatabaseService Trait
 
-**所有方法均为异步，使用 `#[async_trait]` 宏实现**：
+**所有方法均为异步，使用** **`#[async_trait]`** **宏实现**：
 
 ```rust
 #[async_trait::async_trait]
@@ -926,7 +928,7 @@ impl DatabaseServiceImpl {
 }
 ```
 
----
+***
 
 ## 6. Access 层 (接入服务层)
 
@@ -962,7 +964,7 @@ REST API 协议的具体实现，基于 Axum 框架。
 
 **位置**: [src/access/rest.rs](src/access/rest.rs)
 
----
+***
 
 ## 7. 字段类型封装
 
@@ -1001,7 +1003,7 @@ enum ColumnType {
 }
 ```
 
----
+***
 
 ## 8. API 接口
 
@@ -1028,34 +1030,34 @@ service LaoflchDb {
 
 ### REST API 接口
 
-详细文档: [REST_API.md](REST_API.md)
+详细文档: [REST\_API.md](REST_API.md)
 
-| 端点 | 方法 | 说明 | 是否需要认证 |
-|------|------|------|-------------|
-| `/health` | GET | 健康检查 | 否 |
-| `/api/v1/login` | POST | 用户登录 | 否 |
-| `/api/v1/logout` | POST | 用户登出 | 否 |
-| `/api/v1/tables` | POST | 创建表 | 是 |
-| `/api/v1/schemas/{schema}/tables` | GET | 列出表 | 是 |
-| `/api/v1/schemas/{schema}/tables/{table}` | GET | 获取表元数据 | 是 |
-| `/api/v1/put` | POST | 插入数据 | 是 |
-| `/api/v1/get` | GET | 读取数据 | 是 |
-| `/api/v1/delete` | POST | 删除数据 | 是 |
-| `/api/v1/sql_query` | POST | SQL 查询 | 是 |
-| `/api/v1/object-store` | GET | 列出所有 Bucket（S3 兼容） | 是 |
-| `/api/v1/object-store/{bucket}` | PUT | 创建 Bucket | 是 |
-| `/api/v1/object-store/{bucket}` | GET | 列出 Bucket 中的对象 | 是 |
-| `/api/v1/object-store/{bucket}` | DELETE | 删除 Bucket | 是 |
-| `/api/v1/object-store/{bucket}/{key}` | PUT | 上传对象 | 是 |
-| `/api/v1/object-store/{bucket}/{key}` | GET | 下载对象 | 是 |
-| `/api/v1/object-store/{bucket}/{key}` | HEAD | 获取对象元数据 | 是 |
-| `/api/v1/object-store/{bucket}/{key}` | DELETE | 删除对象 | 是 |
-| `/api/v1/images` | POST | 上传图片（自动生成缩略图） | 是 |
-| `/api/v1/images` | GET | 列出图片 | 是 |
-| `/api/v1/images/{key}` | GET | 下载原图 | 是 |
-| `/api/v1/images/{key}` | DELETE | 删除图片及缩略图 | 是 |
-| `/api/v1/images/{key}/meta` | GET | 获取图片元数据 | 是 |
-| `/api/v1/images/{key}/thumbnails/{size}` | GET | 获取缩略图（thumbnail/small/medium） | 是 |
+| 端点                                        | 方法     | 说明                            | 是否需要认证 |
+| ----------------------------------------- | ------ | ----------------------------- | ------ |
+| `/health`                                 | GET    | 健康检查                          | 否      |
+| `/api/v1/login`                           | POST   | 用户登录                          | 否      |
+| `/api/v1/logout`                          | POST   | 用户登出                          | 否      |
+| `/api/v1/tables`                          | POST   | 创建表                           | 是      |
+| `/api/v1/schemas/{schema}/tables`         | GET    | 列出表                           | 是      |
+| `/api/v1/schemas/{schema}/tables/{table}` | GET    | 获取表元数据                        | 是      |
+| `/api/v1/put`                             | POST   | 插入数据                          | 是      |
+| `/api/v1/get`                             | GET    | 读取数据                          | 是      |
+| `/api/v1/delete`                          | POST   | 删除数据                          | 是      |
+| `/api/v1/sql_query`                       | POST   | SQL 查询                        | 是      |
+| `/api/v1/object-store`                    | GET    | 列出所有 Bucket（S3 兼容）            | 是      |
+| `/api/v1/object-store/{bucket}`           | PUT    | 创建 Bucket                     | 是      |
+| `/api/v1/object-store/{bucket}`           | GET    | 列出 Bucket 中的对象                | 是      |
+| `/api/v1/object-store/{bucket}`           | DELETE | 删除 Bucket                     | 是      |
+| `/api/v1/object-store/{bucket}/{key}`     | PUT    | 上传对象                          | 是      |
+| `/api/v1/object-store/{bucket}/{key}`     | GET    | 下载对象                          | 是      |
+| `/api/v1/object-store/{bucket}/{key}`     | HEAD   | 获取对象元数据                       | 是      |
+| `/api/v1/object-store/{bucket}/{key}`     | DELETE | 删除对象                          | 是      |
+| `/api/v1/images`                          | POST   | 上传图片（自动生成缩略图）                 | 是      |
+| `/api/v1/images`                          | GET    | 列出图片                          | 是      |
+| `/api/v1/images/{key}`                    | GET    | 下载原图                          | 是      |
+| `/api/v1/images/{key}`                    | DELETE | 删除图片及缩略图                      | 是      |
+| `/api/v1/images/{key}/meta`               | GET    | 获取图片元数据                       | 是      |
+| `/api/v1/images/{key}/thumbnails/{size}`  | GET    | 获取缩略图（thumbnail/small/medium） | 是      |
 
 ### 认证机制
 
@@ -1067,11 +1069,12 @@ LaoflchDB 使用 Token 认证机制：
 4. **默认用户**: 初始化时自动创建 `admin` 用户（密码: `laoflchdb`）
 
 **认证流程**:
+
 ```
 客户端 → POST /api/v1/login → 获取 Token → 请求携带 Token → 受保护的 API
 ```
 
----
+***
 
 ## 9. YAML 配置文件
 
@@ -1140,7 +1143,7 @@ permissions:
       - sql_query
 ```
 
----
+***
 
 ## 10. lsql 命令行客户端
 
@@ -1181,14 +1184,14 @@ lsql --host 127.0.0.1:19777 --command "SELECT * FROM users"
 
 进入交互式模式后，可以使用以下命令：
 
-| 命令 | 说明 |
-|------|------|
-| `\q` 或 `\quit` | 退出 lsql |
-| `\help` 或 `\?` | 显示帮助信息 |
-| `\dn` 或 `\schemas` | 列出所有可用的 Schema |
-| `\dt` | 列出当前 Schema 中的所有表 |
-| `\c <schema>` 或 `\connect <schema>` | 切换到指定的 Schema |
-| `<SQL语句>` | 执行 SQL 查询 |
+| 命令                                  | 说明                |
+| ----------------------------------- | ----------------- |
+| `\q` 或 `\quit`                      | 退出 lsql           |
+| `\help` 或 `\?`                      | 显示帮助信息            |
+| `\dn` 或 `\schemas`                  | 列出所有可用的 Schema    |
+| `\dt`                               | 列出当前 Schema 中的所有表 |
+| `\c <schema>` 或 `\connect <schema>` | 切换到指定的 Schema     |
+| `<SQL语句>`                           | 执行 SQL 查询         |
 
 ### 交互式会话示例
 
@@ -1236,7 +1239,7 @@ cargo build --release
 ./target/release/laoflchDB-rust start --db-path ./data
 ```
 
----
+***
 
 ## 11. RocksDB ldb 工具
 
@@ -1265,41 +1268,41 @@ cargo all          # 编译所有 (Rust + ldb)
 
 ### xtask 任务
 
-| 命令 | 说明 |
-|------|------|
-| `cargo ldb` | 仅编译 ldb 工具 |
-| `cargo all` | 编译所有 (Rust + ldb) |
-| `cargo auto-test` | 运行自动回归测试 |
+| 命令                | 说明                |
+| ----------------- | ----------------- |
+| `cargo ldb`       | 仅编译 ldb 工具        |
+| `cargo all`       | 编译所有 (Rust + ldb) |
+| `cargo auto-test` | 运行自动回归测试          |
 
----
+***
 
 ## 12. 核心依赖
 
-| Rust Crate | 版本 | 用途 |
-|------------|------|------|
-| rust-rocksdb | 0.50 | KV 存储 (RocksDB v11.1.1) |
-| tonic | 0.11 | gRPC HTTP/2 async 服务 |
-| axum | 0.7 | REST API 服务框架 |
-| prost | 0.12 | protobuf 编解码 |
-| protobuf | 3.7 | protobuf 编解码 (SQL 引擎) |
-| clap | 4.5 | 命令行参数 |
-| tokio | 1.0 | async runtime |
-| tokio-sync | 1.0 | 异步锁机制 |
-| async-trait | 0.1 | 异步 trait 支持 |
-| serde | 1.0 | YAML 配置序列化 |
-| serde_yaml | 0.9 | YAML 解析 |
-| datafusion | 53.1.0 | SQL 解析和查询引擎 |
-| arrow | 58.3.0 | 列式数据格式 |
-| arrow-schema | 58.3.0 | Arrow Schema 定义 |
-| arrow-array | 58.3.0 | Arrow Array 实现 |
-| futures | 0.3 | 异步流处理 |
-| snowflake_me | 0.5 | Snowflake ID 生成 |
-| tantivy | 0.26 | 全文索引引擎 |
-| candle-core | 0.10 | 深度学习推理框架 (CPU/CUDA) |
-| candle-nn | 0.10 | 神经网络模块 (Candle) |
-| candle-kernels | 0.10 | CUDA 内核加速 (Candle) |
+| Rust Crate     | 版本     | 用途                      |
+| -------------- | ------ | ----------------------- |
+| rust-rocksdb   | 0.50   | KV 存储 (RocksDB v11.1.1) |
+| tonic          | 0.11   | gRPC HTTP/2 async 服务    |
+| axum           | 0.7    | REST API 服务框架           |
+| prost          | 0.12   | protobuf 编解码            |
+| protobuf       | 3.7    | protobuf 编解码 (SQL 引擎)   |
+| clap           | 4.5    | 命令行参数                   |
+| tokio          | 1.0    | async runtime           |
+| tokio-sync     | 1.0    | 异步锁机制                   |
+| async-trait    | 0.1    | 异步 trait 支持             |
+| serde          | 1.0    | YAML 配置序列化              |
+| serde\_yaml    | 0.9    | YAML 解析                 |
+| datafusion     | 53.1.0 | SQL 解析和查询引擎             |
+| arrow          | 58.3.0 | 列式数据格式                  |
+| arrow-schema   | 58.3.0 | Arrow Schema 定义         |
+| arrow-array    | 58.3.0 | Arrow Array 实现          |
+| futures        | 0.3    | 异步流处理                   |
+| snowflake\_me  | 0.5    | Snowflake ID 生成         |
+| tantivy        | 0.26   | 全文索引引擎                  |
+| candle-core    | 0.10   | 深度学习推理框架 (CPU/CUDA)     |
+| candle-nn      | 0.10   | 神经网络模块 (Candle)         |
+| candle-kernels | 0.10   | CUDA 内核加速 (Candle)      |
 
----
+***
 
 ## 13. 快速开始
 
@@ -1318,8 +1321,8 @@ cargo build --release
 
 **幂等性说明：**
 
-- **`sys` Schema**：采用"存在则跳过"策略，不会删除或修改现有数据
-- **`--example` 选项**：初始化示例数据，会删除并重建 `example` Schema
+- **`sys`** **Schema**：采用"存在则跳过"策略，不会删除或修改现有数据
+- **`--example`** **选项**：初始化示例数据，会删除并重建 `example` Schema
 
 ```bash
 # 初始化数据库（幂等，不会删除现有数据）
@@ -1336,8 +1339,9 @@ cargo build --release
 ```
 
 服务将同时启动：
-- **gRPC 服务**: http://127.0.0.1:19777
-- **REST API**: http://127.0.0.1:8080
+
+- **gRPC 服务**: <http://127.0.0.1:19777>
+- **REST API**: <http://127.0.0.1:8080>
 
 ### 4. 测试 SQL 查询
 
@@ -1400,7 +1404,7 @@ async fn main() {
 }
 ```
 
----
+***
 
 ## 14. 测试
 
@@ -1408,12 +1412,12 @@ async fn main() {
 
 项目包含完整的测试套件：
 
-| 测试类型 | 位置 | 说明 |
-|---------|------|------|
-| Rust 单元测试 | [tests/](tests/) | 基础功能和 API 测试 |
-| 集成测试 | [tests/integration_tests.rs](tests/integration_tests.rs) | SQL 查询下推测试 |
-| REST API 测试 | [tests_python/test_sql_query_validation.py](tests_python/test_sql_query_validation.py) | SQL 查询验证 |
-| gRPC API 测试 | [tests_python/test_grpc_sql_query.py](tests_python/test_grpc_sql_query.py) | gRPC SQL 查询测试 |
+| 测试类型        | 位置                                                                                         | 说明            |
+| ----------- | ------------------------------------------------------------------------------------------ | ------------- |
+| Rust 单元测试   | [tests/](tests/)                                                                           | 基础功能和 API 测试  |
+| 集成测试        | [tests/integration\_tests.rs](tests/integration_tests.rs)                                  | SQL 查询下推测试    |
+| REST API 测试 | [tests\_python/test\_sql\_query\_validation.py](tests_python/test_sql_query_validation.py) | SQL 查询验证      |
+| gRPC API 测试 | [tests\_python/test\_grpc\_sql\_query.py](tests_python/test_grpc_sql_query.py)             | gRPC SQL 查询测试 |
 
 ### 运行测试
 
@@ -1431,7 +1435,7 @@ async fn main() {
 python3 tests_python/test_sql_query_validation.py
 ```
 
----
+***
 
 ## 17. 架构升级说明
 
@@ -1439,13 +1443,13 @@ python3 tests_python/test_sql_query_validation.py
 
 **DataFusionStorageEngine** 已从 `laoflchdb_engines` 迁移到 `laoflchdb_sql_df_engine`：
 
-| 变更项 | 说明 |
-|--------|------|
+| 变更项                             | 说明                              |
+| ------------------------------- | ------------------------------- |
 | `DataFusionStorageEngine` Trait | 定义在 `laoflchdb_sql_df_engine` 中 |
-| `RocksDBTable` | 拆分为独立文件 `rocksdb_table.rs` |
-| `RocksScanExec` | 自定义物理执行算子，替代 MemTable |
-| 查询下推 | 支持 Filter/Project/Limit 下推到存储层 |
-| 逻辑表达式 | 支持 AND/OR 条件下推 |
+| `RocksDBTable`                  | 拆分为独立文件 `rocksdb_table.rs`      |
+| `RocksScanExec`                 | 自定义物理执行算子，替代 MemTable           |
+| 查询下推                            | 支持 Filter/Project/Limit 下推到存储层  |
+| 逻辑表达式                           | 支持 AND/OR 条件下推                  |
 
 ### 依赖关系
 
@@ -1460,15 +1464,16 @@ multi_table_rocksdb
     └── datafusion (TableProvider, ExecutionPlan)
 ```
 
----
+***
 
 ### 0.1.9 (当前)
+
 - **对象存储服务 (ObjectStoreService)**: 新增 S3 兼容的对象存储服务，基于 RocksDB BlobDB 实现大对象存储
   - 完整的 gRPC API：PutObject/GetObject/DeleteObject/ListObjects/HeadObject/CopyObject/DeleteObjects/CreateBucket/DeleteBucket/ListBuckets
   - S3 兼容的 REST API：`/api/v1/object-store` 前缀下的 Bucket/Object HTTP 端点
   - 支持大对象存储（BlobDB，默认单文件最大 256MB，zstd 压缩）
-  - 支持对象元数据管理（content_type、etag、last_modified、用户自定义元数据）
-  - 支持目录结构模拟（通过 delimiter + prefix 实现 S3 风格的 common_prefixes）
+  - 支持对象元数据管理（content\_type、etag、last\_modified、用户自定义元数据）
+  - 支持目录结构模拟（通过 delimiter + prefix 实现 S3 风格的 common\_prefixes）
   - 支持跨 Bucket 复制（CopyObject）和批量删除（DeleteObjects）
   - 所有 Bucket/Object 操作均为幂等操作
 - **KV RocksDB 引擎扩展**: 在 `laoflchdb_kv_rocksdb_engine` 中新增 BlobDB 支持（`BlobDBConfig` 配置和 `new_with_blob_db` 构造方法）
@@ -1479,23 +1484,24 @@ multi_table_rocksdb
   - REST API：`/api/v1/images` 前缀下的图片 HTTP 端点
   - 上传图片时自动生成三种规格缩略图：thumbnail(128x128 cover)、small(256x256 contain)、medium(512x512 contain)
   - 缩略图统一编码为 JPEG 格式
-  - 自动提取并存储图片元数据（width、height、format、content_type、etag、user_metadata）
+  - 自动提取并存储图片元数据（width、height、format、content\_type、etag、user\_metadata）
   - 删除图片时级联删除原图、所有缩略图和元数据
   - 测试覆盖：`test_image_service_grpc.py`（25 个场景）和 `test_image_service_rest.py`（24 个场景）
 
 ### 0.1.4
+
 - **向量化服务 (VectorService)**: 基于 Candle 0.10 + CUDA 实现文本和图片向量化推理，支持 BERT/XLM-RoBERTa/ViT 模型
 - **嵌入向量索引服务 (EmbeddingIndexService)**: 基于 HNSW 算法实现近似最近邻搜索，支持向量持久化和快照管理
 - **表和字段注释支持**: 在 `TableMeta` 和 `ColumnMeta` 中添加了 `comment` 字段，支持语义化注释
 - **订单交易系统示例**: `--example` 初始化时创建完整的订单交易系统表结构，包含表和字段注释
 - **lsql 命令行客户端**: 类似 PostgreSQL psql 的交互式 SQL 客户端，支持 `\v` 作为 `\version` 的别名
 - **ListSchemas API**: 新增 gRPC API 用于列出所有 Schema
-- **execute_query 日志**: 添加详细的 SQL 执行日志输出
+- **execute\_query 日志**: 添加详细的 SQL 执行日志输出
 - **错误处理优化**: SQL 执行错误时不退出进程
 - **Schema 验证**: 切换和默认 Schema 时验证是否存在
 - **优雅关闭功能**: 支持 SIGINT/SIGTERM 信号处理，自动刷新 RocksDB 数据并释放锁文件
 
----
+***
 
 ## 18. 订单交易系统示例数据
 
@@ -1503,41 +1509,41 @@ multi_table_rocksdb
 
 ### 表结构设计
 
-| 表名 | 字段 | 类型 | 说明 |
-|------|------|------|------|
-| **customers** | id | INT64 | 客户ID |
-| | name | STRING | 客户名称 |
-| | email | STRING | 邮箱 |
-| | phone | STRING | 手机号 |
-| | address | STRING | 地址 |
-| | created_at | STRING | 创建时间 |
-| **products** | id | INT64 | 产品ID |
-| | name | STRING | 产品名称 |
-| | price | FLOAT | 价格 |
-| | stock | INT64 | 库存 |
-| | category | STRING | 分类 |
-| | description | STRING | 描述 |
-| **orders** | id | INT64 | 订单ID |
-| | customer_id | INT64 | 客户ID |
-| | order_date | STRING | 下单时间 |
-| | total_amount | FLOAT | 订单总额 |
-| | status | STRING | 状态 |
-| | shipping_address | STRING | 配送地址 |
-| **order_items** | id | INT64 | 明细ID |
-| | order_id | INT64 | 订单ID |
-| | product_id | INT64 | 产品ID |
-| | quantity | INT64 | 数量 |
-| | unit_price | FLOAT | 单价 |
-| | discount | FLOAT | 折扣 |
+| 表名               | 字段                | 类型     | 说明   |
+| ---------------- | ----------------- | ------ | ---- |
+| **customers**    | id                | INT64  | 客户ID |
+| <br />           | name              | STRING | 客户名称 |
+| <br />           | email             | STRING | 邮箱   |
+| <br />           | phone             | STRING | 手机号  |
+| <br />           | address           | STRING | 地址   |
+| <br />           | created\_at       | STRING | 创建时间 |
+| **products**     | id                | INT64  | 产品ID |
+| <br />           | name              | STRING | 产品名称 |
+| <br />           | price             | FLOAT  | 价格   |
+| <br />           | stock             | INT64  | 库存   |
+| <br />           | category          | STRING | 分类   |
+| <br />           | description       | STRING | 描述   |
+| **orders**       | id                | INT64  | 订单ID |
+| <br />           | customer\_id      | INT64  | 客户ID |
+| <br />           | order\_date       | STRING | 下单时间 |
+| <br />           | total\_amount     | FLOAT  | 订单总额 |
+| <br />           | status            | STRING | 状态   |
+| <br />           | shipping\_address | STRING | 配送地址 |
+| **order\_items** | id                | INT64  | 明细ID |
+| <br />           | order\_id         | INT64  | 订单ID |
+| <br />           | product\_id       | INT64  | 产品ID |
+| <br />           | quantity          | INT64  | 数量   |
+| <br />           | unit\_price       | FLOAT  | 单价   |
+| <br />           | discount          | FLOAT  | 折扣   |
 
 ### 样例数据规模
 
-| 表名 | 数据量 |
-|------|--------|
-| customers | 1000 条 |
-| products | 100 条 (5个分类) |
-| orders | 10000 条 |
-| order_items | ~20000 条 |
+| 表名           | 数据量          |
+| ------------ | ------------ |
+| customers    | 1000 条       |
+| products     | 100 条 (5个分类) |
+| orders       | 10000 条      |
+| order\_items | \~20000 条    |
 
 ### 使用示例
 
@@ -1556,11 +1562,12 @@ lsql@example> SELECT c.name, o.order_date, o.total_amount
              LIMIT 10;
 ```
 
----
+***
 
 ## 19. 版本历史
 
 ### 0.1.2
+
 - **SQL 查询下推优化**: 支持 Filter、Project、Limit 下推
 - **自定义物理执行算子**: `RocksScanExec` 直接对接 RocksDB
 - **逻辑表达式支持**: AND/OR 条件下推
@@ -1569,6 +1576,7 @@ lsql@example> SELECT c.name, o.order_date, o.total_amount
 - **文档更新**: 更新 README 和 design.md
 
 ### 0.1.1
+
 - 支持存储格式改为 protobuf Field 对象
 - 实现完整的数据类型映射
 - SQL 查询返回正确的数据类型
@@ -1576,7 +1584,9 @@ lsql@example> SELECT c.name, o.order_date, o.total_amount
 - 添加 Python 自动回归测试
 
 ### 0.1.0
+
 - 实现基础 SQL 查询引擎
 - 添加 filter、project、limit 下推优化
 - 实现自定义物理执行算子 RocksScanExec
 - 完善异步架构设计
+

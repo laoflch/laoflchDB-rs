@@ -17,6 +17,7 @@ service RaftKvService {
   rpc RemovePeer(RemovePeerRequest) returns (RemovePeerResponse);
   rpc ListPeers(ListPeersRequest) returns (ListPeersResponse);
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc ListGroups(ListGroupsRequest) returns (ListGroupsResponse);
 
   // ── Raft 内部通信（节点间）──
   rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
@@ -112,6 +113,12 @@ message GetStatusRequest {
 
 message GetStatusResponse {
   string status = 1;
+}
+
+message ListGroupsRequest {}
+
+message ListGroupsResponse {
+  repeated string group_ids = 1;
 }
 
 // ── Raft 内部通信消息（节点间）──

@@ -3918,6 +3918,7 @@ dependencies = [
  "clap",
  "env_logger",
  "hex",
+ "laoflchdb_distributed_object_store",
  "laoflchdb_embedding_service",
  "laoflchdb_engines",
  "laoflchdb_face_service",
@@ -3927,6 +3928,7 @@ dependencies = [
  "laoflchdb_kv_rocksdb_engine",
  "laoflchdb_object_store_service",
  "laoflchdb_raft_service",
+ "laoflchdb_raw_store_service",
  "laoflchdb_reranker_service",
  "laoflchdb_sql_df_engine",
  "laoflchdb_text_summarize_service",
@@ -3963,6 +3965,32 @@ dependencies = [
  "prost-build",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "laoflchdb_distributed_object_store"
+version = "0.1.0"
+dependencies = [
+ "async-stream",
+ "async-trait",
+ "axum 0.7.9",
+ "bytes",
+ "futures-util",
+ "hex",
+ "hmac",
+ "laoflchdb_raft_service",
+ "laoflchdb_raw_store_service",
+ "log",
+ "prost",
+ "quick-xml 0.31.0",
+ "serde",
+ "serde_json",
+ "sha2",
+ "time",
+ "tokio",
+ "tonic",
+ "urlencoding",
+ "uuid",
 ]
 
 [[package]]
@@ -4197,6 +4225,37 @@ dependencies = [
  "tokio",
  "tonic",
  "tonic-build",
+]
+
+[[package]]
+name = "laoflchdb_raw_storage_engine"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "hex",
+ "log",
+ "serde",
+ "sha2",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "laoflchdb_raw_store_service"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "laoflchdb_raft_service",
+ "laoflchdb_raw_storage_engine",
+ "log",
+ "prost",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tonic",
+ "tonic-build",
+ "uuid",
 ]
 
 [[package]]

@@ -41,11 +41,13 @@ struct ModelInstance {
     loaded: bool,
     device: String,
     /// 真实的 BERT 模型（如果已加载）
-    bert_model: Option<RealBertModel>,
+    /// 用 Arc 持有，便于在释放 models 读锁后把推理移到阻塞线程池
+    bert_model: Option<Arc<RealBertModel>>,
     /// 视觉模型（如果已加载）
-    vision_model: Option<VisionModel>,
+    /// 用 Arc 持有，便于在释放 models 读锁后把推理移到阻塞线程池
+    vision_model: Option<Arc<VisionModel>>,
     /// JinaBERT 文本编码器（如果已加载，用于 jina-clip-v2 等双塔模型的文搜图）
-    text_encoder: Option<JinaBertTextEncoder>,
+    text_encoder: Option<Arc<JinaBertTextEncoder>>,
 }
 
 impl VectorServiceImpl {
@@ -248,7 +250,7 @@ impl VectorServiceImpl {
                     info!("文本编码器已禁用（text_encoder_enabled=false），跳过 '{}' 的文本塔加载", model_name);
                     None
                 };
-                (true, None, Some(vm), text_encoder)
+                (true, None, Some(Arc::new(vm)), text_encoder.map(Arc::new))
             } else {
                 // 尝试加载 BERT 文本模型
                 let bert_model = try_load_bert_model(&model_path_str, device);
@@ -258,7 +260,7 @@ impl VectorServiceImpl {
                 } else {
                     warn!("模型 '{}' 检测到文件但加载失败，仍注册为可用", model_name);
                 }
-                (loaded, bert_model, None, None)
+                (loaded, bert_model.map(Arc::new), None, None)
             };
 
             models.insert(
@@ -372,23 +374,43 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
             }
         }
 
-        let models = self.models.read().await;
-        let model = models.get(model_name).ok_or_else(|| {
-            Status::not_found(format!("模型 '{}' 未加载，请先调用 LoadModel", model_name))
-        })?;
+        // ── 取出模型句柄后立刻释放读锁 ──
+        // 读锁只用于 clone Arc 句柄，绝不能跨推理持有：
+        // 否则一次慢推理会把所有并发请求串行化在 models 读锁上。
+        let (vision_model, bert_model, text_encoder, embedding_dim) = {
+            let models = self.models.read().await;
+            let model = models.get(model_name).ok_or_else(|| {
+                Status::not_found(format!("模型 '{}' 未加载，请先调用 LoadModel", model_name))
+            })?;
 
-        if !model.loaded {
-            return Err(Status::failed_precondition(format!(
-                "模型 '{}' 未正确加载完成",
-                model_name
-            )));
-        }
+            if !model.loaded {
+                return Err(Status::failed_precondition(format!(
+                    "模型 '{}' 未正确加载完成",
+                    model_name
+                )));
+            }
+
+            (
+                model.vision_model.clone(),
+                model.bert_model.clone(),
+                model.text_encoder.clone(),
+                model.embedding_dim,
+            )
+        }; // ← models 读锁在此释放，后续推理不再持锁
 
         // 如果有视觉模型，处理图片输入
-        if let Some(ref vision_model) = model.vision_model {
+        if let Some(vision_model) = vision_model {
             if !all_images.is_empty() {
-                for image_bytes in &all_images {
-                    match vision_model.embed_image(image_bytes) {
+                for image_bytes in all_images {
+                    let vm = vision_model.clone();
+                    // 关键：图片推理是同步阻塞调用（内部含 CUDA D2H 拷贝，在 WSL
+                    // 驱动里是用户态忙等），直接跑在 async worker 上会把 worker 钉死，
+                    // 导致 runtime 停止 accept、整个服务“卡死”。必须丢到阻塞线程池。
+                    let embed_result = tokio::task::spawn_blocking(move || vm.embed_image(&image_bytes))
+                        .await
+                        .map_err(|e| Status::internal(format!("图片推理任务执行失败: {}", e)))?;
+
+                    match embed_result {
                         Ok(mut embedding) => {
                             // 如果请求指定了维度且小于模型输出，截断
                             if target_dim > 0 && target_dim < embedding.len() {
@@ -397,7 +419,7 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                             results.push(EmbeddingResult {
                                 text: format!("image_{}", results.len()),
                                 embedding,
-                                dim: model.embedding_dim as i32,
+                                dim: embedding_dim as i32,
                             });
                         }
                         Err(e) => {
@@ -419,13 +441,21 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
             "生成向量化: model={}, texts_count={}, dim={}",
             model_name,
             req.texts.len(),
-            model.embedding_dim
+            embedding_dim
         );
 
         // 优先使用 JinaBERT 文本编码器（双塔模型，如 jina-clip-v2）
-        if let Some(ref text_encoder) = model.text_encoder {
+        if let Some(text_encoder) = text_encoder {
             for text in &req.texts {
-                match text_encoder.embed(text) {
+                let te = text_encoder.clone();
+                let input = text.clone();
+                // 文本塔同样是同步阻塞推理（CPU），统一丢到阻塞线程池，
+                // 避免占死 async worker
+                let embed_result = tokio::task::spawn_blocking(move || te.embed(&input))
+                    .await
+                    .map_err(|e| Status::internal(format!("文本推理任务执行失败: {}", e)))?;
+
+                match embed_result {
                     Ok(mut embedding) => {
                         if target_dim > 0 && target_dim < embedding.len() {
                             embedding.truncate(target_dim);
@@ -433,7 +463,7 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                         results.push(EmbeddingResult {
                             text: text.clone(),
                             embedding,
-                            dim: model.embedding_dim as i32,
+                            dim: embedding_dim as i32,
                         });
                     }
                     Err(e) => {
@@ -449,9 +479,16 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
         }
 
         // 如果有真实 BERT 模型，使用它进行推理
-        if let Some(ref bert_model) = model.bert_model {
+        if let Some(bert_model) = bert_model {
             for text in &req.texts {
-                match bert_model.embed(text) {
+                let bm = bert_model.clone();
+                let input = text.clone();
+                // 同上：BERT 推理是同步阻塞调用，不能跑在 async worker 上
+                let embed_result = tokio::task::spawn_blocking(move || bm.embed(&input))
+                    .await
+                    .map_err(|e| Status::internal(format!("BERT 推理任务执行失败: {}", e)))?;
+
+                match embed_result {
                     Ok(mut embedding) => {
                         if target_dim > 0 && target_dim < embedding.len() {
                             embedding.truncate(target_dim);
@@ -459,7 +496,7 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                         results.push(EmbeddingResult {
                             text: text.clone(),
                             embedding,
-                            dim: model.embedding_dim as i32,
+                            dim: embedding_dim as i32,
                         });
                     }
                     Err(e) => {
@@ -470,13 +507,13 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
         } else {
             // fallback: 哈希嵌入
             for text in &req.texts {
-                let embedding = generate_fallback_embedding(text, model.embedding_dim)
+                let embedding = generate_fallback_embedding(text, embedding_dim)
                     .map_err(|e| Status::internal(format!("向量化失败: {}", e)))?;
 
                 results.push(EmbeddingResult {
                     text: text.clone(),
                     embedding,
-                    dim: model.embedding_dim as i32,
+                    dim: embedding_dim as i32,
                 });
             }
         }
@@ -717,8 +754,8 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                     loaded: true,
                     device: device_str,
                     bert_model: None,
-                    vision_model,
-                    text_encoder,
+                    vision_model: vision_model.map(Arc::new),
+                    text_encoder: text_encoder.map(Arc::new),
                 },
             );
 
@@ -757,7 +794,7 @@ impl proto::vector_service_server::VectorService for VectorServiceImpl {
                 model_path: req.model_path,
                 loaded: true,
                 device: device_str,
-                bert_model: Some(bert_model),
+                bert_model: Some(Arc::new(bert_model)),
                 vision_model: None,
                 text_encoder: None,
             },

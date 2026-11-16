@@ -1,0 +1,20 @@
+[package]
+name = "laoflchdb_raw_store_service"
+version = "0.1.0"
+edition = "2021"
+description = "laoflchdb raw_store gRPC 数据面服务"
+
+[dependencies]
+tonic = { version = "0.11", features = ["transport"] }
+prost = "0.12"
+tokio = { version = "1.0", features = ["full"] }
+async-trait = "0.1"
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+laoflchdb_raw_storage_engine = { path = "../laoflchdb_raw_storage_engine" }
+laoflchdb_raft_service = { path = "../laoflchdb_raft_service" }
+
+[build-dependencies]
+tonic-build = "0.11"

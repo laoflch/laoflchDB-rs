@@ -209,13 +209,9 @@ build_image() {
         echo "错误：未找到 target/release/ldb（RocksDB ldb 工具），请先执行: source local.env && cargo-xtask ldb" >&2
         exit 1
     fi
-    # 二进制链接了 CUDA 库，但 681MB 的 CUDA 运行库不拷贝进镜像（保持镜像小）：
-    # 容器启动时 bind mount 宿主 /usr/local/cuda 提供 libcublas/libcublasLt/libcurand/libcudart
-    # 驱动库 libcuda.so.1（28MB）与主镜像 laoflchdb 一致 COPY 进镜像（Dockerfile COPY deploy_raft/.libcuda_libs/）
-    local libs_dir="$CONFIG_DIR/.libcuda_libs"
-    mkdir -p "$libs_dir"
-    cp -L /usr/lib/x86_64-linux-gnu/libcuda.so.1 "$libs_dir/libcuda.so.1"
-
+    # 二进制链接了 CUDA 库，但 CUDA 运行库与驱动库都不拷贝进镜像（保持镜像小）：
+    # 容器启动时 bind mount 宿主 /usr/local/cuda 提供 libcublas/libcublasLt/libcurand/libcudart，
+    # 并挂载宿主 libcuda.so.1 驱动库
     local rl_dir="$CONFIG_DIR/.runtime_libs"
     mkdir -p "$rl_dir"
     cp -L /usr/lib/x86_64-linux-gnu/libsnappy.so.1 "$rl_dir/libsnappy.so.1"
@@ -226,8 +222,19 @@ build_image() {
     cp -L /usr/lib/x86_64-linux-gnu/libz.so.1 "$rl_dir/libz.so.1"
     cp -L /usr/local/lib/libjemalloc.so.2 "$rl_dir/libjemalloc.so.2"
 
+    # ldb 工具在宿主机 strip 后拷入镜像（镜像内不再安装 binutils，避免构建期 apt 依赖）
+    local ldb_dir="$CONFIG_DIR/.ldb"
+    mkdir -p "$ldb_dir"
+    if command -v strip >/dev/null 2>&1; then
+        strip --strip-all -o "$ldb_dir/ldb" target/release/ldb
+        echo "已 strip ldb: $(du -h "$ldb_dir/ldb" | cut -f1)（原始 $(du -h target/release/ldb | cut -f1)）"
+    else
+        echo "警告：未找到 strip 命令，直接拷贝未 strip 的 ldb（镜像体积会偏大）" >&2
+        cp target/release/ldb "$ldb_dir/ldb"
+    fi
+
     docker build -t "$IMAGE" -f Dockerfile.raft.prod .
-    rm -rf "$libs_dir" "$rl_dir"
+    rm -rf "$rl_dir" "$ldb_dir"
 }
 
 ensure_image() {
@@ -283,6 +290,7 @@ start_containers() {
             -v "${DATA_ROOT}/raft-node-${i}:/app/laoflch_raft_data" \
             -v "$CONFIG_DIR/$(node_name "$i")/prod_raft.yaml:/app/config/prod_raft.yaml" \
             -v /usr/local/cuda:/usr/local/cuda:ro \
+            -v /usr/lib/x86_64-linux-gnu/libcuda.so.1:/usr/lib/x86_64-linux-gnu/libcuda.so.1:ro \
             "$IMAGE" >/dev/null
     done
 }

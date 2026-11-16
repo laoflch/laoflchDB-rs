@@ -753,6 +753,14 @@ impl proto::raft_kv_service_server::RaftKvService for RaftKvServiceImpl {
         }
     }
 
+    async fn list_groups(
+        &self,
+        _request: Request<proto::ListGroupsRequest>,
+    ) -> Result<Response<proto::ListGroupsResponse>, Status> {
+        let group_ids = self.group_ids();
+        Ok(Response::new(proto::ListGroupsResponse { group_ids }))
+    }
+
     // ── Raft 内部 RPC 处理（节点间通信）──
 
     async fn request_vote(

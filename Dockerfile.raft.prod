@@ -14,6 +14,9 @@
 #     -v /path/to/node2_raft.yaml:/app/config/prod_raft.yaml \
 #     -v raft_data_2:/app/laoflch_raft_data laoflchdb-raft:0.1.13
 
+# ldb 工具由 deploy_raft_cluster.sh 在构建前于宿主机 strip 后放到 deploy_raft/.ldb/ldb，
+# 镜像内不再安装 binutils（避免构建期 apt 依赖）
+
 FROM ubuntu:24.04
 
 # 版本号参数（从 Cargo.toml 获取前半段，如 0.1.13+xxx 取 0.1.13）
@@ -31,8 +34,8 @@ WORKDIR /app
 # Copy binary
 COPY target/release/laoflchdb /app/laoflchdb
 
-# Copy RocksDB ldb 工具（供数据落盘一致性校验等运维操作使用）
-COPY target/release/ldb /usr/local/bin/ldb
+# Copy RocksDB ldb 工具（宿主机 strip 后的版本，供数据落盘一致性校验等运维操作使用）
+COPY deploy_raft/.ldb/ldb /usr/local/bin/ldb
 
 # Copy raft-only production configuration
 COPY config/prod_raft.yaml /app/config/prod_raft.yaml
@@ -41,10 +44,9 @@ COPY config/prod_raft.yaml /app/config/prod_raft.yaml
 # 由 deploy_raft_cluster.sh 在构建前准备到 deploy_raft/.runtime_libs）
 COPY deploy_raft/.runtime_libs/ /usr/lib/x86_64-linux-gnu/
 
-# libcuda.so.1 驱动库（28MB，与主镜像 laoflchdb 一致 COPY 进镜像）；
-# 其余 CUDA 运行库（libcublas/libcublasLt/libcurand/libcudart ~681MB）不拷贝，
-# 容器启动时通过 bind mount 映射宿主 /usr/local/cuda，见 deploy_raft_cluster.sh
-COPY deploy_raft/.libcuda_libs/libcuda.so.1 /usr/lib/x86_64-linux-gnu/libcuda.so.1
+# CUDA 运行库与驱动库不打包进镜像，全部由宿主机目录挂载提供（见 deploy_raft_cluster.sh）：
+#   -v /usr/local/cuda:/usr/local/cuda:ro
+#   -v /usr/lib/x86_64-linux-gnu/libcuda.so.1:/usr/lib/x86_64-linux-gnu/libcuda.so.1:ro
 
 # Expose raft gRPC port
 EXPOSE 29999

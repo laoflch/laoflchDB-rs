@@ -70,6 +70,8 @@ impl Default for ObjectStoreConfig {
 const OBJECT_DATA_PREFIX: &str = "__obj__";
 const OBJECT_META_PREFIX: &str = "__meta__";
 const BUCKET_META_KEY: &str = "__bucket_meta__";
+/// 桶策略保留键（存于桶表内，S3 GetBucketPolicy/PutBucketPolicy 使用；不参与对象列举）
+pub const BUCKET_POLICY_KEY: &str = "__bucket_policy__";
 
 /// 对象存储服务实现
 pub struct ObjectStoreServiceImpl {
@@ -142,6 +144,45 @@ impl ObjectStoreServiceImpl {
                 .map_err(|e| Status::internal(format!("Failed to save bucket meta: {}", e)))?;
         }
         Ok(())
+    }
+
+    /// 读取桶策略（`None` 表示未设置策略）
+    pub async fn get_bucket_policy(&self, bucket: &str) -> Result<Option<String>, Status> {
+        let mut engine = self.engine.lock().await;
+        if !engine.table_exists(bucket) {
+            return Err(Status::not_found(format!("Bucket '{}' not found", bucket)));
+        }
+        let bytes = engine
+            .get(bucket, BUCKET_POLICY_KEY.as_bytes())
+            .await
+            .map_err(|e| Status::internal(format!("Failed to get bucket policy: {}", e)))?;
+        Ok(bytes
+            .and_then(|b| String::from_utf8(b).ok())
+            .filter(|s| !s.trim().is_empty()))
+    }
+
+    /// 写入（或覆盖）桶策略
+    pub async fn put_bucket_policy(&self, bucket: &str, policy: &str) -> Result<(), Status> {
+        let mut engine = self.engine.lock().await;
+        if !engine.table_exists(bucket) {
+            return Err(Status::not_found(format!("Bucket '{}' not found", bucket)));
+        }
+        engine
+            .put(bucket, BUCKET_POLICY_KEY.as_bytes(), policy.as_bytes())
+            .await
+            .map_err(|e| Status::internal(format!("Failed to put bucket policy: {}", e)))
+    }
+
+    /// 删除桶策略
+    pub async fn delete_bucket_policy(&self, bucket: &str) -> Result<(), Status> {
+        let mut engine = self.engine.lock().await;
+        if !engine.table_exists(bucket) {
+            return Err(Status::not_found(format!("Bucket '{}' not found", bucket)));
+        }
+        engine
+            .delete(bucket, BUCKET_POLICY_KEY.as_bytes())
+            .await
+            .map_err(|e| Status::internal(format!("Failed to delete bucket policy: {}", e)))
     }
 }
 

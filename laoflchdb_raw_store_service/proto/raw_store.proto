@@ -1,0 +1,58 @@
+syntax = "proto3";
+package laoflchdb.raw_store;
+
+// raw_store 数据面服务：接收 / 读取 / 删除文件系统中的 chunk 文件
+service RawStoreService {
+  rpc PutChunk(PutChunkRequest) returns (PutChunkResponse);
+  rpc GetChunk(GetChunkRequest) returns (GetChunkResponse);
+  rpc DeleteChunk(DeleteChunkRequest) returns (DeleteChunkResponse);
+  rpc StatChunk(StatChunkRequest) returns (StatChunkResponse);
+  rpc Health(HealthRequest) returns (HealthResponse);
+}
+
+message PutChunkRequest {
+  string chunk_id = 1;
+  bytes data = 2;
+}
+
+message PutChunkResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetChunkRequest {
+  string chunk_id = 1;
+}
+
+message GetChunkResponse {
+  bool found = 1;
+  bytes data = 2;
+  string message = 3;
+}
+
+message DeleteChunkRequest {
+  string chunk_id = 1;
+}
+
+message DeleteChunkResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message StatChunkRequest {
+  string chunk_id = 1;
+}
+
+message StatChunkResponse {
+  bool found = 1;
+  uint64 size = 2;
+  bytes sha256 = 3;
+}
+
+message HealthRequest {}
+
+message HealthResponse {
+  bool healthy = 1;
+  uint64 node_id = 2;
+  string addr = 3;
+}

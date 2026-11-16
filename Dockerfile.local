@@ -1,8 +1,8 @@
 # 使用本地已编译的二进制文件构建镜像
 FROM debian:bookworm-slim
 
-# 安装运行时依赖（使用默认源，Debian slim 使用内置配置）
-RUN apt-get update && apt-get install -y \
+# 安装运行时依赖（使用默认源，Debian slim 使用内置配置；先移除 docker-clean 的 APT::Update::Post-Invoke）
+RUN rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     curl \

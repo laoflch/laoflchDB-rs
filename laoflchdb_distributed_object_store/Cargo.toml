@@ -1,0 +1,27 @@
+[package]
+name = "laoflchdb_distributed_object_store"
+version = "0.1.0"
+edition = "2021"
+description = "laoflchdb 分布式对象存储：多节点 S3 网关 + Raft 元数据 + raw_store 分块数据面"
+
+[dependencies]
+axum = "0.7"
+tokio = { version = "1.0", features = ["full"] }
+tonic = { version = "0.11", features = ["transport"] }
+prost = "0.12"
+async-trait = "0.1"
+log = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.0", features = ["v4"] }
+sha2 = "0.10"
+hex = "0.4"
+hmac = "0.12"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+quick-xml = { version = "0.31", features = ["serialize"] }
+urlencoding = "2.1"
+bytes = "1.6"
+futures-util = "0.3"
+async-stream = "0.3"
+laoflchdb_raft_service = { path = "../laoflchdb_raft_service" }
+laoflchdb_raw_store_service = { path = "../laoflchdb_raw_store_service" }

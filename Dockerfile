@@ -4,8 +4,8 @@ FROM rust:1.75-slim-bookworm AS builder
 # 设置工作目录
 WORKDIR /app
 
-# 安装构建依赖
-RUN apt-get update && apt-get install -y \
+# 安装构建依赖（先移除 docker-clean 的 APT::Update::Post-Invoke，避免部分宿主 seccomp 下 apt 返回非 0）
+RUN rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y \
     build-essential \
     cmake \
     pkg-config \
@@ -35,8 +35,8 @@ RUN cargo build --release --features=production
 # 运行阶段
 FROM debian:bookworm-slim
 
-# 安装运行时依赖
-RUN apt-get update && apt-get install -y \
+# 安装运行时依赖（先移除 docker-clean 的 APT::Update::Post-Invoke，避免部分宿主 seccomp 下 apt 返回非 0）
+RUN rm -f /etc/apt/apt.conf.d/docker-clean && apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
     && rm -rf /var/lib/apt/lists/*

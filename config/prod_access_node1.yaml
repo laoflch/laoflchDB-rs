@@ -1,0 +1,72 @@
+# =============================================================================
+# laoflchDB 分布式对象存储 —— 接入节点（access node 1）
+#
+# 只启动分布式 S3 网关，不存任何数据：
+#   - 对象 / 桶 / multipart 元数据写入外部 Raft 集群的 objmeta 组
+#   - 通过 raw_registry 组 + 静态种子发现全部 5 个数据节点（raw-store-1..5）
+#   - chunk 按一致性哈希 3 副本写入数据节点
+#
+# 静态种子错开（其余节点由 raw_registry 自动发现）：
+#   access-1 -> raw-store-1, raw-store-2
+# =============================================================================
+
+db_path: /app/data
+index_path: /app/indexes
+model_path: /app/model
+log_level: info
+runtime_mode: multi_thread
+default_policy: allow
+
+# 仅启动 S3 接入层，其它服务全部关闭
+vector_service:
+  enabled: false
+  auto_load: false
+embedding_index:
+  enabled: false
+object_store:
+  enabled: false
+image_service:
+  enabled: false
+face_service:
+  enabled: false
+text_summarize:
+  enabled: false
+reranker:
+  enabled: false
+
+# 本节点不运行 Raft（元数据使用外部 Raft 集群）
+raft_service:
+  enabled: false
+
+# access 节点不存数据，raw_store 关闭
+raw_store:
+  enabled: false
+
+# ── 分布式 S3 网关 ──
+distributed_object_store:
+  enabled: true
+  listen_addr: "0.0.0.0:19001"
+  s3_access_key: admin
+  s3_secret_key: laoflchdb
+  s3_region: us-east-1
+  chunk_size_bytes: 4194304      # 4MB
+  replication_factor: 3
+  write_quorum: 2
+  raw_store_seeds:
+    - "raw-store-1:29998"
+    - "raw-store-2:29998"
+  registry_ttl_secs: 60
+  registry_refresh_secs: 10
+  vnodes_per_node: 128
+  raft_meta:
+    endpoints:
+      - "raft-node-1:29999"
+      - "raft-node-2:29999"
+      - "raft-node-3:29999"
+      - "raft-node-4:29999"
+      - "raft-node-5:29999"
+    group_id: "objmeta"
+    registry_group_id: "raw_registry"
+
+# 不启用主程序自带协议入口（S3 独立监听 19001）
+access_protocols: []

@@ -1,0 +1,63 @@
+# =============================================================================
+# laoflchDB 分布式对象存储 —— 数据节点（data node 1）：raw-store-1
+#
+# 只启动 raw_store 数据面（chunk 直写本地文件），不提供 S3 接入。
+#   - 节点注册写入外部 Raft 集群的 raw_registry 组，供 access 节点发现
+#   - 对象 / 桶元数据由 access 节点写入 objmeta 组，本节点不参与
+#
+#   node_id        : 1
+#   advertise_addr : raw-store-1:29998
+#   data_path      : /app/raw_store
+# =============================================================================
+
+db_path: /app/data
+index_path: /app/indexes
+model_path: /app/model
+log_level: info
+runtime_mode: multi_thread
+default_policy: allow
+
+# 仅启动数据面，其它服务全部关闭
+vector_service:
+  enabled: false
+  auto_load: false
+embedding_index:
+  enabled: false
+object_store:
+  enabled: false
+image_service:
+  enabled: false
+face_service:
+  enabled: false
+text_summarize:
+  enabled: false
+reranker:
+  enabled: false
+
+# 本节点不运行 Raft（注册信息写入外部 Raft 集群）
+raft_service:
+  enabled: false
+
+# ── raw_store 数据面 ──
+raw_store:
+  enabled: true
+  address: "0.0.0.0:29998"
+  node_id: 1
+  # 必须是对 access 节点可达的地址（容器名 + 容器内端口）
+  advertise_addr: "raw-store-1:29998"
+  data_path: /app/raw_store
+  fsync: true
+  shard_depth: 2
+  raft_registry:
+    endpoints:
+      - "raft-node-1:29999"
+      - "raft-node-2:29999"
+      - "raft-node-3:29999"
+      - "raft-node-4:29999"
+      - "raft-node-5:29999"
+    group_id: "raw_registry"
+    register_interval_secs: 10
+
+# 数据节点不提供 S3 接入（distributed_object_store 段整体省略）
+
+access_protocols: []

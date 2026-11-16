@@ -54,6 +54,12 @@ pub struct ImageServiceConfig {
     pub default_bucket: String,
     /// 图片重复检测距离阈值（Cosine 距离 < 此值视为重复，默认 0.0001）
     pub image_duplicate_distance: f32,
+    /// 图片上传并发上限（同时进入上传/推理流程的请求数；0 = 不限制）
+    ///
+    /// 单次上传包含同步阻塞的图片解码、缩略图缩放与向量推理，
+    /// 并发过高会把 tokio worker 全部占死（表现为整个服务停止 accept）。
+    /// 超过上限时 `upload_image` 立即返回 `resource_exhausted`。
+    pub upload_concurrency: usize,
 }
 
 impl Default for ImageServiceConfig {
@@ -62,6 +68,7 @@ impl Default for ImageServiceConfig {
             enabled: false,
             default_bucket: DEFAULT_BUCKET.to_string(),
             image_duplicate_distance: 0.0001,
+            upload_concurrency: 2,
         }
     }
 }
@@ -115,6 +122,10 @@ pub struct ImageServiceImpl {
     config: ImageServiceConfig,
     /// Snowflake ID 生成器，用于自动生成图片的唯一 key
     snowflake: Mutex<Snowflake>,
+    /// 上传并发闸门（None = 不限制）；配额来自 config.upload_concurrency
+    /// 超出配额的请求在 upload_image 入口直接返回 resource_exhausted，
+    /// 避免大量请求堆积在 tokio runtime 里
+    upload_sem: Option<Arc<tokio::sync::Semaphore>>,
     /// 向量服务（可选，用于自动向量索引）
     #[cfg(feature = "auto_index")]
     vector_service: Option<Arc<laoflchdb_vector_service::VectorServiceImpl>>,
@@ -146,6 +157,14 @@ impl ImageServiceImpl {
                 .finalize()
                 .expect("Snowflake with machine_id=0, data_center_id=0 must succeed")
         });
+        let upload_concurrency = config.upload_concurrency;
+        let upload_sem = if upload_concurrency == 0 {
+            info!("ImageService 上传并发限制未启用（upload_concurrency=0）");
+            None
+        } else {
+            info!("ImageService 上传并发上限: {}", upload_concurrency);
+            Some(Arc::new(tokio::sync::Semaphore::new(upload_concurrency)))
+        };
         info!(
             "ImageService 初始化完成: default_bucket='{}'",
             config.default_bucket
@@ -154,6 +173,7 @@ impl ImageServiceImpl {
             object_store,
             config,
             snowflake: Mutex::new(snowflake),
+            upload_sem,
             #[cfg(feature = "auto_index")]
             vector_service,
             #[cfg(feature = "auto_index")]
@@ -1101,6 +1121,28 @@ impl ImageService for ImageServiceImpl {
         request: Request<UploadImageRequest>,
     ) -> Result<Response<UploadImageResponse>, Status> {
         let req = request.into_inner();
+
+        // ── 上传并发闸门 ──
+        // 上传链路包含同步阻塞的图片解码、缩略图缩放与向量推理（含 CUDA 同步拷贝），
+        // 并发过高会占死全部 tokio worker，表现为整个服务停止 accept（连 health 都超时）。
+        // 超过配置上限时立即拒绝，让客户端稍后重试，而不是把请求堆进 runtime。
+        let _upload_permit = match self.upload_sem.as_ref() {
+            Some(sem) => match sem.clone().try_acquire_owned() {
+                Ok(permit) => Some(permit),
+                Err(_) => {
+                    warn!(
+                        "图片上传并发已达上限 {}，拒绝本次请求（bucket='{}'）",
+                        self.config.upload_concurrency, req.bucket
+                    );
+                    return Err(Status::resource_exhausted(format!(
+                        "图片上传并发已达上限 {}，请稍后重试",
+                        self.config.upload_concurrency
+                    )));
+                }
+            },
+            None => None,
+        };
+
         let bucket = self.resolve_bucket(&req.bucket);
         self.ensure_bucket(&bucket).await?;
 

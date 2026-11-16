@@ -209,6 +209,7 @@ impl LaoflchDBServer {
                     enabled: true,
                     default_bucket: img_cfg.default_bucket.clone(),
                     image_duplicate_distance: img_cfg.image_duplicate_distance,
+                    upload_concurrency: img_cfg.upload_concurrency,
                 };
                 // 将全文索引服务注入图片服务，用于图片标签（标签实体与图片→标签映射）
                 let image_index_svc = self.index_service.clone().map(|arc| {
@@ -441,6 +442,56 @@ impl LaoflchDBServer {
                 None
             }
         };
+
+        // 创建 raw_store 数据面服务（如果配置启用）
+        if let Some(raw_cfg) = &config.raw_store {
+            if raw_cfg.enabled {
+                match laoflchdb_raw_store_service::RawStoreServiceImpl::from_config(raw_cfg) {
+                    Ok(svc) => {
+                        if let Some(reg_cfg) = &raw_cfg.raft_registry {
+                            let _ = laoflchdb_raw_store_service::registry::spawn_registration(
+                                reg_cfg.clone(),
+                                raw_cfg.node_id,
+                                raw_cfg.advertise_addr.clone(),
+                            );
+                        }
+                        let svc_start = svc.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) =
+                                laoflchdb_raw_store_service::start_raw_store_service(svc_start).await
+                            {
+                                log::error!("raw_store gRPC 服务错误: {}", e);
+                            }
+                        });
+                        info!("raw_store 数据面服务已启动: addr={}", raw_cfg.address);
+                    }
+                    Err(e) => log::error!("raw_store 服务初始化失败: {}", e),
+                }
+            } else {
+                info!("raw_store 服务未启用");
+            }
+        }
+
+        // 创建分布式对象存储网关（如果配置启用）
+        if let Some(dos_cfg) = &config.distributed_object_store {
+            if dos_cfg.enabled {
+                let dos_cfg_clone = dos_cfg.clone();
+                let listen_addr = dos_cfg.listen_addr.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        laoflchdb_distributed_object_store::start_distributed_object_store(
+                            dos_cfg_clone,
+                        )
+                        .await
+                    {
+                        log::error!("分布式对象存储网关错误: {}", e);
+                    }
+                });
+                info!("分布式对象存储网关已启动: addr={}", listen_addr);
+            } else {
+                info!("分布式对象存储网关未启用");
+            }
+        }
 
         let object_store_service = object_store_service.clone();
 
