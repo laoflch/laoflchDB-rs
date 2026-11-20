@@ -20,7 +20,7 @@
 FROM ubuntu:24.04
 
 # 版本号参数（从 Cargo.toml 获取前半段，如 0.1.13+xxx 取 0.1.13）
-ARG VERSION=0.1.13
+ARG VERSION=0.1.14
 LABEL version="${VERSION}"
 
 # Create app directories（Raft 数据目录建议用卷挂载持久化）

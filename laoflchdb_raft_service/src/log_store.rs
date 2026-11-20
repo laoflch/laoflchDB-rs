@@ -225,16 +225,38 @@ impl RaftLogStorage<TypeConfig> for RaftLogStore {
     }
 
     /// 删除 log_id 及其之前的所有日志条目（含 log_id 本身），并记录 last_purged
+    ///
+    /// 安全护栏：只允许清理到“已持久化快照”覆盖的位置，且没有快照时直接跳过。
+    /// 日志中的 Membership 条目一旦被删且无快照可恢复，节点重启后该组会退化为
+    /// `Learner` + 空成员配置，永远选不出 leader（写入报 `has to forward request to: None, None`）。
     async fn purge(&mut self, log_id: LogId<NodeId>) -> Result<(), StorageError<NodeId>> {
+        let snapshot_index = crate::snapshot_store::SnapshotStore::new(&self.path).last_index();
+        let purge_to = match snapshot_index {
+            Some(idx) if idx >= log_id.index => log_id,
+            Some(idx) => LogId {
+                leader_id: log_id.leader_id.clone(),
+                index: idx,
+            },
+            None => {
+                log::warn!(
+                    "组日志目录 {} 尚无持久化快照，跳过 purge(index={})，避免重启后成员关系丢失",
+                    self.path.display(),
+                    log_id.index
+                );
+                return Ok(());
+            }
+        };
+
         let mut batch = rocksdb::WriteBatch::default();
         let cf = self.logs_cf();
+        let purge_index = purge_to.index;
         self.iterate_logs(|index, key| {
-            if index <= log_id.index {
+            if index <= purge_index {
                 batch.delete_cf(cf, key);
             }
         })?;
 
-        let serialized = bincode::serialize(&log_id)
+        let serialized = bincode::serialize(&purge_to)
             .map_err(|e| StorageError::IO { source: StorageIOError::write_logs(AnyError::error(format!("Serialization error: {}", e))) })?;
         batch.put_cf(self.meta_cf(), KEY_LAST_PURGED, &serialized);
 

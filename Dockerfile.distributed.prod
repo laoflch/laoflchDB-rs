@@ -24,7 +24,7 @@
 
 FROM ubuntu:24.04
 
-ARG VERSION=0.1.13
+ARG VERSION=0.1.14
 LABEL version="${VERSION}"
 
 RUN mkdir -p /app/config /app/data /app/raw_store

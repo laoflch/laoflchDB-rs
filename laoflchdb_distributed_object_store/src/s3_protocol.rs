@@ -961,13 +961,52 @@ fn list_objects_xml(bucket: &str, query: &S3ListQuery, result: &S3ListResult) ->
     let mut out = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
          <ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\
-         <Name>{}</Name><Prefix>{}</Prefix><Marker>{}</Marker><MaxKeys>{}</MaxKeys><IsTruncated>{}</IsTruncated>",
+         <Name>{}</Name><Prefix>{}</Prefix><MaxKeys>{}</MaxKeys><IsTruncated>{}</IsTruncated>",
         xml_escape(bucket),
         xml_escape(&query.prefix),
-        xml_escape(query.marker.as_deref().unwrap_or("")),
         if query.max_keys == 0 { 1000 } else { query.max_keys },
         result.is_truncated
     );
+
+    if query.list_type_v2 {
+        // ListObjectsV2：必须给出 KeyCount，且分页令牌字段是 ContinuationToken / NextContinuationToken
+        out.push_str(&format!(
+            "<KeyCount>{}</KeyCount>",
+            result.objects.len() + result.common_prefixes.len()
+        ));
+        if let Some(token) = &query.continuation_token {
+            out.push_str(&format!(
+                "<ContinuationToken>{}</ContinuationToken>",
+                xml_escape(token)
+            ));
+        }
+        if let Some(start_after) = &query.start_after {
+            if !start_after.is_empty() {
+                out.push_str(&format!(
+                    "<StartAfter>{}</StartAfter>",
+                    xml_escape(start_after)
+                ));
+            }
+        }
+        if result.is_truncated {
+            if let Some(next) = &result.next_marker {
+                out.push_str(&format!(
+                    "<NextContinuationToken>{}</NextContinuationToken>",
+                    xml_escape(&encode_list_token(next))
+                ));
+            }
+        }
+    } else {
+        // ListObjectsV1：Marker + NextMarker
+        out.push_str(&format!(
+            "<Marker>{}</Marker>",
+            xml_escape(query.marker.as_deref().unwrap_or(""))
+        ));
+        if let Some(next) = &result.next_marker {
+            out.push_str(&format!("<NextMarker>{}</NextMarker>", xml_escape(next)));
+        }
+    }
+
     if let Some(delimiter) = &query.delimiter {
         out.push_str(&format!(
             "<Delimiter>{}</Delimiter>",
@@ -989,11 +1028,25 @@ fn list_objects_xml(bucket: &str, query: &S3ListQuery, result: &S3ListResult) ->
             xml_escape(prefix)
         ));
     }
-    if let Some(next) = &result.next_marker {
-        out.push_str(&format!("<NextMarker>{}</NextMarker>", xml_escape(next)));
-    }
     out.push_str("</ListBucketResult>");
     out
+}
+
+/// 分页令牌：把 key 十六进制编码成不含特殊字符的不透明字符串，
+/// 避免 token 里出现 `&`、`%`、非 ASCII 等需要反复 URL 编解码的内容。
+fn encode_list_token(key: &str) -> String {
+    hex::encode(key.as_bytes())
+}
+
+/// 解码分页令牌；非法编码（例如老客户端直接传了明文 key）时按明文处理。
+fn decode_list_token(token: &str) -> String {
+    match hex::decode(token) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(key) => key,
+            Err(_) => token.to_string(),
+        },
+        Err(_) => token.to_string(),
+    }
 }
 
 fn copy_result_xml(etag: &str) -> String {
@@ -1094,6 +1147,27 @@ fn extract_tag(xml: &str, tag: &str) -> Option<String> {
 }
 
 fn parse_list_query(query: &QueryParams) -> S3ListQuery {
+    let list_type_v2 = query
+        .get("list-type")
+        .map(|v| v == "2")
+        .unwrap_or(false);
+
+    // V2 用 continuation-token（Base16 编码的 key），V1 用 marker；两者都按 key 处理
+    let continuation_token = query.get("continuation-token").map(|v| decode_list_token(v));
+    let start_after = query.get("start-after").cloned().filter(|v| !v.is_empty());
+
+    let marker = if list_type_v2 {
+        continuation_token
+            .clone()
+            .or_else(|| start_after.clone())
+    } else {
+        query
+            .get("marker")
+            .cloned()
+            .filter(|m| !m.is_empty())
+            .or_else(|| continuation_token.clone())
+    };
+
     S3ListQuery {
         prefix: query.get("prefix").cloned().unwrap_or_default(),
         delimiter: query
@@ -1103,16 +1177,17 @@ fn parse_list_query(query: &QueryParams) -> S3ListQuery {
         max_keys: query
             .get("max-keys")
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or(1000),
-        marker: query
-            .get("marker")
-            .cloned()
-            .or_else(|| query.get("continuation-token").cloned())
-            .or_else(|| query.get("start-after").cloned()),
+            .filter(|v| *v > 0)
+            .unwrap_or(1000)
+            .min(1000),
+        marker,
         reverse: query
             .get("reverse")
             .map(|v| v == "true")
             .unwrap_or(false),
+        list_type_v2,
+        continuation_token,
+        start_after,
     }
 }
 

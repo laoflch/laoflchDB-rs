@@ -33,7 +33,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── 可配置项 ──
 NETWORK="${NETWORK:-laoflchdb-net}"
-IMAGE="${IMAGE:-laoflchdb-raft:0.1.13}"
+IMAGE="${IMAGE:-laoflchdb-raft:0.1.14}"
 NODE_COUNT="${NODE_COUNT:-5}"          # 集群节点数（同时也是组数，滑动窗口一组一个）
 GROUP_SIZE="${GROUP_SIZE:-3}"          # 每组节点数（滑动窗口宽度，须 <= NODE_COUNT）
 BASE_PORT="${BASE_PORT:-29999}"        # node-1 宿主端口，后续节点依次 +1
@@ -256,6 +256,13 @@ ensure_image() {
     ldb_mtime=$(stat -c %Y target/release/ldb)
     img_epoch=$(date -d "$(docker image inspect "$IMAGE" --format '{{.Created}}')" +%s 2>/dev/null || echo 0)
     if [ "$bin_mtime" -gt "$img_epoch" ] || [ "$ldb_mtime" -gt "$img_epoch" ]; then
+        if [ "${ALLOW_IMAGE_OVERWRITE:-0}" != "1" ]; then
+            echo "错误：target/release/laoflchdb 或 ldb 比镜像 $IMAGE 新，但 $IMAGE 已存在。" >&2
+            echo "      默认不覆盖已发布的 tag（避免丢失回滚点）。请任选其一：" >&2
+            echo "      1) 用新 tag：IMAGE=laoflchdb-raft:0.1.15 ./deploy_raft_cluster.sh up" >&2
+            echo "      2) 明确允许覆盖：ALLOW_IMAGE_OVERWRITE=1 ./deploy_raft_cluster.sh up" >&2
+            exit 1
+        fi
         echo "检测到二进制/ldb 比镜像新，重新构建镜像 $IMAGE ..."
         build_image
     else

@@ -25,7 +25,7 @@
 # 可配置环境变量：
 #   DATA_NODE_COUNT(默认5) ACCESS_NODE_COUNT(默认3)
 #   ACCESS_S3_BASE_PORT(默认19001) DATA_RAW_BASE_PORT(默认29981)
-#   IMAGE(默认 laoflchdb-distributed:0.1.13) NETWORK(默认 laoflchdb-net)
+#   IMAGE(默认 laoflchdb-distributed:0.1.14) NETWORK(默认 laoflchdb-net)
 #   CONFIG_SRC_DIR(默认 config) DATA_ROOT(默认 /workspace/distributed_data)
 #
 # 前置条件：
@@ -39,7 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ── 可配置项 ──
 NETWORK="${NETWORK:-laoflchdb-net}"
-IMAGE="${IMAGE:-laoflchdb-distributed:0.1.13}"
+IMAGE="${IMAGE:-laoflchdb-distributed:0.1.14}"
 DATA_NODE_COUNT="${DATA_NODE_COUNT:-5}"
 ACCESS_NODE_COUNT="${ACCESS_NODE_COUNT:-3}"
 ACCESS_S3_BASE_PORT="${ACCESS_S3_BASE_PORT:-19001}"   # access-1 宿主 S3 端口，后续依次 +1
@@ -107,6 +107,13 @@ ensure_image() {
     dockerfile_mtime=$(stat -c %Y "$SCRIPT_DIR/$DOCKERFILE" 2>/dev/null || echo 0)
     img_epoch=$(date -d "$(docker image inspect "$IMAGE" --format '{{.Created}}')" +%s 2>/dev/null || echo 0)
     if [ "$bin_mtime" -gt "$img_epoch" ] || [ "$dockerfile_mtime" -gt "$img_epoch" ]; then
+        if [ "${ALLOW_IMAGE_OVERWRITE:-0}" != "1" ]; then
+            echo "错误：target/release/laoflchdb 或 Dockerfile 比镜像 $IMAGE 新，但 $IMAGE 已存在。" >&2
+            echo "      默认不覆盖已发布的 tag（避免丢失回滚点）。请任选其一：" >&2
+            echo "      1) 用新 tag：IMAGE=laoflchdb-distributed:0.1.15 ./deploy_distributed_cluster.sh up" >&2
+            echo "      2) 明确允许覆盖：ALLOW_IMAGE_OVERWRITE=1 ./deploy_distributed_cluster.sh up" >&2
+            exit 1
+        fi
         echo "检测到二进制或 Dockerfile 比镜像新，重新构建镜像 $IMAGE ..."
         build_image
     else
@@ -402,7 +409,7 @@ usage() {
     echo ""
     echo "环境变量: DATA_NODE_COUNT(默认5) ACCESS_NODE_COUNT(默认3)"
     echo "          ACCESS_S3_BASE_PORT(默认19001) DATA_RAW_BASE_PORT(默认29981)"
-    echo "          IMAGE(默认laoflchdb-distributed:0.1.13) NETWORK(默认laoflchdb-net)"
+    echo "          IMAGE(默认laoflchdb-distributed:0.1.14) NETWORK(默认laoflchdb-net)"
     echo "          CONFIG_SRC_DIR(默认config) DATA_ROOT(默认/workspace/distributed_data)"
 }
 

@@ -29,6 +29,12 @@ pub struct S3ListQuery {
     pub max_keys: usize,
     pub marker: Option<String>,
     pub reverse: bool,
+    /// 是否为 ListObjectsV2（list-type=2），决定响应里输出 ContinuationToken 还是 Marker
+    pub list_type_v2: bool,
+    /// 客户端回传的 continuation-token（已解码后的原始 key），仅用于响应回显
+    pub continuation_token: Option<String>,
+    /// V2 的 start-after 参数，仅用于响应回显
+    pub start_after: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -436,6 +442,15 @@ impl S3Backend for DistributedObjectStore {
                     let rest = &meta.key[query.prefix.len()..];
                     if let Some(pos) = rest.find(delimiter.as_str()) {
                         let cp = format!("{}{}", query.prefix, &rest[..pos + delimiter.len()]);
+                        // 已翻过的 common prefix 不能再返回一次，否则客户端会拿到重复前缀并原地打转
+                        if let Some(marker) = &query.marker {
+                            if !query.reverse && cp.as_str() <= marker.as_str() {
+                                continue;
+                            }
+                            if query.reverse && cp.as_str() >= marker.as_str() {
+                                continue;
+                            }
+                        }
                         if !common_prefixes.iter().any(|p| p == &cp) {
                             if count >= max_keys {
                                 is_truncated = true;

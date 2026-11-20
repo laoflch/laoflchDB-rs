@@ -9,6 +9,7 @@
 //! 提供给 Raft 核心与 gRPC 读接口使用。
 
 use crate::raft_types::{NodeId, Request, Response, TypeConfig};
+use crate::snapshot_store::SnapshotStore;
 use crate::storage::business_table_name;
 use crate::DualWriteMode;
 use laoflchdb_engines::KvStorage;
@@ -17,6 +18,7 @@ use openraft::{
     AnyError, BasicNode, EntryPayload, LogId, OptionalSend, SnapshotMeta, StorageError,
     StorageIOError, StoredMembership,
 };
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -84,6 +86,8 @@ pub struct RaftKvStateMachine {
     dual_write: Option<Arc<dyn KvStorage>>,
     /// 双写副本写入模式（同步 / 异步）
     dual_mode: DualWriteMode,
+    /// 组级持久化快照存储（重启后据此恢复 last_applied 与成员关系）
+    snapshots: SnapshotStore,
 }
 
 impl RaftKvStateMachine {
@@ -92,14 +96,34 @@ impl RaftKvStateMachine {
         kvdb: Arc<dyn KvStorage>,
         dual_write: Option<Arc<dyn KvStorage>>,
         dual_mode: DualWriteMode,
+        snapshot_dir: PathBuf,
     ) -> Self {
+        // 启动时优先用已落盘快照恢复“已应用位置 + 成员关系”：
+        // 历史上日志被 purge 后成员关系只能靠快照恢复，否则组会退化为 Learner 且无法选出 leader。
+        let snapshots = SnapshotStore::new(snapshot_dir);
+        let (last_applied, membership) = match snapshots.load_meta() {
+            Some(meta) => {
+                log::info!(
+                    "组 {} 从持久化快照恢复状态: last_log_id={:?}",
+                    group_id,
+                    meta.last_log_id
+                );
+                (meta.last_log_id, meta.last_membership)
+            }
+            None => (
+                None,
+                StoredMembership::new(None, openraft::Membership::default()),
+            ),
+        };
+
         Self {
-            last_applied: Arc::new(RwLock::new(None)),
-            membership: Arc::new(RwLock::new(StoredMembership::new(None, openraft::Membership::default()))),
+            last_applied: Arc::new(RwLock::new(last_applied)),
+            membership: Arc::new(RwLock::new(membership)),
             group_id,
             kvdb,
             dual_write,
             dual_mode,
+            snapshots,
         }
     }
 
@@ -241,6 +265,13 @@ impl RaftSnapshotBuilder<TypeConfig> for KvSnapshotBuilder {
             snapshot_id: format!("{}-{}-{}.snap", term, index, std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0)),
         };
 
+        // 关键：快照必须落盘。purge 之后成员关系与已应用位置只能靠快照恢复，
+        // 否则节点重启后组会退化为 Learner + 空 membership，永远选不出 leader。
+        self.state_machine
+            .snapshots
+            .save(&meta, &data)
+            .map_err(|e| storage_io_err(format!("持久化快照失败: {}", e)))?;
+
         Ok(Snapshot {
             meta,
             snapshot: Box::new(data),
@@ -313,12 +344,27 @@ impl RaftStateMachine<TypeConfig> for RaftKvStateMachine {
         self.deserialize_state(&snapshot).await?;
         *self.last_applied.write().await = meta.last_log_id;
         *self.membership.write().await = meta.last_membership.clone();
+        // 接收到的快照同样落盘，保证本节点重启后也能恢复成员关系
+        self.snapshots
+            .save(meta, &snapshot)
+            .map_err(|e| storage_io_err(format!("接收快照落盘失败: {}", e)))?;
         Ok(())
     }
 
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfig>>, StorageError<NodeId>> {
+        // 优先返回已落盘的快照（重启后立刻可用，且带完整成员关系）
+        let last_applied = *self.last_applied.read().await;
+        if let Some((meta, data)) = self.snapshots.load() {
+            if meta.last_log_id >= last_applied {
+                return Ok(Some(Snapshot {
+                    meta,
+                    snapshot: Box::new(data),
+                }));
+            }
+        }
+        // 磁盘上没有覆盖当前状态的快照时，现构建一个（build_snapshot 内部会落盘）
         let mut builder = self.get_snapshot_builder().await;
         let snapshot = builder.build_snapshot().await?;
         Ok(Some(snapshot))

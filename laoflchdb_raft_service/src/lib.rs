@@ -8,6 +8,7 @@ pub mod log_store;
 pub mod network;
 pub mod rest;
 pub mod storage;
+pub mod snapshot_store;
 
 use crate::raft_types::{NodeId, Raft};
 use crate::log_store::RaftLogStore;
@@ -15,6 +16,7 @@ use crate::network::{GrpcClientPool, GrpcNetworkFactory};
 use crate::state_machine::RaftKvStateMachine;
 use crate::storage::{business_table_name, RaftStorageConfig};
 use laoflchdb_engines::KvStorage;
+use openraft::storage::RaftLogStorage;
 use openraft::Config;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -290,6 +292,25 @@ impl RaftKvServiceImpl {
         let data_path = PathBuf::from(&self.config.data_path).join(format!("group-{}", group_id));
         let log_store = RaftLogStore::open(&data_path)?;
 
+        // 启动自检：日志已被 purge 但没有持久化快照 → 重启后该组无法恢复成员关系，
+        // 会退化为 Learner + 空 membership（写入永远报 has to forward request to: None）。
+        // 这里显式报错，避免静默劣化；修法是重建该组目录（group-{id}）。
+        {
+            let snapshots = crate::snapshot_store::SnapshotStore::new(&data_path);
+            let mut probe = log_store.clone();
+            if let Ok(state) = probe.get_log_state().await {
+                if state.last_purged_log_id.is_some() && snapshots.load_meta().is_none() {
+                    log::error!(
+                        "组 {} 启动自检失败：日志已 purge({:?}) 但缺少持久化快照，重启后无法恢复成员关系。\
+                         请删除 {} 后由 bootstrap 节点重新自举该组",
+                        group_id,
+                        state.last_purged_log_id,
+                        data_path.display()
+                    );
+                }
+            }
+        }
+
         // 创建 Raft 配置（election_timeout_max 必须大于 min，且 min > heartbeat_interval）
         let raft_config = Config {
             cluster_name: format!("laoflchdb-g{}", group_id),
@@ -304,7 +325,13 @@ impl RaftKvServiceImpl {
 
         // 每个组使用独立的网络工厂（携带 group_id，内部 RPC 按组路由）
         let network_factory = GrpcNetworkFactory::new(self.grpc_pool.clone(), group_id.clone());
-        let state_machine = RaftKvStateMachine::new(group_id.clone(), kvdb, dual_write, dual_mode);
+        let state_machine = RaftKvStateMachine::new(
+            group_id.clone(),
+            kvdb,
+            dual_write,
+            dual_mode,
+            data_path.clone(),
+        );
 
         // 创建 Raft 实例
         let raft = Raft::new(
